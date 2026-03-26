@@ -13,34 +13,34 @@ interface StatsCardProps {
     value: number;
     positive: boolean;
   };
-  accentColor?: 'orange' | 'cyan' | 'purple' | 'green';
+  accentColor?: 'blue' | 'emerald' | 'violet' | 'amber';
   index?: number;
 }
 
 const accentStyles = {
-  orange: {
-    gradient: 'bg-orange-gradient',
-    glow: 'glow-orange',
-    text: 'text-primary',
-    ring: 'hsl(25, 95%, 53%)',
+  blue: {
+    bg: 'bg-blue-500/10',
+    icon: 'text-blue-500',
+    ring: 'ring-blue-500/20',
+    trend: 'text-blue-500',
   },
-  cyan: {
-    gradient: 'bg-cyan-gradient',
-    glow: 'glow-cyan',
-    text: 'text-cyan',
-    ring: 'hsl(187, 85%, 53%)',
+  emerald: {
+    bg: 'bg-emerald-500/10',
+    icon: 'text-emerald-500',
+    ring: 'ring-emerald-500/20',
+    trend: 'text-emerald-500',
   },
-  purple: {
-    gradient: 'bg-purple-gradient',
-    glow: 'glow-purple',
-    text: 'text-purple',
-    ring: 'hsl(270, 70%, 55%)',
+  violet: {
+    bg: 'bg-violet-500/10',
+    icon: 'text-violet-500',
+    ring: 'ring-violet-500/20',
+    trend: 'text-violet-500',
   },
-  green: {
-    gradient: 'bg-gradient-to-br from-green to-emerald-600',
-    glow: '',
-    text: 'text-green',
-    ring: 'hsl(142, 76%, 45%)',
+  amber: {
+    bg: 'bg-amber-500/10',
+    icon: 'text-amber-500',
+    ring: 'ring-amber-500/20',
+    trend: 'text-amber-500',
   },
 };
 
@@ -51,16 +51,15 @@ export function StatsCard({
   suffix = '',
   icon: Icon,
   trend,
-  accentColor = 'orange',
+  accentColor = 'blue',
   index = 0,
 }: StatsCardProps) {
   const [displayValue, setDisplayValue] = useState(0);
   const styles = accentStyles[accentColor];
 
-  // Animate counter
   useEffect(() => {
-    const duration = 1200;
-    const steps = 40;
+    const duration = 800;
+    const steps = 30;
     const increment = value / steps;
     let current = 0;
 
@@ -79,79 +78,41 @@ export function StatsCard({
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 24, scale: 0.96 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{
-        duration: 0.5,
-        delay: index * 0.1,
-        ease: [0.16, 1, 0.3, 1],
-      }}
-      whileHover={{ 
-        y: -6, 
-        scale: 1.02,
-        transition: { duration: 0.3, ease: 'easeOut' }
-      }}
-      whileTap={{ scale: 0.98 }}
-      className="neon-card holographic rounded-xl p-6 cursor-default group"
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, delay: index * 0.08, ease: [0.25, 0.46, 0.45, 0.94] }}
+      className="relative rounded-xl border border-border/40 bg-card/60 backdrop-blur-sm p-5 hover:border-border/60 transition-all duration-300 group"
     >
-      <div className="flex items-start justify-between relative z-10">
+      <div className="flex items-start justify-between">
         <div className="space-y-2">
-          <p className="text-sm font-medium text-muted-foreground tracking-wide uppercase">
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
             {title}
           </p>
-          <div className="flex items-baseline gap-1">
-            <motion.span
-              key={displayValue}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="text-3xl font-bold font-display text-foreground animate-number"
-            >
-              {prefix}
-              {displayValue.toLocaleString()}
-              {suffix}
-            </motion.span>
-          </div>
+          <motion.p
+            key={displayValue}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-2xl font-bold font-display text-foreground tracking-tight"
+          >
+            {prefix}{displayValue.toLocaleString()}{suffix}
+          </motion.p>
           {trend && (
-            <motion.div
-              initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.3 + index * 0.1 }}
-              className={cn(
-                'flex items-center gap-1.5 text-sm font-semibold',
-                trend.positive ? 'text-success' : 'text-destructive'
-              )}
-            >
-              <motion.span
-                animate={{ y: trend.positive ? [0, -2, 0] : [0, 2, 0] }}
-                transition={{ duration: 1.5, repeat: Infinity }}
-              >
-                {trend.positive ? '↑' : '↓'}
-              </motion.span>
+            <div className={cn(
+              'flex items-center gap-1 text-xs font-medium',
+              trend.positive ? 'text-emerald-500' : 'text-red-400'
+            )}>
+              <span>{trend.positive ? '↑' : '↓'}</span>
               <span>{Math.abs(trend.value)}%</span>
-              <span className="text-muted-foreground font-normal text-xs">vs last month</span>
-            </motion.div>
+              <span className="text-muted-foreground font-normal">vs last month</span>
+            </div>
           )}
         </div>
-        <motion.div
-          whileHover={{ rotate: 12, scale: 1.1 }}
-          transition={{ type: 'spring', stiffness: 300 }}
-          className={cn(
-            'h-12 w-12 rounded-xl flex items-center justify-center relative cyber-pulse',
-            styles.gradient,
-          )}
-        >
-          <Icon className="h-6 w-6 text-white relative z-10" />
-        </motion.div>
-      </div>
-      
-      {/* Bottom glow line */}
-      <div className="absolute bottom-0 left-4 right-4 h-px opacity-0 group-hover:opacity-100 transition-opacity duration-500">
-        <div 
-          className="h-full w-full"
-          style={{
-            background: `linear-gradient(90deg, transparent 0%, ${styles.ring} 50%, transparent 100%)`,
-          }}
-        />
+        <div className={cn(
+          'h-10 w-10 rounded-lg flex items-center justify-center transition-transform duration-300 group-hover:scale-110',
+          styles.bg
+        )}>
+          <Icon className={cn('h-5 w-5', styles.icon)} />
+        </div>
       </div>
     </motion.div>
   );
