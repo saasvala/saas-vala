@@ -12,29 +12,33 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { ArrowLeft, Search, Bell, User, Settings, LogOut, ShoppingCart } from 'lucide-react';
+import { ArrowLeft, Search, Bell, User, Settings, LogOut, ShoppingCart, Sparkles } from 'lucide-react';
 import { WalletHeaderButton } from '@/components/wallet/WalletHeaderButton';
 import { useCart } from '@/hooks/useCart';
+import { motion } from 'framer-motion';
 
 const pageTitles: Record<string, string> = {
   '/': 'Marketplace',
   '/dashboard': 'Dashboard',
   '/products': 'Product Manager',
   '/admin/marketplace': 'Marketplace Admin',
-  '/keys': 'Key Management',
+  '/keys': 'License Keys',
   '/servers': 'Server Manager',
-  '/ai-chat': 'SaaS AI Chat',
-  '/saas-ai-dashboard': 'SaaS AI Dashboard',
+  '/ai-chat': 'AI Chat',
+  '/saas-ai-dashboard': 'AI Dashboard',
   '/ai-apis': 'AI API Manager',
   '/wallet': 'Wallet & Billing',
-  '/seo-leads': 'SEO & Lead Manager',
+  '/seo-leads': 'SEO & Leads',
   '/reseller-manager': 'Reseller Manager',
   '/resellers': 'Reseller Manager',
   '/audit-logs': 'Audit Logs',
   '/system-health': 'System Health',
-  '/settings': 'Settings & Security',
+  '/settings': 'Settings',
   '/education': 'Education Systems',
   '/role-detail': 'Role Configuration',
+  '/automation': 'Auto-Pilot',
+  '/apk-pipeline': 'APK Pipeline',
+  '/vala-builder': 'VALA Builder',
 };
 
 export function Header() {
@@ -45,37 +49,34 @@ export function Header() {
 
   const pageTitle = pageTitles[location.pathname] || 'SaaS VALA';
   const canGoBack = location.pathname !== '/';
-
   const userInitials = user?.email?.slice(0, 2).toUpperCase() || 'U';
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-border/40 bg-background/60 backdrop-blur-xl px-6">
-      {/* Subtle top glow line */}
-      <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-primary/20 to-transparent" />
-      
-      {/* Left section */}
-      <div className="flex items-center gap-4">
+    <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border/30 bg-background/80 backdrop-blur-2xl px-5">
+      {/* Left */}
+      <div className="flex items-center gap-3">
         {canGoBack && (
           <Button
             variant="ghost"
             size="icon"
             onClick={() => navigate(-1)}
-            className="text-muted-foreground hover:text-foreground"
+            className="text-muted-foreground hover:text-foreground h-8 w-8"
           >
-            <ArrowLeft className="h-5 w-5" />
+            <ArrowLeft className="h-4 w-4" />
           </Button>
         )}
-        <div>
-          <h1 className="font-display text-xl font-bold text-foreground">
+        <div className="flex items-center gap-2.5">
+          <h1 className="font-display text-lg font-bold text-foreground tracking-tight">
             {pageTitle}
           </h1>
           {isSuperAdmin && (
-            <Badge variant="outline" className="mt-0.5 text-xs border-primary/30 text-primary bg-primary/5">
-              Super Admin
+            <Badge className="text-[10px] font-semibold bg-primary/10 text-primary border-primary/20 px-1.5 py-0">
+              <Sparkles className="h-2.5 w-2.5 mr-0.5" />
+              Admin
             </Badge>
           )}
           {role === 'reseller' && (
-            <Badge variant="outline" className="mt-0.5 text-xs border-secondary/30 text-secondary bg-secondary/5">
+            <Badge variant="outline" className="text-[10px] border-secondary/30 text-secondary bg-secondary/5 px-1.5 py-0">
               Reseller
             </Badge>
           )}
@@ -83,91 +84,92 @@ export function Header() {
       </div>
 
       {/* Center - Search */}
-      <div className="hidden md:flex flex-1 max-w-md mx-8">
-        <div className="relative w-full group">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground group-focus-within:text-primary transition-colors" />
+      <div className="hidden md:flex flex-1 max-w-sm mx-8">
+        <div className="relative w-full">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/60" />
           <Input
             type="search"
-            placeholder="Search products, keys, servers..."
-            className="pl-10 bg-muted/30 border-border/50 focus:border-primary/50 focus:bg-muted/50 transition-all duration-300"
+            placeholder="Search anything..."
+            className="pl-9 h-8 text-sm bg-muted/20 border-border/30 focus:border-primary/40 focus:bg-muted/40 rounded-lg transition-all duration-200"
           />
         </div>
       </div>
 
-      {/* Right section */}
-      <div className="flex items-center gap-3">
+      {/* Right */}
+      <div className="flex items-center gap-1.5">
         {/* Cart */}
         <Button
           variant="ghost"
           size="icon"
-          className="relative text-muted-foreground hover:text-foreground"
+          className="relative text-muted-foreground hover:text-foreground h-8 w-8"
           onClick={() => navigate('/cart')}
         >
-          <ShoppingCart className="h-5 w-5" />
+          <ShoppingCart className="h-4 w-4" />
           {cartCount > 0 && (
-            <span className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-primary text-[10px] font-bold text-primary-foreground flex items-center justify-center">
+            <motion.span
+              initial={{ scale: 0 }}
+              animate={{ scale: 1 }}
+              className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-primary text-[9px] font-bold text-primary-foreground flex items-center justify-center shadow-sm"
+            >
               {cartCount > 9 ? '9+' : cartCount}
-            </span>
+            </motion.span>
           )}
         </Button>
 
-        {/* Wallet */}
         <WalletHeaderButton />
 
         {/* Notifications */}
         <Button
           variant="ghost"
           size="icon"
-          className="relative text-muted-foreground hover:text-foreground"
+          className="relative text-muted-foreground hover:text-foreground h-8 w-8"
         >
-          <Bell className="h-5 w-5" />
-          <span className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-primary text-[10px] font-bold text-primary-foreground flex items-center justify-center">
+          <Bell className="h-4 w-4" />
+          <span className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-red-500 text-[9px] font-bold text-white flex items-center justify-center shadow-sm">
             3
           </span>
         </Button>
 
+        {/* Separator */}
+        <div className="w-px h-6 bg-border/40 mx-1.5" />
+
         {/* User menu */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              className="relative h-10 w-10 rounded-full"
-            >
-              <Avatar className="h-9 w-9 ring-2 ring-primary/20 hover:ring-primary/40 transition-all duration-300">
+            <Button variant="ghost" className="relative h-8 w-8 rounded-full p-0">
+              <Avatar className="h-8 w-8 ring-2 ring-primary/10 hover:ring-primary/25 transition-all duration-200">
                 <AvatarImage src="" alt={user?.email || ''} />
-                <AvatarFallback className="bg-muted text-foreground font-medium text-sm">
+                <AvatarFallback className="bg-primary/10 text-primary font-semibold text-xs">
                   {userInitials}
                 </AvatarFallback>
               </Avatar>
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent className="w-56 bg-popover/95 backdrop-blur-xl border-border/50" align="end">
-            <DropdownMenuLabel className="font-normal">
-              <div className="flex flex-col space-y-1">
-                <p className="text-sm font-medium text-foreground">
-                  {user?.email}
-                </p>
-                <p className="text-xs text-muted-foreground capitalize">
-                  {role?.replace('_', ' ')}
-                </p>
-              </div>
+          <DropdownMenuContent className="w-52 bg-popover/95 backdrop-blur-xl border-border/40 shadow-xl" align="end" sideOffset={8}>
+            <DropdownMenuLabel className="font-normal py-2">
+              <p className="text-sm font-semibold text-foreground truncate">
+                {user?.email}
+              </p>
+              <p className="text-[11px] text-muted-foreground capitalize mt-0.5">
+                {role?.replace('_', ' ')}
+              </p>
             </DropdownMenuLabel>
-            <DropdownMenuSeparator className="bg-border/50" />
-            <DropdownMenuItem className="cursor-pointer" onClick={() => navigate('/settings')}>
-              <User className="mr-2 h-4 w-4" />
-              <span>Profile</span>
+            <DropdownMenuSeparator className="bg-border/30" />
+            <DropdownMenuItem className="cursor-pointer text-sm py-2" onClick={() => navigate('/settings')}>
+              <User className="mr-2 h-3.5 w-3.5" />
+              Profile
             </DropdownMenuItem>
-            <DropdownMenuItem className="cursor-pointer" onClick={() => navigate('/settings')}>
-              <Settings className="mr-2 h-4 w-4" />
-              <span>Settings</span>
+            <DropdownMenuItem className="cursor-pointer text-sm py-2" onClick={() => navigate('/settings')}>
+              <Settings className="mr-2 h-3.5 w-3.5" />
+              Settings
             </DropdownMenuItem>
-            <DropdownMenuSeparator className="bg-border/50" />
+            <DropdownMenuSeparator className="bg-border/30" />
             <DropdownMenuItem
-              className="cursor-pointer text-destructive focus:text-destructive"
+              className="cursor-pointer text-destructive focus:text-destructive text-sm py-2"
               onClick={signOut}
             >
-              <LogOut className="mr-2 h-4 w-4" />
-              <span>Log out</span>
+              <LogOut className="mr-2 h-3.5 w-3.5" />
+              Sign out
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

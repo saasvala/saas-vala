@@ -5,27 +5,29 @@ import { useAuth } from '@/hooks/useAuth';
 import {
   LayoutDashboard,
   Package,
-  Key,
+  KeyRound,
   Server,
-  MessageSquare,
-  Cpu,
+  MessageSquareText,
+  BrainCircuit,
   Wallet,
   TrendingUp,
   Settings,
   ChevronLeft,
   ChevronRight,
   LogOut,
-  Users,
+  UsersRound,
   Store,
-  FileText,
-  Activity,
-  Bot,
-  Zap,
+  ScrollText,
+  HeartPulse,
+  BotMessageSquare,
+  Sparkles,
   Smartphone,
+  ShieldCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import saasValaLogo from '@/assets/saas-vala-logo.jpg';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface NavItem {
   title: string;
@@ -33,27 +35,38 @@ interface NavItem {
   href: string;
   activePaths?: string[];
   adminOnly?: boolean;
+  section?: string;
 }
 
 const navItems: NavItem[] = [
-  { title: 'Dashboard', icon: LayoutDashboard, href: '/dashboard' },
-  { title: 'Products', icon: Package, href: '/products' },
-  { title: 'Reseller Manager', icon: Users, href: '/reseller-manager', activePaths: ['/reseller-manager', '/resellers'], adminOnly: true },
-  { title: 'Marketplace Admin', icon: Store, href: '/admin/marketplace', adminOnly: true },
-  { title: 'Keys', icon: Key, href: '/keys' },
-  { title: 'Servers', icon: Server, href: '/servers' },
-  { title: 'SaaS AI', icon: Cpu, href: '/saas-ai-dashboard' },
-  { title: 'VALA Builder', icon: Zap, href: '/vala-builder' },
-  { title: 'AI Chat', icon: MessageSquare, href: '/ai-chat' },
-  { title: 'AI APIs', icon: MessageSquare, href: '/ai-apis', adminOnly: true },
-  { title: 'Auto-Pilot', icon: Bot, href: '/automation', adminOnly: true },
-  { title: 'APK Pipeline', icon: Smartphone, href: '/apk-pipeline', adminOnly: true },
-  { title: 'Wallet', icon: Wallet, href: '/wallet' },
-  { title: 'SEO & Leads', icon: TrendingUp, href: '/seo-leads' },
-  { title: 'Audit Logs', icon: FileText, href: '/audit-logs', adminOnly: true },
-  { title: 'System Health', icon: Activity, href: '/system-health', adminOnly: true },
-  { title: 'Settings', icon: Settings, href: '/settings', adminOnly: true },
+  { title: 'Dashboard', icon: LayoutDashboard, href: '/dashboard', section: 'core' },
+  { title: 'Products', icon: Package, href: '/products', section: 'core' },
+  { title: 'License Keys', icon: KeyRound, href: '/keys', section: 'core' },
+  { title: 'Servers', icon: Server, href: '/servers', section: 'core' },
+  { title: 'Wallet', icon: Wallet, href: '/wallet', section: 'core' },
+
+  { title: 'Resellers', icon: UsersRound, href: '/reseller-manager', activePaths: ['/reseller-manager', '/resellers'], adminOnly: true, section: 'admin' },
+  { title: 'Marketplace', icon: Store, href: '/admin/marketplace', adminOnly: true, section: 'admin' },
+  { title: 'Auto-Pilot', icon: BotMessageSquare, href: '/automation', adminOnly: true, section: 'admin' },
+  { title: 'APK Pipeline', icon: Smartphone, href: '/apk-pipeline', adminOnly: true, section: 'admin' },
+  { title: 'Audit Logs', icon: ScrollText, href: '/audit-logs', adminOnly: true, section: 'admin' },
+  { title: 'System Health', icon: HeartPulse, href: '/system-health', adminOnly: true, section: 'admin' },
+  { title: 'Settings', icon: Settings, href: '/settings', adminOnly: true, section: 'admin' },
+
+  { title: 'SaaS AI', icon: BrainCircuit, href: '/saas-ai-dashboard', section: 'ai' },
+  { title: 'VALA Builder', icon: Sparkles, href: '/vala-builder', section: 'ai' },
+  { title: 'AI Chat', icon: MessageSquareText, href: '/ai-chat', section: 'ai' },
+  { title: 'AI APIs', icon: ShieldCheck, href: '/ai-apis', adminOnly: true, section: 'ai' },
+
+  { title: 'SEO & Leads', icon: TrendingUp, href: '/seo-leads', section: 'marketing' },
 ];
+
+const sectionLabels: Record<string, string> = {
+  core: 'Main',
+  admin: 'Admin',
+  ai: 'AI Suite',
+  marketing: 'Marketing',
+};
 
 export function Sidebar() {
   const { collapsed, toggle } = useSidebarState();
@@ -69,130 +82,177 @@ export function Sidebar() {
     (item) => !item.adminOnly || isSuperAdmin
   );
 
+  // Group by section
+  const sections = filteredNavItems.reduce<Record<string, NavItem[]>>((acc, item) => {
+    const section = item.section || 'core';
+    if (!acc[section]) acc[section] = [];
+    acc[section].push(item);
+    return acc;
+  }, {});
+
   return (
     <aside
       className={cn(
-        'fixed left-0 top-0 z-40 h-screen border-r border-sidebar-border transition-all duration-300 overflow-hidden',
+        'fixed left-0 top-0 z-40 h-screen border-r border-white/[0.06] transition-all duration-300 overflow-hidden',
         collapsed ? 'w-16' : 'w-64'
       )}
       style={{
-        background: 'linear-gradient(180deg, hsl(215, 72%, 12%) 0%, hsl(215, 75%, 8%) 100%)',
+        background: 'linear-gradient(180deg, hsl(220, 65%, 10%) 0%, hsl(225, 70%, 6%) 100%)',
       }}
     >
-      {/* Subtle ambient glow on sidebar */}
-      <div 
-        className="absolute top-0 left-0 w-full h-32 pointer-events-none opacity-30"
+      {/* Ambient glow */}
+      <div
+        className="absolute top-0 left-0 w-full h-48 pointer-events-none"
         style={{
-          background: 'radial-gradient(ellipse at 50% 0%, hsl(215, 80%, 60%, 0.15) 0%, transparent 70%)',
+          background: 'radial-gradient(ellipse at 30% 0%, hsl(215, 80%, 50%, 0.08) 0%, transparent 70%)',
         }}
       />
 
       <div className="flex h-full flex-col relative z-10">
         {/* Logo */}
-        <div className="flex h-16 items-center justify-between border-b border-sidebar-border/50 px-4">
-          {!collapsed && (
-            <div className="flex items-center gap-2.5">
-              <div className="relative">
-                <img src={saasValaLogo} alt="SaaS VALA" className="h-8 w-8 rounded-lg object-cover ring-1 ring-primary/20" />
-                <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success border-2 border-sidebar" />
-              </div>
-              <span className="font-display text-lg font-bold text-white tracking-tight">
-                SaaS VALA
-              </span>
-            </div>
-          )}
-          {collapsed && (
-            <div className="relative mx-auto">
-              <img src={saasValaLogo} alt="SaaS VALA" className="h-8 w-8 rounded-lg object-cover ring-1 ring-primary/20" />
-              <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success border-2 border-sidebar" />
-            </div>
-          )}
+        <div className="flex h-16 items-center justify-between border-b border-white/[0.06] px-4">
+          <AnimatePresence mode="wait">
+            {!collapsed ? (
+              <motion.div
+                key="expanded"
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -10 }}
+                className="flex items-center gap-3"
+              >
+                <div className="relative">
+                  <img src={saasValaLogo} alt="SaaS VALA" className="h-9 w-9 rounded-xl object-cover ring-2 ring-white/10 shadow-lg" />
+                  <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[hsl(225,70%,6%)] shadow-[0_0_8px_rgba(52,211,153,0.5)]" />
+                </div>
+                <div>
+                  <span className="font-display text-[15px] font-bold text-white tracking-tight leading-none">
+                    SaaS VALA
+                  </span>
+                  <p className="text-[10px] text-white/40 font-medium mt-0.5">Admin Panel</p>
+                </div>
+              </motion.div>
+            ) : (
+              <motion.div
+                key="collapsed"
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="relative mx-auto"
+              >
+                <img src={saasValaLogo} alt="SaaS VALA" className="h-9 w-9 rounded-xl object-cover ring-2 ring-white/10" />
+                <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[hsl(225,70%,6%)]" />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 space-y-0.5 p-2 overflow-y-auto">
-          {filteredNavItems.map((item) => {
-            const isActive = isItemActive(item);
-            const Icon = item.icon;
+        <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-5 scrollbar-none">
+          {Object.entries(sections).map(([section, items]) => (
+            <div key={section}>
+              {/* Section label */}
+              {!collapsed && (
+                <p className="px-3 mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/30">
+                  {sectionLabels[section] || section}
+                </p>
+              )}
+              {collapsed && <div className="h-px bg-white/[0.06] mx-2 mb-2" />}
 
-            const linkContent = (
-              <NavLink
-                to={item.href}
-                className={cn(
-                  'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200 relative group',
-                  isActive
-                    ? 'text-white font-bold'
-                    : 'text-white/70 hover:bg-white/10 hover:text-white'
-                )}
-                style={isActive ? { background: 'hsl(215, 65%, 32%)' } : undefined}
-              >
-                {/* Active indicator bar */}
-                {isActive && (
-                  <div
-                    className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-[60%] rounded-r-full"
-                    style={{
-                      background: 'linear-gradient(180deg, #5B9BFF, #3B7BFF)',
-                      boxShadow: '0 0 12px rgba(91, 155, 255, 0.6)',
-                    }}
-                  />
-                )}
+              <div className="space-y-0.5">
+                {items.map((item) => {
+                  const isActive = isItemActive(item);
+                  const Icon = item.icon;
 
-                <Icon
-                  className={cn(
-                    'h-5 w-5 shrink-0 transition-colors duration-200',
-                    isActive ? 'text-white' : 'text-white/70 group-hover:text-white'
-                  )}
-                />
-                
-                {!collapsed && <span>{item.title}</span>}
-              </NavLink>
-            );
+                  const linkContent = (
+                    <NavLink
+                      to={item.href}
+                      className={cn(
+                        'flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-all duration-200 relative group',
+                        isActive
+                          ? 'text-white'
+                          : 'text-white/50 hover:bg-white/[0.05] hover:text-white/80'
+                      )}
+                      style={isActive ? {
+                        background: 'linear-gradient(135deg, hsl(215, 60%, 28%, 0.8) 0%, hsl(215, 55%, 22%, 0.6) 100%)',
+                        boxShadow: '0 0 20px rgba(59, 130, 246, 0.08)',
+                      } : undefined}
+                    >
+                      {/* Active bar */}
+                      {isActive && (
+                        <motion.div
+                          layoutId="sidebar-active"
+                          className="absolute left-0 top-[20%] bottom-[20%] w-[2.5px] rounded-r-full"
+                          style={{
+                            background: 'linear-gradient(180deg, hsl(215, 90%, 65%), hsl(215, 80%, 50%))',
+                            boxShadow: '0 0 10px rgba(96, 165, 250, 0.6)',
+                          }}
+                          transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                        />
+                      )}
 
-            if (collapsed) {
-              return (
-                <Tooltip key={`${item.href}-${item.title}`} delayDuration={0}>
-                  <TooltipTrigger asChild>{linkContent}</TooltipTrigger>
-                  <TooltipContent side="right" className="bg-popover text-popover-foreground border-border">
-                    {item.title}
-                  </TooltipContent>
-                </Tooltip>
-              );
-            }
+                      <Icon
+                        className={cn(
+                          'h-[18px] w-[18px] shrink-0 transition-all duration-200',
+                          isActive ? 'text-blue-400' : 'text-white/40 group-hover:text-white/70'
+                        )}
+                      />
 
-            return <div key={`${item.href}-${item.title}`}>{linkContent}</div>;
-          })}
+                      {!collapsed && (
+                        <span className="truncate">{item.title}</span>
+                      )}
+
+                      {/* Hover glow */}
+                      {isActive && !collapsed && (
+                        <div className="absolute right-3 top-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full bg-blue-400 shadow-[0_0_6px_rgba(96,165,250,0.8)]" />
+                      )}
+                    </NavLink>
+                  );
+
+                  if (collapsed) {
+                    return (
+                      <Tooltip key={`${item.href}-${item.title}`} delayDuration={0}>
+                        <TooltipTrigger asChild>{linkContent}</TooltipTrigger>
+                        <TooltipContent side="right" sideOffset={8} className="bg-[hsl(220,50%,15%)] text-white border-white/10 text-xs font-medium shadow-xl">
+                          {item.title}
+                        </TooltipContent>
+                      </Tooltip>
+                    );
+                  }
+
+                  return <div key={`${item.href}-${item.title}`}>{linkContent}</div>;
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
-        {/* Bottom section */}
-        <div className="border-t border-sidebar-border/50 p-2">
-          {/* Logout button */}
+        {/* Bottom */}
+        <div className="border-t border-white/[0.06] p-2 space-y-1">
           <Tooltip delayDuration={0}>
             <TooltipTrigger asChild>
               <button
                 onClick={signOut}
                 className={cn(
-                  'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200',
-                  'text-white/70 hover:bg-red-500/15 hover:text-red-400'
+                  'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-all duration-200',
+                  'text-white/40 hover:bg-red-500/10 hover:text-red-400'
                 )}
               >
-                <LogOut className="h-5 w-5 shrink-0" />
-                {!collapsed && <span>Logout</span>}
+                <LogOut className="h-[18px] w-[18px] shrink-0" />
+                {!collapsed && <span>Sign Out</span>}
               </button>
             </TooltipTrigger>
             {collapsed && (
-              <TooltipContent side="right" className="bg-popover text-popover-foreground border-border">
-                Logout
+              <TooltipContent side="right" sideOffset={8} className="bg-[hsl(220,50%,15%)] text-white border-white/10 text-xs">
+                Sign Out
               </TooltipContent>
             )}
           </Tooltip>
 
-          {/* Collapse toggle */}
           <Button
             variant="ghost"
             size="sm"
             onClick={toggle}
             className={cn(
-              'mt-2 w-full justify-center text-white/70 hover:bg-white/10 hover:text-white',
+              'w-full justify-center text-white/30 hover:bg-white/[0.05] hover:text-white/60 h-8',
               collapsed && 'px-0'
             )}
           >
@@ -201,16 +261,14 @@ export function Sidebar() {
             ) : (
               <>
                 <ChevronLeft className="h-4 w-4 mr-2" />
-                <span>Collapse</span>
+                <span className="text-xs">Collapse</span>
               </>
             )}
           </Button>
 
-          {/* Powered by */}
           {!collapsed && (
-            <p className="mt-4 text-center text-xs text-white/40">
-              Powered by{' '}
-              <span className="font-semibold text-gradient-primary">SoftwareVala™</span>
+            <p className="mt-2 pb-1 text-center text-[10px] text-white/20 font-medium">
+              © 2025 SaaS VALA
             </p>
           )}
         </div>
