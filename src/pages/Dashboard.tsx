@@ -62,7 +62,7 @@ export default function Dashboard() {
             value={statsLoading ? 0 : stats.totalProducts}
             icon={Package}
             trend={{ value: stats.activeProducts, positive: true }}
-            accentColor="orange"
+            accentColor="blue"
             index={0}
           />
           <StatsCard
@@ -70,7 +70,7 @@ export default function Dashboard() {
             value={statsLoading ? 0 : stats.activeKeys}
             icon={Key}
             trend={{ value: Math.round((stats.activeKeys / Math.max(stats.totalKeys, 1)) * 100), positive: true }}
-            accentColor="cyan"
+            accentColor="emerald"
             index={1}
           />
           <StatsCard
@@ -79,7 +79,7 @@ export default function Dashboard() {
             prefix=""
             icon={Users}
             trend={{ value: stats.activeResellers, positive: true }}
-            accentColor="green"
+            accentColor="amber"
             index={2}
           />
           <StatsCard
@@ -87,7 +87,7 @@ export default function Dashboard() {
             value={statsLoading ? 0 : stats.liveServers}
             icon={Server}
             trend={{ value: stats.totalServers - stats.liveServers, positive: false }}
-            accentColor="purple"
+            accentColor="violet"
             index={3}
           />
         </div>
