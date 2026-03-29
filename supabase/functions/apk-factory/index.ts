@@ -17,6 +17,7 @@ Deno.serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const apkCallbackSecret = Deno.env.get("APK_CALLBACK_SECRET") ?? "";
 
     if (!githubToken) {
       return respond({ error: "GitHub token not configured" }, 500);
@@ -66,7 +67,7 @@ Deno.serve(async (req) => {
         }
 
         // Create the GitHub Actions workflow
-        const workflowContent = generateWorkflowYaml(supabaseUrl, supabaseAnonKey);
+        const workflowContent = generateWorkflowYaml(supabaseUrl, supabaseAnonKey, apkCallbackSecret);
         const encodedContent = btoa(unescape(encodeURIComponent(workflowContent)));
 
         // Check if workflow exists
@@ -247,6 +248,14 @@ Deno.serve(async (req) => {
       // Callback: APK build complete (called by workflow)
       // ═══════════════════════════════════════
       case "build_complete": {
+        // Verify shared-secret to prevent unauthorized callback abuse
+        if (apkCallbackSecret) {
+          const providedSecret = req.headers.get("x-callback-secret") ?? "";
+          if (providedSecret !== apkCallbackSecret) {
+            return respond({ error: "Unauthorized callback" }, 401);
+          }
+        }
+
         const {
           slug: completeSlug,
           apk_path,
@@ -271,16 +280,13 @@ Deno.serve(async (req) => {
             })
             .eq("slug", completeSlug);
 
-          // Create signed URL and attach to product
-          const { data: signedData } = await admin.storage
-            .from("apks")
-            .createSignedUrl(apk_path, 31536000);
-
-          if (signedData?.signedUrl && pid) {
+          // Store the storage object path (not a signed URL) so download-apk
+          // always generates a fresh short-lived signed URL at download time.
+          if (apk_path && pid) {
             await admin
               .from("products")
               .update({
-                apk_url: signedData.signedUrl,
+                apk_url: apk_path,
                 is_apk: true,
                 apk_enabled: true,
               })
@@ -335,7 +341,10 @@ Deno.serve(async (req) => {
   }
 });
 
-function generateWorkflowYaml(supabaseUrl: string, supabaseAnonKey: string): string {
+function generateWorkflowYaml(supabaseUrl: string, supabaseAnonKey: string, callbackSecret = ""): string {
+  // Only allow alphanumeric and simple punctuation in the secret to prevent
+  // shell injection in the generated YAML/bash workflow template.
+  const safeSecret = callbackSecret.replace(/[^a-zA-Z0-9_\-]/g, "");
   return `name: Build APK
 on:
   workflow_dispatch:
@@ -461,6 +470,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/functions/v1/apk-factory" \\
             -H "Content-Type: application/json" \\
             -H "Authorization: Bearer ${supabaseAnonKey}" \\
+            -H "x-callback-secret: ${safeSecret}" \\
             -d "{
               \\"action\\": \\"build_complete\\",
               \\"data\\": {
