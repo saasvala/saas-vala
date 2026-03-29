@@ -62,14 +62,17 @@ Deno.serve(async (req) => {
     if (!purchaseVerified) {
       const { data: licKey, error: licErr } = await adminClient
         .from("license_keys")
-        .select("id, status, expires_at")
+        .select("id, status, expires_at, product_id")
         .eq("license_key", license_key)
         .eq("status", "active")
         .single();
 
       if (!licErr && licKey) {
-        // Check not expired
-        if (!licKey.expires_at || new Date(licKey.expires_at) > new Date()) {
+        // Enforce product_id match to prevent cross-product key abuse
+        const keyProductId = licKey.product_id;
+        const productMatches = !keyProductId || keyProductId === product_id;
+        // Check not expired and product matches
+        if (productMatches && (!licKey.expires_at || new Date(licKey.expires_at) > new Date())) {
           purchaseVerified = true;
         }
       }
