@@ -85,7 +85,8 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
   };
 
   const submitManualPayment = async () => {
-    if (!transactionRef.trim()) {
+    const txnRef = transactionRef.trim();
+    if (!txnRef) {
       toast.error('Please enter your transaction reference number');
       return;
     }
@@ -94,7 +95,7 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
       await walletApi.createRequest({
         amount: finalAmount,
         method: payMethod === 'crypto' ? 'crypto' : 'bank_transfer',
-        txn_id: transactionRef.trim(),
+        txn_id: txnRef,
         source: 'manual',
       });
       await new Promise(r => setTimeout(r, 800));
@@ -107,7 +108,8 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
   };
 
   const submitUpiPayment = async () => {
-    if (!transactionRef.trim()) {
+    const txnRef = transactionRef.trim();
+    if (!txnRef) {
       toast.error('Please enter your UPI transaction ID');
       return;
     }
@@ -118,7 +120,7 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
         await walletApi.createRequest({
           amount: finalAmount,
           method: 'upi',
-          txn_id: transactionRef.trim(),
+          txn_id: txnRef,
           source: 'user_submit',
         });
 

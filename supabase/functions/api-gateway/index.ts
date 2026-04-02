@@ -37,6 +37,20 @@ function reqIdempotencyFromMeta(meta: any) {
   return meta.idempotency_key || meta.idempotencyKey || null
 }
 
+function timingSafeEqualText(a: string, b: string) {
+  const enc = new TextEncoder()
+  const ab = enc.encode(String(a || ''))
+  const bb = enc.encode(String(b || ''))
+  const maxLen = Math.max(ab.length, bb.length)
+  let diff = ab.length ^ bb.length
+  for (let i = 0; i < maxLen; i++) {
+    const av = i < ab.length ? ab[i] : 0
+    const bv = i < bb.length ? bb[i] : 0
+    diff |= av ^ bv
+  }
+  return diff === 0
+}
+
 function generateLicenseKey() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
   let key = ''
@@ -854,7 +868,7 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     const providedSignature = String(body.signature || '')
     const expectedSignature = Deno.env.get('PAYMENT_WEBHOOK_SECRET')
     if (!expectedSignature) return err('Webhook secret not configured', 503, 'CONFIG_ERROR')
-    const signatureValid = providedSignature === expectedSignature
+    const signatureValid = timingSafeEqualText(providedSignature, expectedSignature)
 
     const { data: webhook, error: webhookError } = await sb.from('webhooks').insert({
       provider: body.provider,
@@ -1544,10 +1558,11 @@ async function creditWalletRequestIdempotent(admin: any, reqRow: any, actorUserI
     .maybeSingle()
 
   let txId = existingTx?.id || reqRow.credited_tx_id || null
-  let newBalance = Number(wallet.balance || 0)
+  const currentBalance = Number(wallet.balance || 0)
+  let newBalance = currentBalance
 
   if (!existingTx) {
-    newBalance = Number(wallet.balance || 0) + Number(reqRow.amount || 0)
+    newBalance = currentBalance + Number(reqRow.amount || 0)
     const { data: tx, error: txErr } = await admin.from('transactions').insert({
       wallet_id: wallet.id,
       type: 'credit',
@@ -1565,27 +1580,39 @@ async function creditWalletRequestIdempotent(admin: any, reqRow: any, actorUserI
         request_id: reqRow.id,
       },
     }).select('id').single()
-
-    if (txErr) return { error: txErr.message, status: 400 }
-    txId = tx?.id || null
-
-    await admin.from('wallets').update({ balance: newBalance, updated_at: creditedAt }).eq('id', wallet.id)
-    await admin.from('wallet_ledger').insert({
-      wallet_id: wallet.id,
-      user_id: reqRow.user_id,
-      entry_type: 'credit',
-      amount: Number(reqRow.amount),
-      balance_before: wallet.balance || 0,
-      balance_after: newBalance,
-      reference_type: 'wallet_request_credit',
-      reference_id: reqRow.id,
-      metadata: {
-        request_id: reqRow.id,
-        method: reqRow.method,
-        txn_id: reqRow.txn_id,
-        source: creditSource,
-      },
-    })
+    if (txErr) {
+      const { data: recheckTx } = await admin
+        .from('transactions')
+        .select('id, balance_after')
+        .eq('reference_type', 'wallet_request_credit')
+        .eq('reference_id', reqRow.id)
+        .maybeSingle()
+      if (recheckTx?.id) {
+        txId = recheckTx.id
+        newBalance = Number(recheckTx.balance_after || currentBalance)
+      } else {
+        return { error: txErr.message, status: 400 }
+      }
+    } else {
+      txId = tx?.id || null
+      await admin.from('wallets').update({ balance: newBalance, updated_at: creditedAt }).eq('id', wallet.id)
+      await admin.from('wallet_ledger').insert({
+        wallet_id: wallet.id,
+        user_id: reqRow.user_id,
+        entry_type: 'credit',
+        amount: Number(reqRow.amount),
+        balance_before: wallet.balance || 0,
+        balance_after: newBalance,
+        reference_type: 'wallet_request_credit',
+        reference_id: reqRow.id,
+        metadata: {
+          request_id: reqRow.id,
+          method: reqRow.method,
+          txn_id: reqRow.txn_id,
+          source: creditSource,
+        },
+      })
+    }
   }
 
   await admin.from('wallet_requests').update({
@@ -1619,7 +1646,7 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
 
     const expected = Deno.env.get('WALLET_WEBHOOK_SECRET') || Deno.env.get('PAYMENT_WEBHOOK_SECRET')
     if (!expected) return err('Webhook secret not configured', 503, 'CONFIG_ERROR')
-    const signatureValid = String(body.signature || '') === expected
+    const signatureValid = timingSafeEqualText(String(body.signature || ''), expected)
     if (!signatureValid) return err('Invalid webhook signature', 400, 'INVALID_SIGNATURE')
 
     const txnId = String(body.txn_id || '').trim()
@@ -1706,7 +1733,10 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
       .range((page - 1) * limit, page * limit - 1)
     if (status) query = query.eq('status', status)
     if (methodFilter) query = query.eq('method', methodFilter)
-    if (search) query = query.or(`txn_id.ilike.%${search}%,proof_url.ilike.%${search}%`)
+    if (search) {
+      const safeSearch = search.replace(/[%_,()]/g, '').trim()
+      if (safeSearch) query = query.ilike('txn_id', `%${safeSearch}%`)
+    }
 
     const { data, error, count } = await query
     if (error) return err(error.message)
@@ -1735,7 +1765,12 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
       status: 'pending',
       proof_url: body.proof_url || null,
       source: body.source ? String(body.source) : 'user_submit',
-      signature_valid: body.signature ? String(body.signature) === (Deno.env.get('WALLET_WEBHOOK_SECRET') || Deno.env.get('PAYMENT_WEBHOOK_SECRET') || '') : null,
+      signature_valid: body.signature
+        ? timingSafeEqualText(
+          String(body.signature),
+          Deno.env.get('WALLET_WEBHOOK_SECRET') || Deno.env.get('PAYMENT_WEBHOOK_SECRET') || '',
+        )
+        : null,
       metadata: {
         payload: body.payload || null,
       },
