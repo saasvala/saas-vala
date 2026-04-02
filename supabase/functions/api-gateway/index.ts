@@ -340,6 +340,67 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
     return json({ data })
   }
 
+  // GET /resellers/clients
+  if (method === 'GET' && id === 'clients') {
+    const { data: reseller } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
+    if (!reseller?.id) return json({ data: [], stats: { total_clients: 0, active_clients: 0, total_keys: 0 } })
+
+    const { data: clients, error: clientsError } = await sb.from('clients')
+      .select('*')
+      .eq('reseller_id', reseller.id)
+      .order('created_at', { ascending: false })
+      .limit(500)
+    if (clientsError) return err(clientsError.message)
+
+    const clientIds = (clients || []).map((c: any) => c.id)
+    let keyRows: any[] = []
+    if (clientIds.length > 0) {
+      const { data: keyData } = await sb.from('license_keys')
+        .select('id, client_id, created_at, status')
+        .eq('reseller_id', reseller.id)
+        .in('client_id', clientIds)
+      keyRows = keyData || []
+    }
+
+    const keysByClient: Record<string, number> = {}
+    const latestByClient: Record<string, string | null> = {}
+    const latestByClientEpoch: Record<string, number> = {}
+    for (const k of keyRows) {
+      const cid = k.client_id
+      if (!cid) continue
+      keysByClient[cid] = (keysByClient[cid] || 0) + 1
+      const createdAtEpoch = Date.parse(k.created_at)
+      const prevEpoch = latestByClientEpoch[cid] || 0
+      if (createdAtEpoch > prevEpoch) {
+        latestByClientEpoch[cid] = createdAtEpoch
+        latestByClient[cid] = k.created_at
+      }
+    }
+
+    const data = (clients || []).map((c: any) => ({
+      id: c.id,
+      name: c.name,
+      email: c.email,
+      phone: c.phone,
+      keys: keysByClient[c.id] || 0,
+      last_purchase: latestByClient[c.id] || null,
+      status: 'active',
+      created_at: c.created_at,
+      updated_at: c.updated_at,
+    }))
+
+    const totalClients = data.length
+    const totalKeys = keyRows.length
+    return json({
+      data,
+      stats: {
+        total_clients: totalClients,
+        active_clients: totalClients,
+        total_keys: totalKeys,
+      },
+    })
+  }
+
   // POST /resellers
   if (method === 'POST') {
     const { data, error } = await sb.from('resellers').insert({
@@ -1166,6 +1227,51 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
 
   // POST /keys/generate
   if (method === 'POST' && action === 'generate') {
+    const quantity = Number(body.quantity || 1)
+    const useAtomicFlow = quantity > 1 || !!body.client_name || !!body.idempotency_key || !!body.cost_per_key || !!body.min_balance
+    if (useAtomicFlow) {
+      const rpcPayload = {
+        p_product_id: body.product_id,
+        p_client_name: body.client_name || body.owner_name || '',
+        p_client_email: body.client_email || body.owner_email || null,
+        p_client_phone: body.client_phone || null,
+        p_quantity: quantity,
+        p_cost_per_key: Number(body.cost_per_key || 5),
+        p_min_balance: Number(body.min_balance || 50),
+        p_idempotency_key: body.idempotency_key || null,
+        p_key_type: body.key_type || 'yearly',
+        p_expires_at: body.expires_at || null,
+      }
+
+      const { data: rpcData, error: rpcError } = await sb.rpc('generate_reseller_keys_atomic', rpcPayload)
+      if (rpcError) return err(rpcError.message)
+      if (!rpcData?.success) {
+        return json({
+          error: rpcData?.message || 'Atomic key generation failed',
+          code: rpcData?.code || 'ATOMIC_GENERATION_FAILED',
+          deficit: rpcData?.deficit ?? null,
+          minimum_balance: rpcData?.minimum_balance ?? null,
+          balance: rpcData?.balance ?? null,
+          available: rpcData?.available ?? null,
+          required_total: rpcData?.required_total ?? null,
+        }, 422)
+      }
+
+      return json({
+        data: {
+          idempotency_key: rpcData.idempotency_key,
+          order_id: rpcData.order_id,
+          client_id: rpcData.client_id,
+          quantity: rpcData.quantity,
+          total_cost: rpcData.total_cost,
+          commission_amount: rpcData.commission_amount,
+          commission_rate: rpcData.commission_rate,
+          keys: rpcData.keys || [],
+        },
+        duplicate: rpcData.duplicate === true,
+      }, 201)
+    }
+
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
     let key = ''
     for (let j = 0; j < 4; j++) {
@@ -1184,6 +1290,9 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
       expires_at: body.expires_at,
       notes: body.notes,
       created_by: userId,
+      reseller_id: body.reseller_id || null,
+      client_id: body.client_id || null,
+      idempotency_key: body.idempotency_key || null,
     }).select().single()
     if (error) return err(error.message)
     await logActivity(admin, 'license_key', data.id, 'generated', userId, { key: licenseKey })
@@ -1891,16 +2000,7 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
 
   // POST /wallet/withdraw
   if (method === 'POST' && action === 'withdraw') {
-    const amount = Number(body.amount || 0)
-    if (amount <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
-
-    const requestedWalletId = body.wallet_id ? String(body.wallet_id) : null
-    if (requestedWalletId && !isAdmin) return err('Forbidden', 403)
-
-    const walletQuery = requestedWalletId
-      ? admin.from('wallets').select('id, user_id, balance, locked_balance').eq('id', requestedWalletId).maybeSingle()
-      : sb.from('wallets').select('id, user_id, balance, locked_balance').eq('user_id', userId).maybeSingle()
-    const { data: wallet } = await walletQuery
+ main
     if (!wallet) return err('Wallet not found', 404)
 
     const available = Number(wallet.balance || 0) - Number(wallet.locked_balance || 0)
