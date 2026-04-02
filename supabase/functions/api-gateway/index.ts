@@ -1601,7 +1601,7 @@ async function creditWalletRequestIdempotent(admin: any, reqRow: any, actorUserI
         user_id: reqRow.user_id,
         entry_type: 'credit',
         amount: Number(reqRow.amount),
-        balance_before: wallet.balance || 0,
+        balance_before: currentBalance,
         balance_after: newBalance,
         reference_type: 'wallet_request_credit',
         reference_id: reqRow.id,
@@ -1734,7 +1734,7 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
     if (status) query = query.eq('status', status)
     if (methodFilter) query = query.eq('method', methodFilter)
     if (search) {
-      const safeSearch = search.replace(/[%_,()]/g, '').trim()
+      const safeSearch = search.replace(/[%_,()[\]\\]/g, '').trim()
       if (safeSearch) query = query.ilike('txn_id', `%${safeSearch}%`)
     }
 
@@ -1757,6 +1757,8 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
     const txnId = String(body.txn_id || '').trim()
     if (!txnId) return err('Invalid txn_id', 422, 'VALIDATION_ERROR')
 
+    const requestSignatureSecret = Deno.env.get('WALLET_WEBHOOK_SECRET') || Deno.env.get('PAYMENT_WEBHOOK_SECRET')
+
     const insertPayload = {
       user_id: userId,
       amount,
@@ -1766,9 +1768,10 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
       proof_url: body.proof_url || null,
       source: body.source ? String(body.source) : 'user_submit',
       signature_valid: body.signature
+        && requestSignatureSecret
         ? timingSafeEqualText(
           String(body.signature),
-          Deno.env.get('WALLET_WEBHOOK_SECRET') || Deno.env.get('PAYMENT_WEBHOOK_SECRET') || '',
+          requestSignatureSecret,
         )
         : null,
       metadata: {

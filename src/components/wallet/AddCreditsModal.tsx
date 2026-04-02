@@ -100,7 +100,7 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
       });
       await new Promise(r => setTimeout(r, 800));
       setStep('pending');
-      onSuccess?.();
+      toast.info('Request submitted and pending verification. Wallet updates after approval.');
     } catch {
       toast.error('Failed to submit. Please try again.');
       setStep('form');
@@ -138,7 +138,7 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
     const success = await processPayment(1);
     if (success) {
       setStep('pending');
-      onSuccess?.();
+      toast.info('UPI request submitted and pending verification. Wallet updates after approval.');
     } else {
       toast.error('Submission failed. Please try again.');
       setStep('form');
