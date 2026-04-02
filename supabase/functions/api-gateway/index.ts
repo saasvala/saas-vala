@@ -158,6 +158,28 @@ function normalizeKycStatus(value: unknown) {
   return null
 }
 
+function sanitizeSearchTerm(term: unknown) {
+  return String(term || '').replace(/[%_,()[\]\\]/g, '').trim()
+}
+
+function parseCommissionPercent(value: unknown, fallback: number | null = null) {
+  const parsed = value === undefined || value === null || value === '' ? fallback : Number(value)
+  if (parsed === null) return { ok: false as const, error: 'commission_percent is required' }
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+    return { ok: false as const, error: 'commission_percent must be between 0 and 100' }
+  }
+  return { ok: true as const, value: parsed }
+}
+
+function parseCreditLimit(value: unknown, fallback: number | null = null) {
+  const parsed = value === undefined || value === null || value === '' ? fallback : Number(value)
+  if (parsed === null) return { ok: false as const, error: 'credit_limit is required' }
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return { ok: false as const, error: 'credit_limit must be >= 0' }
+  }
+  return { ok: true as const, value: parsed }
+}
+
 async function logActivity(admin: any, entityType: string, entityId: string, action: string, userId: string, details: any = {}) {
   try {
     await admin.from('activity_logs').insert({
@@ -352,7 +374,7 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
       .range((page - 1) * limit, page * limit - 1)
 
     if (search) {
-      const safeSearch = String(search).replace(/[%_,()[\]\\]/g, '').trim()
+      const safeSearch = sanitizeSearchTerm(search)
       if (safeSearch) {
         query = query.or(`company_name.ilike.%${safeSearch}%,status.ilike.%${safeSearch}%,kyc_status.ilike.%${safeSearch}%`)
       }
@@ -369,23 +391,19 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
     }
 
     const resellerIds = (data || []).map((r: any) => r.id).filter(Boolean)
-    let ordersByReseller: Record<string, { total_sales: number; order_count: number }> = {}
+    let orderCountByReseller: Record<string, number> = {}
     let keysByReseller: Record<string, number> = {}
-    let commissionsByReseller: Record<string, number> = {}
 
     if (resellerIds.length > 0) {
-      const { data: ordersRows } = await admin
+      const { data: orderRows } = await admin
         .from('orders')
-        .select('reseller_id, amount')
+        .select('reseller_id')
         .in('reseller_id', resellerIds)
         .eq('status', 'success')
-      for (const row of ordersRows || []) {
+      for (const row of orderRows || []) {
         const rid = row.reseller_id
         if (!rid) continue
-        const current = ordersByReseller[rid] || { total_sales: 0, order_count: 0 }
-        current.total_sales = toMoney(current.total_sales + Number(row.amount || 0))
-        current.order_count += 1
-        ordersByReseller[rid] = current
+        orderCountByReseller[rid] = (orderCountByReseller[rid] || 0) + 1
       }
 
       const { data: keysRows } = await admin
@@ -397,25 +415,15 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
         if (!rid) continue
         keysByReseller[rid] = (keysByReseller[rid] || 0) + 1
       }
-
-      const { data: commissionRows } = await admin
-        .from('reseller_commission_logs')
-        .select('reseller_id, amount')
-        .in('reseller_id', resellerIds)
-      for (const row of commissionRows || []) {
-        const rid = row.reseller_id
-        if (!rid) continue
-        commissionsByReseller[rid] = toMoney((commissionsByReseller[rid] || 0) + Number(row.amount || 0))
-      }
     }
 
     const enriched = (data || []).map((r: any) => ({
       ...r,
       profile: profileMap[r.user_id] || null,
       company_name: r.company_name || profileMap[r.user_id]?.company_name || profileMap[r.user_id]?.full_name || 'Unnamed Reseller',
-      total_sales: Number(ordersByReseller[r.id]?.total_sales ?? r.total_sales ?? 0),
-      total_commission: Number(commissionsByReseller[r.id] ?? r.total_commission ?? 0),
-      order_count: ordersByReseller[r.id]?.order_count ?? 0,
+      total_sales: Number(r.total_sales ?? 0),
+      total_commission: Number(r.total_commission ?? 0),
+      order_count: orderCountByReseller[r.id] || 0,
       keys_generated: keysByReseller[r.id] || 0,
     }))
 
@@ -571,15 +579,13 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
   // POST /resellers
   if (method === 'POST') {
     if (!isAdmin) return err('Forbidden', 403)
-    const commissionPercent = Number(body.commission_percent ?? 10)
-    if (!Number.isFinite(commissionPercent) || commissionPercent < 0 || commissionPercent > 100) {
-      return err('commission_percent must be between 0 and 100', 422, 'VALIDATION_ERROR')
-    }
+    const commissionParsed = parseCommissionPercent(body.commission_percent, 10)
+    if (!commissionParsed.ok) return err(commissionParsed.error, 422, 'VALIDATION_ERROR')
+    const commissionPercent = commissionParsed.value
 
-    const creditLimit = Number(body.credit_limit ?? 0)
-    if (!Number.isFinite(creditLimit) || creditLimit < 0) {
-      return err('credit_limit must be >= 0', 422, 'VALIDATION_ERROR')
-    }
+    const creditLimitParsed = parseCreditLimit(body.credit_limit, 0)
+    if (!creditLimitParsed.ok) return err(creditLimitParsed.error, 422, 'VALIDATION_ERROR')
+    const creditLimit = creditLimitParsed.value
 
     const status = normalizeResellerStatus(body.status ?? (body.is_active === false ? 'suspended' : 'active'))
     if (!status) return err('Invalid status', 422, 'VALIDATION_ERROR')
@@ -623,18 +629,16 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
     const updates: any = {}
     if (body.company_name !== undefined) updates.company_name = body.company_name
     if (body.commission_percent !== undefined) {
-      const commissionPercent = Number(body.commission_percent)
-      if (!Number.isFinite(commissionPercent) || commissionPercent < 0 || commissionPercent > 100) {
-        return err('commission_percent must be between 0 and 100', 422, 'VALIDATION_ERROR')
-      }
+      const commissionParsed = parseCommissionPercent(body.commission_percent)
+      if (!commissionParsed.ok) return err(commissionParsed.error, 422, 'VALIDATION_ERROR')
+      const commissionPercent = commissionParsed.value
       updates.commission_percent = commissionPercent
       updates.commission_rate = commissionPercent
     }
     if (body.credit_limit !== undefined) {
-      const creditLimit = Number(body.credit_limit)
-      if (!Number.isFinite(creditLimit) || creditLimit < 0) {
-        return err('credit_limit must be >= 0', 422, 'VALIDATION_ERROR')
-      }
+      const creditLimitParsed = parseCreditLimit(body.credit_limit)
+      if (!creditLimitParsed.ok) return err(creditLimitParsed.error, 422, 'VALIDATION_ERROR')
+      const creditLimit = creditLimitParsed.value
       updates.credit_limit = creditLimit
     }
     if (body.status !== undefined) {
@@ -661,8 +665,12 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
     const { data: updatedReseller, error } = await sb.from('resellers').update(updates).eq('id', id).select('*').single()
     if (error) return err(error.message)
     await logActivity(admin, 'reseller', id, 'updated', userId, updates)
-    const auditAction: 'update' | 'suspend' | 'activate' =
-      updates.status === 'suspended' ? 'suspend' : updates.status === 'active' ? 'activate' : 'update'
+    let auditAction: 'update' | 'suspend' | 'activate' = 'update'
+    if (updates.status === 'suspended') {
+      auditAction = 'suspend'
+    } else if (updates.status === 'active') {
+      auditAction = 'activate'
+    }
     await logAuditEvent(admin, userId, auditAction, 'resellers', id, {
       status: existingReseller.status,
       kyc_status: existingReseller.kyc_status,

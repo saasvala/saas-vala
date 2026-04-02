@@ -107,9 +107,22 @@ const getActionIcon = (action: string) => {
       if (activityError) throw activityError;
       if (auditError) throw auditError;
 
+      const mapAuditAction = (action: string) => {
+        switch (action) {
+          case 'create':
+            return 'reseller_joined';
+          case 'suspend':
+            return 'suspend';
+          case 'activate':
+            return 'approved';
+          default:
+            return action;
+        }
+      };
+
       const mappedAudit = (auditData || []).map((entry: any) => ({
         id: `audit-${entry.id}`,
-        action: entry.action === 'create' ? 'reseller_joined' : entry.action === 'suspend' ? 'suspend' : entry.action === 'activate' ? 'approved' : entry.action,
+        action: mapAuditAction(entry.action),
         entity_type: 'reseller',
         entity_id: entry.record_id || '',
         details: entry.new_data || {},
@@ -134,7 +147,6 @@ const getActionIcon = (action: string) => {
       .channel('reseller-activity-live')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'activity_logs' }, fetchActivities)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, fetchActivities)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, fetchActivities)
       .subscribe();
     return () => {
       supabase.removeChannel(activityChannel);

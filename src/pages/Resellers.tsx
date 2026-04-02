@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -55,8 +56,13 @@ import { useResellerApplications, type ResellerApplication } from '@/hooks/useRe
 import { Textarea } from '@/components/ui/textarea';
 
 const ITEMS_PER_PAGE = 25;
+const getResellerStatus = (reseller: Reseller) =>
+  (reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase();
+const getResellerKycStatus = (reseller: Reseller) =>
+  (reseller.kyc_status || (reseller.is_verified ? 'verified' : 'pending')).toLowerCase();
 
 export default function Resellers() {
+  const navigate = useNavigate();
    const { resellers, loading, total, fetchResellers, updateReseller } = useResellers();
    const { adminApplications, adminLoading, fetchAdminApplications, approveApplication, rejectApplication } = useResellerApplications();
   const [searchQuery, setSearchQuery] = useState('');
@@ -85,10 +91,10 @@ export default function Resellers() {
     const profileName = (reseller.profile?.full_name || '').toLowerCase();
     const matchesSearch = !searchQuery || name.includes(searchQuery.toLowerCase()) || profileName.includes(searchQuery.toLowerCase());
     if (!matchesSearch) return false;
-    const normalizedStatus = (reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase();
+    const normalizedStatus = getResellerStatus(reseller);
     if (activeTab === 'active') return normalizedStatus === 'active';
     if (activeTab === 'suspended') return normalizedStatus === 'suspended' || normalizedStatus === 'inactive';
-    if (activeTab === 'verified') return (reseller.kyc_status || (reseller.is_verified ? 'verified' : 'pending')) === 'verified';
+    if (activeTab === 'verified') return getResellerKycStatus(reseller) === 'verified';
     return true;
   });
 
@@ -96,12 +102,12 @@ export default function Resellers() {
 
   const stats = {
     total: resellers.length,
-    active: resellers.filter(r => (r.status || (r.is_active ? 'active' : 'suspended')) === 'active').length,
+    active: resellers.filter(r => getResellerStatus(r) === 'active').length,
     suspended: resellers.filter(r => {
-      const status = (r.status || (r.is_active ? 'active' : 'suspended')).toLowerCase();
+      const status = getResellerStatus(r);
       return status === 'suspended' || status === 'inactive';
     }).length,
-    verified: resellers.filter(r => (r.kyc_status || (r.is_verified ? 'verified' : 'pending')) === 'verified').length,
+    verified: resellers.filter(r => getResellerKycStatus(r) === 'verified').length,
   };
 
   const handlePageChange = (page: number) => {
@@ -402,16 +408,16 @@ export default function Resellers() {
                           <Badge
                             variant="outline"
                             className={cn(
-                              ((reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase() === 'active')
+                              (getResellerStatus(reseller) === 'active')
                                 ? 'bg-success/20 text-success border-success/30'
                                 : 'bg-destructive/20 text-destructive border-destructive/30'
                             )}
                           >
-                            {(reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase() === 'active' ? 'Active' : 'Suspended'}
+                            {getResellerStatus(reseller) === 'active' ? 'Active' : 'Suspended'}
                           </Badge>
                         </TableCell>
                         <TableCell>
-                          {(reseller.kyc_status || (reseller.is_verified ? 'verified' : 'pending')) === 'verified' ? (
+                          {getResellerKycStatus(reseller) === 'verified' ? (
                             <Badge variant="outline" className="bg-cyan/20 text-cyan border-cyan/30">
                               <CheckCircle className="h-3 w-3 mr-1" />
                               Verified
@@ -443,15 +449,15 @@ export default function Resellers() {
                               <DropdownMenuItem
                                 className="gap-2 cursor-pointer"
                                 onClick={() => {
-                                  const currentStatus = (reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase();
+                                  const currentStatus = getResellerStatus(reseller);
                                   const nextActive = currentStatus !== 'active';
                                   updateReseller(reseller.id, { status: nextActive ? 'active' : 'suspended', is_active: nextActive });
                                 }}
                               >
-                                {((reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase() === 'active') ? <Ban className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-                                {((reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase() === 'active') ? 'Suspend' : 'Activate'}
+                                {(getResellerStatus(reseller) === 'active') ? <Ban className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                                {(getResellerStatus(reseller) === 'active') ? 'Suspend' : 'Activate'}
                               </DropdownMenuItem>
-                              {(reseller.kyc_status || (reseller.is_verified ? 'verified' : 'pending')) !== 'verified' && (
+                              {getResellerKycStatus(reseller) !== 'verified' && (
                                 <DropdownMenuItem
                                   className="gap-2 cursor-pointer"
                                   onClick={() => updateReseller(reseller.id, { kyc_status: 'verified', is_verified: true })}
@@ -461,7 +467,7 @@ export default function Resellers() {
                               )}
                               <DropdownMenuItem
                                 className="gap-2 cursor-pointer"
-                                onClick={() => window.location.assign(`/reseller-dashboard?reseller_id=${reseller.id}`)}
+                                onClick={() => navigate(`/reseller-dashboard?reseller_id=${reseller.id}`)}
                               >
                                 <Users className="h-4 w-4" /> Open Dashboard
                               </DropdownMenuItem>
