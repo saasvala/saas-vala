@@ -18,15 +18,15 @@
  } from 'lucide-react';
  import { formatDistanceToNow } from 'date-fns';
  
- interface ActivityLog {
-   id: string;
-   action: string;
-   entity_type: string;
-   entity_id: string;
-   details: Record<string, unknown> | null;
-   created_at: string;
-   performed_by: string | null;
- }
+interface ActivityLog {
+  id: string;
+  action: string;
+  table_name: string;
+  record_id: string | null;
+  details: Record<string, unknown> | null;
+  created_at: string;
+  user_id: string | null;
+}
  
  const getActionIcon = (action: string) => {
    switch (action.toLowerCase()) {
@@ -77,28 +77,46 @@
    const [activities, setActivities] = useState<ActivityLog[]>([]);
    const [loading, setLoading] = useState(true);
  
-   const fetchActivities = async () => {
-     setLoading(true);
-     try {
-       const { data, error } = await supabase
-         .from('activity_logs')
-         .select('*')
-         .eq('entity_type', 'reseller')
-         .order('created_at', { ascending: false })
-         .limit(50);
- 
-       if (error) throw error;
-       setActivities((data || []) as ActivityLog[]);
-     } catch (error) {
-       console.error('Failed to fetch activities:', error);
-     } finally {
-       setLoading(false);
-     }
+  const fetchActivities = async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('audit_logs')
+        .select('id, action, table_name, record_id, new_data, created_at, user_id')
+        .or('table_name.eq.resellers,table_name.eq.orders')
+        .order('created_at', { ascending: false })
+        .limit(100);
+
+        if (error) throw error;
+        const mapped = (data || [])
+          .map((row: any) => ({
+            id: row.id,
+            action: String(row?.new_data?.event || row.action || 'update'),
+            table_name: row.table_name,
+            record_id: row.record_id,
+            details: (row?.new_data || null) as Record<string, unknown> | null,
+            created_at: row.created_at,
+            user_id: row.user_id,
+          }))
+          .filter((row) => ['reseller_joined', 'approved', 'suspended', 'sales_made'].includes(row.action.toLowerCase()));
+        setActivities(mapped as ActivityLog[]);
+      } catch (error) {
+        console.error('Failed to fetch activities:', error);
+      } finally {
+        setLoading(false);
+      }
    };
  
-   useEffect(() => {
-     fetchActivities();
-   }, []);
+  useEffect(() => {
+    fetchActivities();
+    const channel = supabase
+      .channel('reseller-activity-audit')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, () => fetchActivities())
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
  
    return (
      <div className="glass-card rounded-xl p-4">
@@ -141,8 +159,10 @@
                    </div>
                    <p className="text-sm text-foreground mt-1 truncate">
                      {activity.details && typeof activity.details === 'object' && 'company_name' in activity.details
-                       ? String(activity.details.company_name)
-                       : `Reseller ${activity.entity_id.slice(0, 8)}...`}
+                        ? String(activity.details.company_name)
+                        : activity.record_id
+                          ? `Record ${activity.record_id.slice(0, 8)}...`
+                          : 'Reseller event'}
                    </p>
                    {activity.details && typeof activity.details === 'object' && 'notes' in activity.details && (
                      <p className="text-xs text-muted-foreground mt-0.5">{String(activity.details.notes)}</p>

@@ -160,6 +160,42 @@ async function logActivity(admin: any, entityType: string, entityId: string, act
   }
 }
 
+function normalizeResellerStatus(input: unknown): 'active' | 'suspended' | null {
+  if (input === undefined || input === null) return null
+  const normalized = String(input).trim().toLowerCase()
+  if (!normalized) return null
+  if (['active'].includes(normalized)) return 'active'
+  if (['suspended', 'inactive'].includes(normalized)) return 'suspended'
+  return null
+}
+
+function normalizeKycStatus(input: unknown): 'pending' | 'verified' | 'rejected' | null {
+  if (input === undefined || input === null) return null
+  const normalized = String(input).trim().toLowerCase()
+  if (!normalized) return null
+  if (normalized === 'verified') return 'verified'
+  if (normalized === 'rejected') return 'rejected'
+  if (normalized === 'pending') return 'pending'
+  return null
+}
+
+type ResellerAccessState = {
+  id: string
+  status: string | null
+  is_active: boolean | null
+  kyc_status?: string | null
+  is_verified?: boolean | null
+} | null
+
+async function getResellerAccessState(admin: any, userId: string): Promise<ResellerAccessState> {
+  const { data } = await admin
+    .from('resellers')
+    .select('id, status, is_active, kyc_status, is_verified')
+    .eq('user_id', userId)
+    .maybeSingle()
+  return (data as ResellerAccessState) || null
+}
+
 function isApkVersionsTableMissing(message?: string) {
   return !!message && /relation\s+"?apk_versions"?\s+does not exist/i.test(message)
 }
@@ -303,6 +339,7 @@ async function handleProducts(method: string, pathParts: string[], body: any, us
 async function handleResellers(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const admin = adminClient()
   const id = pathParts[0]
+  const isAdmin = await isSuperAdminUser(userId)
 
   // GET /resellers
   if (method === 'GET' && !id) {
@@ -322,17 +359,84 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
     const userIds = (data || []).map((r: any) => r.user_id).filter(Boolean)
     let profileMap: Record<string, any> = {}
     if (userIds.length > 0) {
-      const { data: profiles } = await sb.from('profiles').select('user_id, full_name, phone').in('user_id', userIds)
-      ;(profiles || []).forEach((p: any) => { profileMap[p.user_id] = { full_name: p.full_name, phone: p.phone } })
+      const { data: profiles } = await sb
+        .from('profiles')
+        .select('user_id, full_name, company_name, phone')
+        .in('user_id', userIds)
+      ;(profiles || []).forEach((p: any) => {
+        profileMap[p.user_id] = {
+          full_name: p.full_name,
+          company_name: p.company_name,
+          phone: p.phone,
+        }
+      })
     }
 
     const enriched = (data || []).map((r: any) => ({
       ...r,
       profile: profileMap[r.user_id] || null,
-      company_name: r.company_name || profileMap[r.user_id]?.full_name || 'Unnamed Reseller',
+      company_name: r.company_name || profileMap[r.user_id]?.company_name || profileMap[r.user_id]?.full_name || 'Unnamed Reseller',
+      status: normalizeResellerStatus(r.status) || (r.is_active === false ? 'suspended' : 'active'),
+      kyc_status: normalizeKycStatus(r.kyc_status) || (r.is_verified ? 'verified' : 'pending'),
     }))
 
     return json({ data: enriched, total: count })
+  }
+
+  // GET /resellers/:id
+  if (method === 'GET' && id && !pathParts[1]) {
+    const { data: reseller, error } = await sb.from('resellers').select('*').eq('id', id).maybeSingle()
+    if (error) return err(error.message)
+    if (!reseller) return err('Reseller not found', 404)
+
+    const { data: profile } = await sb
+      .from('profiles')
+      .select('user_id, full_name, company_name, phone')
+      .eq('user_id', reseller.user_id)
+      .maybeSingle()
+
+    const [{ data: orders }, { data: keyRows }, { data: commissionRows }, { data: activityRows }] = await Promise.all([
+      sb.from('orders')
+        .select('id, amount, status, created_at')
+        .eq('reseller_id', reseller.id)
+        .order('created_at', { ascending: false })
+        .limit(500),
+      sb.from('license_keys')
+        .select('id')
+        .eq('reseller_id', reseller.id),
+      sb.from('reseller_commission_logs')
+        .select('amount')
+        .eq('reseller_id', reseller.id),
+      sb.from('activity_logs')
+        .select('id, action, entity_type, entity_id, details, created_at, performed_by')
+        .eq('entity_type', 'reseller')
+        .eq('entity_id', reseller.id)
+        .order('created_at', { ascending: false })
+        .limit(100),
+    ])
+
+    const totalSales = Number((orders || [])
+      .filter((o: any) => o.status === 'success')
+      .reduce((sum: number, o: any) => sum + Number(o.amount || 0), 0))
+    const totalCommission = Number((commissionRows || [])
+      .reduce((sum: number, c: any) => sum + Number(c.amount || 0), 0))
+
+    return json({
+      data: {
+        ...reseller,
+        profile: profile || null,
+        company_name: reseller.company_name || profile?.company_name || profile?.full_name || 'Unnamed Reseller',
+        status: normalizeResellerStatus(reseller.status) || (reseller.is_active === false ? 'suspended' : 'active'),
+        kyc_status: normalizeKycStatus(reseller.kyc_status) || (reseller.is_verified ? 'verified' : 'pending'),
+      },
+      stats: {
+        total_sales: totalSales,
+        total_commission: totalCommission,
+        total_orders: (orders || []).length,
+        total_keys: (keyRows || []).length,
+      },
+      logs: activityRows || [],
+    })
   }
 
   // GET /resellers/:id/sales
@@ -408,31 +512,77 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
 
   // POST /resellers
   if (method === 'POST') {
+    if (!isAdmin) return err('Forbidden', 403)
+    const commissionPercent = Number(body.commission_percent ?? 10)
+    const creditLimit = Number(body.credit_limit ?? 0)
+    if (!Number.isFinite(commissionPercent) || commissionPercent < 0) return err('commission_percent must be >= 0', 422, 'VALIDATION_ERROR')
+    if (!Number.isFinite(creditLimit) || creditLimit < 0) return err('credit_limit must be >= 0', 422, 'VALIDATION_ERROR')
+
+    const status = normalizeResellerStatus(body.status) || (body.is_active === false ? 'suspended' : 'active')
+    const kycStatus = normalizeKycStatus(body.kyc_status)
+      || (body.is_verified === true ? 'verified' : 'pending')
+
     const { data, error } = await sb.from('resellers').insert({
       user_id: body.user_id,
       company_name: body.company_name,
-      commission_percent: body.commission_percent || 10,
-      credit_limit: body.credit_limit || 0,
-      is_active: body.is_active ?? true,
-      is_verified: body.is_verified ?? false,
+      commission_percent: commissionPercent,
+      credit_limit: creditLimit,
+      is_active: status === 'active',
+      status,
+      is_verified: kycStatus === 'verified',
+      kyc_status: kycStatus,
     }).select().single()
     if (error) return err(error.message)
-    await logActivity(admin, 'reseller', data.id, 'created', userId, { company_name: body.company_name })
+    await logActivity(admin, 'reseller', data.id, 'reseller_joined', userId, {
+      company_name: body.company_name,
+      status,
+      kyc_status: kycStatus,
+    })
     return json({ data }, 201)
   }
 
   // PUT /resellers/:id
   if (method === 'PUT' && id) {
+    if (!isAdmin) return err('Forbidden', 403)
+    const { data: current } = await admin.from('resellers').select('*').eq('id', id).maybeSingle()
+    if (!current) return err('Reseller not found', 404)
+
     const updates: any = {}
     if (body.company_name !== undefined) updates.company_name = body.company_name
-    if (body.commission_percent !== undefined) updates.commission_percent = body.commission_percent
-    if (body.credit_limit !== undefined) updates.credit_limit = body.credit_limit
-    if (body.is_active !== undefined) updates.is_active = body.is_active
-    if (body.is_verified !== undefined) updates.is_verified = body.is_verified
+    if (body.commission_percent !== undefined) {
+      const commissionPercent = Number(body.commission_percent)
+      if (!Number.isFinite(commissionPercent) || commissionPercent < 0) return err('commission_percent must be >= 0', 422, 'VALIDATION_ERROR')
+      updates.commission_percent = commissionPercent
+    }
+    if (body.credit_limit !== undefined) {
+      const creditLimit = Number(body.credit_limit)
+      if (!Number.isFinite(creditLimit) || creditLimit < 0) return err('credit_limit must be >= 0', 422, 'VALIDATION_ERROR')
+      updates.credit_limit = creditLimit
+    }
     if (body.tier_level !== undefined) updates.tier_level = body.tier_level
+    if (body.status !== undefined || body.is_active !== undefined) {
+      const status = normalizeResellerStatus(body.status) || (body.is_active === false ? 'suspended' : 'active')
+      updates.status = status
+      updates.is_active = status === 'active'
+    }
+    if (body.kyc_status !== undefined || body.is_verified !== undefined) {
+      const kycStatus = normalizeKycStatus(body.kyc_status)
+        || (body.is_verified === true ? 'verified' : 'pending')
+      updates.kyc_status = kycStatus
+      updates.is_verified = kycStatus === 'verified'
+    }
+
     const { error } = await sb.from('resellers').update(updates).eq('id', id)
     if (error) return err(error.message)
-    await logActivity(admin, 'reseller', id, 'updated', userId, updates)
+
+    const action = updates.status === 'suspended'
+      ? 'suspended'
+      : updates.status === 'active' && current.status !== 'active'
+        ? 'approved'
+        : updates.kyc_status === 'verified' && current.kyc_status !== 'verified'
+          ? 'approved'
+          : 'updated'
+    await logActivity(admin, 'reseller', id, action, userId, updates)
     return json({ success: true })
   }
 
@@ -1436,6 +1586,12 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
 
   // POST /keys/generate
   if (method === 'POST' && action === 'generate') {
+    const resellerState = await getResellerAccessState(admin, userId)
+    if (resellerState) {
+      const status = normalizeResellerStatus(resellerState.status) || (resellerState.is_active === false ? 'suspended' : 'active')
+      if (status !== 'active') return err('Reseller account is suspended', 403, 'RESELLER_SUSPENDED')
+    }
+
     const quantity = Number(body.quantity || 1)
     const useAtomicFlow = quantity > 1 || !!body.client_name || !!body.idempotency_key || !!body.cost_per_key || !!body.min_balance
     if (useAtomicFlow) {
@@ -2163,6 +2319,12 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
 
   // POST /wallet/add
   if (method === 'POST' && action === 'add') {
+    const requesterResellerState = await getResellerAccessState(admin, userId)
+    if (requesterResellerState) {
+      const status = normalizeResellerStatus(requesterResellerState.status) || (requesterResellerState.is_active === false ? 'suspended' : 'active')
+      if (status !== 'active' && !isAdmin) return err('Reseller account is suspended', 403, 'RESELLER_SUSPENDED')
+    }
+
     const amount = Number(body.amount || 0)
     if (amount <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
 
@@ -2209,11 +2371,42 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
 
   // POST /wallet/withdraw
   if (method === 'POST' && action === 'withdraw') {
- main
+    const requesterResellerState = await getResellerAccessState(admin, userId)
+    if (requesterResellerState) {
+      const status = normalizeResellerStatus(requesterResellerState.status) || (requesterResellerState.is_active === false ? 'suspended' : 'active')
+      if (status !== 'active' && !isAdmin) return err('Reseller account is suspended', 403, 'RESELLER_SUSPENDED')
+    }
+
+    const amount = Number(body.amount || 0)
+    if (!Number.isFinite(amount) || amount <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
+    const requestedWalletId = body.wallet_id ? String(body.wallet_id) : null
+    if (requestedWalletId && !isAdmin) return err('Forbidden', 403)
+
+    const walletQuery = requestedWalletId
+      ? admin.from('wallets').select('id, user_id, balance, locked_balance').eq('id', requestedWalletId).maybeSingle()
+      : sb.from('wallets').select('id, user_id, balance, locked_balance').eq('user_id', userId).maybeSingle()
+    const { data: wallet } = await walletQuery
     if (!wallet) return err('Wallet not found', 404)
 
     const available = Number(wallet.balance || 0) - Number(wallet.locked_balance || 0)
-    if (available < amount) return err('Insufficient balance')
+    let allowedDeficit = 0
+    const { data: reseller } = await admin
+      .from('resellers')
+      .select('credit_limit, status, is_active')
+      .eq('user_id', wallet.user_id)
+      .maybeSingle()
+
+    if (reseller && (normalizeResellerStatus(reseller.status) || (reseller.is_active === false ? 'suspended' : 'active')) !== 'active') {
+      return err('Reseller is suspended', 403, 'RESELLER_SUSPENDED')
+    }
+
+    if (reseller) {
+      allowedDeficit = Number(reseller.credit_limit || 0)
+    }
+
+    if (available + allowedDeficit < amount) {
+      return err('Credit limit exceeded', 422, 'CREDIT_LIMIT_EXCEEDED')
+    }
 
     const newBalance = Number(wallet.balance || 0) - amount
     const { error: txErr } = await admin.from('transactions').insert({
@@ -2260,6 +2453,12 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
 
   // POST /wallet/lock
   if (method === 'POST' && action === 'lock') {
+    const requesterResellerState = await getResellerAccessState(admin, userId)
+    if (requesterResellerState) {
+      const status = normalizeResellerStatus(requesterResellerState.status) || (requesterResellerState.is_active === false ? 'suspended' : 'active')
+      if (status !== 'active') return err('Reseller account is suspended', 403, 'RESELLER_SUSPENDED')
+    }
+
     if (Number(body.amount || 0) <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
     const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', userId).single()
     if (!wallet) return err('Wallet not found', 404)
@@ -2284,6 +2483,12 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
 
   // POST /wallet/unlock
   if (method === 'POST' && action === 'unlock') {
+    const requesterResellerState = await getResellerAccessState(admin, userId)
+    if (requesterResellerState) {
+      const status = normalizeResellerStatus(requesterResellerState.status) || (requesterResellerState.is_active === false ? 'suspended' : 'active')
+      if (status !== 'active') return err('Reseller account is suspended', 403, 'RESELLER_SUSPENDED')
+    }
+
     if (Number(body.amount || 0) <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
     const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', userId).single()
     if (!wallet) return err('Wallet not found', 404)
@@ -2307,6 +2512,12 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
 
   // POST /wallet/refund
   if (method === 'POST' && action === 'refund') {
+    const requesterResellerState = await getResellerAccessState(admin, userId)
+    if (requesterResellerState) {
+      const status = normalizeResellerStatus(requesterResellerState.status) || (requesterResellerState.is_active === false ? 'suspended' : 'active')
+      if (status !== 'active') return err('Reseller account is suspended', 403, 'RESELLER_SUSPENDED')
+    }
+
     if (Number(body.amount || 0) <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
     const { data: wallet } = await sb.from('wallets').select('id, balance').eq('user_id', userId).single()
     if (!wallet) return err('Wallet not found', 404)

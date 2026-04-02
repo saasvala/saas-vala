@@ -28,23 +28,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import {
   Plus,
   Search,
   Filter,
   MoreVertical,
   Users,
   Edit,
-  Trash2,
   Ban,
   Play,
   Shield,
@@ -53,6 +42,7 @@ import {
   Percent,
   CheckCircle,
   Download,
+  Eye,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useResellers, type Reseller } from '@/hooks/useResellers';
@@ -62,22 +52,25 @@ import { Switch } from '@/components/ui/switch';
  import { ResellerQuickActions } from '@/components/reseller/ResellerQuickActions';
 import { useResellerApplications, type ResellerApplication } from '@/hooks/useResellerApplications';
 import { Textarea } from '@/components/ui/textarea';
+import { resellersApi } from '@/lib/api';
 
 const ITEMS_PER_PAGE = 25;
 
 export default function Resellers() {
-   const { resellers, loading, total, fetchResellers, updateReseller, deleteReseller } = useResellers();
+   const { resellers, loading, total, fetchResellers, updateReseller } = useResellers();
    const { adminApplications, adminLoading, fetchAdminApplications, approveApplication, rejectApplication } = useResellerApplications();
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editReseller, setEditReseller] = useState<Reseller | null>(null);
-  const [deleteId, setDeleteId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [selectedApplication, setSelectedApplication] = useState<ResellerApplication | null>(null);
   const [adminNotes, setAdminNotes] = useState('');
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailReseller, setDetailReseller] = useState<any>(null);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -88,14 +81,17 @@ export default function Resellers() {
     is_verified: false,
   });
 
+  const resellerStatus = (reseller: Reseller) => String(reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase();
+  const resellerKycStatus = (reseller: Reseller) => String(reseller.kyc_status || (reseller.is_verified ? 'verified' : 'pending')).toLowerCase();
+
   const filteredResellers = resellers.filter((reseller) => {
     const name = (reseller.company_name || '').toLowerCase();
     const profileName = (reseller.profile?.full_name || '').toLowerCase();
     const matchesSearch = !searchQuery || name.includes(searchQuery.toLowerCase()) || profileName.includes(searchQuery.toLowerCase());
     if (!matchesSearch) return false;
-    if (activeTab === 'active') return reseller.is_active;
-    if (activeTab === 'suspended') return !reseller.is_active;
-    if (activeTab === 'verified') return reseller.is_verified;
+    if (activeTab === 'active') return resellerStatus(reseller) === 'active';
+    if (activeTab === 'suspended') return resellerStatus(reseller) === 'suspended';
+    if (activeTab === 'verified') return resellerKycStatus(reseller) === 'verified';
     return true;
   });
 
@@ -103,9 +99,9 @@ export default function Resellers() {
 
   const stats = {
     total: resellers.length,
-    active: resellers.filter(r => r.is_active).length,
-    suspended: resellers.filter(r => !r.is_active).length,
-    verified: resellers.filter(r => r.is_verified).length,
+    active: resellers.filter(r => resellerStatus(r) === 'active').length,
+    suspended: resellers.filter(r => resellerStatus(r) === 'suspended').length,
+    verified: resellers.filter(r => resellerKycStatus(r) === 'verified').length,
   };
 
   const handlePageChange = (page: number) => {
@@ -156,10 +152,33 @@ export default function Resellers() {
     }
   };
 
-  const handleDelete = async () => {
-    if (!deleteId) return;
-    await deleteReseller(deleteId);
-    setDeleteId(null);
+  const handleDelete = async () => undefined;
+
+  const openDetailDialog = async (reseller: Reseller) => {
+    setDetailOpen(true);
+    setDetailLoading(true);
+    setDetailReseller(null);
+    try {
+      const res = await resellersApi.get(reseller.id);
+      setDetailReseller(res);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const toggleSuspend = async (reseller: Reseller) => {
+    const isActive = resellerStatus(reseller) === 'active';
+    await updateReseller(reseller.id, {
+      status: isActive ? 'suspended' : 'active',
+      is_active: !isActive,
+    });
+  };
+
+  const markVerified = async (reseller: Reseller) => {
+    await updateReseller(reseller.id, {
+      kyc_status: 'verified',
+      is_verified: true,
+    });
   };
 
   const handleOpenApplication = (app: ResellerApplication) => {
@@ -376,7 +395,7 @@ export default function Resellers() {
                               <Users className="h-5 w-5 text-primary" />
                             </div>
                             <div>
-                              <span className="font-medium text-foreground block">{reseller.company_name || reseller.profile?.full_name || 'Unnamed'}</span>
+                              <span className="font-medium text-foreground block">{reseller.company_name || reseller.profile?.company_name || reseller.profile?.full_name || 'Unnamed'}</span>
                               {reseller.profile?.full_name && reseller.company_name !== reseller.profile.full_name && (
                                 <span className="text-xs text-muted-foreground">{reseller.profile.full_name}</span>
                               )}
@@ -402,22 +421,22 @@ export default function Resellers() {
                           <Badge
                             variant="outline"
                             className={cn(
-                              reseller.is_active
+                              resellerStatus(reseller) === 'active'
                                 ? 'bg-success/20 text-success border-success/30'
                                 : 'bg-destructive/20 text-destructive border-destructive/30'
                             )}
                           >
-                            {reseller.is_active ? 'Active' : 'Suspended'}
+                            {resellerStatus(reseller) === 'active' ? 'Active' : 'Suspended'}
                           </Badge>
                         </TableCell>
                         <TableCell>
-                          {reseller.is_verified ? (
+                          {resellerKycStatus(reseller) === 'verified' ? (
                             <Badge variant="outline" className="bg-cyan/20 text-cyan border-cyan/30">
                               <CheckCircle className="h-3 w-3 mr-1" />
                               Verified
                             </Badge>
                           ) : (
-                            <span className="text-muted-foreground">-</span>
+                            <span className="text-muted-foreground">{resellerKycStatus(reseller)}</span>
                           )}
                         </TableCell>
                         <TableCell>
@@ -437,8 +456,27 @@ export default function Resellers() {
                               <DropdownMenuItem className="gap-2 cursor-pointer" onClick={() => openEditDialog(reseller)}>
                                 <Edit className="h-4 w-4" /> Edit
                               </DropdownMenuItem>
-                              <DropdownMenuItem className="gap-2 cursor-pointer text-destructive" onClick={() => setDeleteId(reseller.id)}>
-                                <Trash2 className="h-4 w-4" /> Delete
+                              <DropdownMenuItem className="gap-2 cursor-pointer" onClick={() => openDetailDialog(reseller)}>
+                                <Eye className="h-4 w-4" /> View
+                              </DropdownMenuItem>
+                              <DropdownMenuItem className="gap-2 cursor-pointer" onClick={() => toggleSuspend(reseller)}>
+                                {resellerStatus(reseller) === 'active' ? (
+                                  <>
+                                    <Ban className="h-4 w-4" /> Suspend
+                                  </>
+                                ) : (
+                                  <>
+                                    <Play className="h-4 w-4" /> Activate
+                                  </>
+                                )}
+                              </DropdownMenuItem>
+                              {resellerKycStatus(reseller) !== 'verified' && (
+                                <DropdownMenuItem className="gap-2 cursor-pointer" onClick={() => markVerified(reseller)}>
+                                  <Shield className="h-4 w-4" /> Verify
+                                </DropdownMenuItem>
+                              )}
+                              <DropdownMenuItem className="gap-2 cursor-pointer" onClick={handleDelete}>
+                                No delete
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
@@ -536,23 +574,57 @@ export default function Resellers() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirmation */}
-      <AlertDialog open={!!deleteId} onOpenChange={() => setDeleteId(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Reseller?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This action cannot be undone. This will permanently delete the reseller account.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground">
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* Detail Dialog */}
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Reseller Detail</DialogTitle>
+            <DialogDescription>Full stats, logs, and clients overview.</DialogDescription>
+          </DialogHeader>
+          {detailLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            </div>
+          ) : detailReseller?.data ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-xs text-muted-foreground">Total Sales</p>
+                  <p className="font-semibold">₹{Number(detailReseller.stats?.total_sales || 0).toLocaleString()}</p>
+                </div>
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-xs text-muted-foreground">Total Commission</p>
+                  <p className="font-semibold">₹{Number(detailReseller.stats?.total_commission || 0).toLocaleString()}</p>
+                </div>
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-xs text-muted-foreground">Orders</p>
+                  <p className="font-semibold">{Number(detailReseller.stats?.total_orders || 0)}</p>
+                </div>
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-xs text-muted-foreground">Keys</p>
+                  <p className="font-semibold">{Number(detailReseller.stats?.total_keys || 0)}</p>
+                </div>
+              </div>
+              <div className="rounded-lg border border-border p-3">
+                <p className="text-sm font-medium mb-2">Recent Logs</p>
+                <div className="space-y-2 max-h-56 overflow-auto">
+                  {(detailReseller.logs || []).slice(0, 20).map((log: any) => (
+                    <div key={log.id} className="flex items-center justify-between gap-2 text-sm">
+                      <span>{log.action}</span>
+                      <span className="text-xs text-muted-foreground">{new Date(log.created_at).toLocaleString()}</span>
+                    </div>
+                  ))}
+                  {(!detailReseller.logs || detailReseller.logs.length === 0) && (
+                    <p className="text-sm text-muted-foreground">No logs available.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No details available.</p>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Application Review */}
       <Dialog open={!!selectedApplication} onOpenChange={(open) => !open && setSelectedApplication(null)}>
