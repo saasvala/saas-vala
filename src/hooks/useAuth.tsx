@@ -33,6 +33,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const lastRoleUserIdRef = useRef<string | null>(null);
   const inFlightRoleFetchRef = useRef<Promise<void> | null>(null);
 
+  // 1.5s delay is intentionally conservative to cover cold-start latency before role row is visible.
+  const ROLE_SYNC_DELAY_MS = 1500;
+
   useEffect(() => {
     roleRef.current = role;
   }, [role]);
@@ -48,13 +51,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setSession(session);
         setUser(session?.user ?? null);
 
-        // Defer role fetching with setTimeout to avoid deadlock
+        // Defer role fetching to allow auth triggers to complete on new signup
         if (session?.user) {
           setTimeout(() => {
             if (isMounted) {
               ensureUserRole(session.user.id);
             }
-          }, 0);
+          }, ROLE_SYNC_DELAY_MS);
         } else {
           setRole(null);
           lastRoleUserIdRef.current = null;
@@ -166,7 +169,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(nextSession);
       setUser(nextSession?.user ?? null);
       if (nextSession?.user) {
-        setTimeout(() => ensureUserRole(nextSession.user.id), 0);
+        setTimeout(() => ensureUserRole(nextSession.user.id), ROLE_SYNC_DELAY_MS);
       }
     }
 
