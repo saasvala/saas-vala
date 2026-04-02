@@ -63,21 +63,7 @@ export const resellersApi = {
   update: (id: string, data: any) => apiCall('PUT', `resellers/${id}`, data),
   sales: (id: string) => apiCall('GET', `resellers/${id}/sales`),
   clients: () => apiCall('GET', 'resellers/clients'),
-  upsertClient: (data: any) => apiCall('POST', 'resellers/clients', data),
-  referrals: () => apiCall('GET', 'resellers/referrals'),
-  createReferral: (data: any) => apiCall('POST', 'resellers/referrals', data),
-};
 
-export const resellerOnboardingApi = {
-  apply: (data: { business_name: string; contact: string; notes?: string }) =>
-    apiCall('POST', 'reseller/apply', data),
-  myApplications: () => apiCall('GET', 'reseller/applications'),
-  adminListApplications: (params?: { page?: number; limit?: number; status?: string; search?: string }) =>
-    apiCall('GET', 'admin/reseller-applications', params),
-  adminApprove: (applicationId: string, data?: { notes?: string; tier?: string; commission_percent?: number }) =>
-    apiCall('POST', 'admin/reseller-approve', { application_id: applicationId, ...data }),
-  adminReject: (applicationId: string, reason: string) =>
-    apiCall('POST', 'admin/reseller-reject', { application_id: applicationId, reason }),
 };
 
 // ===================== MARKETPLACE =====================
