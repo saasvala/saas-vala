@@ -151,7 +151,7 @@ DECLARE
   inserted_referral_id UUID;
 BEGIN
   incoming_ref_code := upper(trim(COALESCE(NEW.raw_user_meta_data->>'ref_code', '')));
-  IF incoming_ref_code IS NULL OR incoming_ref_code = '' THEN
+  IF incoming_ref_code = '' THEN
     RETURN NEW;
   END IF;
 

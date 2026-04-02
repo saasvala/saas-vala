@@ -30,6 +30,10 @@ import { useResellerApplications } from '@/hooks/useResellerApplications';
  
 type AuthMode = 'login' | 'signup' | 'forgot_password';
 
+function normalizeReferralCode(value: string) {
+  return value.trim().toUpperCase();
+}
+
 export default function Auth() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -80,7 +84,7 @@ export default function Auth() {
 
   useEffect(() => {
     if (signupRefFromUrl) {
-      setSignupReferralCode(signupRefFromUrl.trim().toUpperCase());
+      setSignupReferralCode(normalizeReferralCode(signupRefFromUrl));
     }
   }, [signupRefFromUrl]);
  
@@ -163,7 +167,7 @@ export default function Auth() {
      }
  
       setIsSubmitting(true);
-       const normalizedRefCode = signupReferralCode.trim().toUpperCase();
+       const normalizedRefCode = normalizeReferralCode(signupReferralCode);
        const { error } = await signUp(
          signupEmail,
          signupPassword,
@@ -583,7 +587,7 @@ export default function Auth() {
                           type="text"
                           placeholder="ENTER CODE"
                           value={signupReferralCode}
-                          onChange={(e) => setSignupReferralCode(e.target.value.toUpperCase())}
+                          onChange={(e) => setSignupReferralCode(normalizeReferralCode(e.target.value))}
                           className="h-12 bg-muted/30 border-border/50 focus:border-primary uppercase"
                           maxLength={32}
                         />

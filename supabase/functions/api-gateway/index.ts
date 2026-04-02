@@ -18,6 +18,7 @@ const productListCache: { data: any[] | null; expiresAt: number } = { data: null
 const PRODUCT_LIST_CACHE_TTL_MS = 60 * 1000
 const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SECONDS') || '60')
 const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
+const DEFAULT_COMMISSION_RATE = 10
 
 function invalidateProductCache() {
   productListCache.data = null
@@ -1250,22 +1251,18 @@ async function markPaymentSuccess(admin: any, sb: any, userId: string, payment: 
       .eq('order_id', order.id)
       .maybeSingle()
 
-    // anti-abuse: one rewarded referral purchase per referred mapping
-    const { data: priorCommission } = await admin
-      .from('referral_commissions')
-      .select('id')
-      .eq('referral_id', referral.id)
-      .limit(1)
-      .maybeSingle()
-
-    if (!existingCommission && !priorCommission) {
+    // anti-abuse: only reward once per order; order_id is unique in referral_commissions
+    if (!existingCommission) {
       const { data: referrerReseller } = await admin
         .from('resellers')
         .select('id, commission_percent, commission_rate')
         .eq('user_id', referral.referrer_id)
         .maybeSingle()
 
-      const commissionRate = Number(referrerReseller?.commission_percent ?? referrerReseller?.commission_rate ?? 10)
+      // Keep backward compatibility: legacy rows may still use commission_rate.
+      const commissionRate = Number(
+        referrerReseller?.commission_percent ?? referrerReseller?.commission_rate ?? DEFAULT_COMMISSION_RATE
+      )
       const commissionAmount = toMoney((orderAmount * commissionRate) / 100)
 
       if (commissionAmount > 0) {
