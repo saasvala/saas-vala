@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -32,6 +33,7 @@ import {
   Search,
   Filter,
   MoreVertical,
+  Eye,
   Users,
   Edit,
   Ban,
@@ -57,42 +59,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
 
 const ITEMS_PER_PAGE = 25;
-const FINAL_RESELLER_GAP_FEATURES = [
-  { key: 'tier_based_dynamic_commission_engine', label: 'Tier-based dynamic commission engine' },
-  { key: 'per_product_commission_override', label: 'Per-product commission override' },
-  { key: 'credit_risk_scoring_auto_block', label: 'Credit risk scoring + auto block' },
-  { key: 'reseller_sla_uptime_tracking', label: 'Reseller SLA + uptime tracking' },
-  { key: 'auto_payout_scheduling', label: 'Auto payout scheduling' },
-  { key: 'commission_dispute_system', label: 'Commission dispute system' },
-  { key: 'multi_level_reseller_hierarchy', label: 'Multi-level reseller hierarchy' },
-  { key: 'geo_country_restriction', label: 'Geo/country restriction' },
-  { key: 'tax_split_per_reseller', label: 'Tax split per reseller' },
-  { key: 'reseller_performance_scoring', label: 'Reseller performance scoring' },
-  { key: 'limits_per_day_month_keys_sales', label: 'Limits per day/month (keys/sales)' },
-  { key: 'auto_suspend_on_fraud_triggers', label: 'Auto suspend on fraud triggers' },
-  { key: 'contract_terms_acceptance_log', label: 'Contract/terms acceptance log' },
-] as const;
-
-const FINAL_ULTRA_LAYER_FEATURES = [
-  { key: 'real_time_event_bus_pub_sub', label: 'Real-time event bus (pub/sub)' },
-  { key: 'distributed_job_queue_priority_retries', label: 'Distributed job queue (priority + retries)' },
-  { key: 'event_sourcing_for_critical_flows', label: 'Event sourcing for critical flows' },
-  { key: 'read_write_db_separation', label: 'Read/write DB separation' },
-  { key: 'horizontal_scaling_stateless_apis', label: 'Horizontal scaling (stateless APIs)' },
-  { key: 'feature_toggle_per_reseller', label: 'Feature toggle per reseller' },
-  { key: 'ai_anomaly_detection_sales_fraud', label: 'AI anomaly detection (sales/fraud)' },
-  { key: 'smart_retry_with_backoff', label: 'Smart retry with backoff' },
-  { key: 'dead_letter_queue_handling', label: 'Dead-letter queue handling' },
-  { key: 'versioned_apis_v1_v2', label: 'Versioned APIs (v1/v2)' },
-  { key: 'blue_green_deployment', label: 'Blue-green deployment' },
-  { key: 'canary_release_control', label: 'Canary release control' },
-  { key: 'auto_schema_migration_rollback', label: 'Auto schema migration rollback' },
-  { key: 'data_partitioning_large_tables', label: 'Data partitioning (large tables)' },
-  { key: 'cold_storage_archive_strategy', label: 'Cold storage/archive strategy' },
-  { key: 'edge_caching_with_invalidation_rules', label: 'Edge caching with invalidation rules' },
-] as const;
 
 export default function Resellers() {
+
    const { resellers, loading, total, fetchResellers, updateReseller } = useResellers();
    const { adminApplications, adminLoading, fetchAdminApplications, approveApplication, rejectApplication } = useResellerApplications();
   const [userId, setUserId] = useState('');
@@ -109,8 +78,6 @@ export default function Resellers() {
   const [selectedApplication, setSelectedApplication] = useState<ResellerApplication | null>(null);
   const [adminNotes, setAdminNotes] = useState('');
   const [reviewLoading, setReviewLoading] = useState(false);
-  const [reviewTab, setReviewTab] = useState('application');
-  const [selectedFeatures, setSelectedFeatures] = useState<string[]>([]);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -129,9 +96,7 @@ export default function Resellers() {
     const profileName = (reseller.profile?.full_name || '').toLowerCase();
     const matchesSearch = !searchQuery || name.includes(searchQuery.toLowerCase()) || profileName.includes(searchQuery.toLowerCase());
     if (!matchesSearch) return false;
-    if (activeTab === 'active') return resellerStatus(reseller) === 'active';
-    if (activeTab === 'suspended') return resellerStatus(reseller) === 'suspended';
-    if (activeTab === 'verified') return resellerKycStatus(reseller) === 'verified';
+
     return true;
   });
 
@@ -139,9 +104,7 @@ export default function Resellers() {
 
   const stats = {
     total: resellers.length,
-    active: resellers.filter(r => resellerStatus(r) === 'active').length,
-    suspended: resellers.filter(r => resellerStatus(r) === 'suspended').length,
-    verified: resellers.filter(r => resellerKycStatus(r) === 'verified').length,
+
   };
 
   const handlePageChange = (page: number) => {
@@ -213,30 +176,7 @@ export default function Resellers() {
   };
 
   const openDetailDialog = async (reseller: Reseller) => {
-    setDetailOpen(true);
-    setDetailLoading(true);
-    setDetailReseller(null);
-    try {
-      const res = await resellersApi.get(reseller.id);
-      setDetailReseller(res);
-    } finally {
-      setDetailLoading(false);
-    }
-  };
 
-  const toggleSuspend = async (reseller: Reseller) => {
-    const isActive = resellerStatus(reseller) === 'active';
-    await updateReseller(reseller.id, {
-      status: isActive ? 'suspended' : 'active',
-      is_active: !isActive,
-    });
-  };
-
-  const markVerified = async (reseller: Reseller) => {
-    await updateReseller(reseller.id, {
-      kyc_status: 'verified',
-      is_verified: true,
-    });
   };
 
   const handleOpenApplication = (app: ResellerApplication) => {
@@ -534,22 +474,18 @@ export default function Resellers() {
                           <Badge
                             variant="outline"
                             className={cn(
-                              resellerStatus(reseller) === 'active'
+
                                 ? 'bg-success/20 text-success border-success/30'
                                 : 'bg-destructive/20 text-destructive border-destructive/30'
                             )}
                           >
-                            {resellerStatus(reseller) === 'active' ? 'Active' : 'Suspended'}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          {resellerKycStatus(reseller) === 'verified' ? (
+
                             <Badge variant="outline" className="bg-cyan/20 text-cyan border-cyan/30">
                               <CheckCircle className="h-3 w-3 mr-1" />
                               Verified
                             </Badge>
                           ) : (
-                            <span className="text-muted-foreground">{resellerKycStatus(reseller)}</span>
+
                           )}
                         </TableCell>
                         <TableCell>
@@ -571,6 +507,7 @@ export default function Resellers() {
                               </DropdownMenuItem>
                               <DropdownMenuItem className="gap-2 cursor-pointer" onClick={() => openDetailDialog(reseller)}>
                                 <Eye className="h-4 w-4" /> View
+
                               </DropdownMenuItem>
                               <DropdownMenuItem className="gap-2 cursor-pointer" onClick={() => toggleSuspend(reseller)}>
                                 {resellerStatus(reseller) === 'active' ? (
@@ -642,11 +579,11 @@ export default function Resellers() {
                 onChange={(e) => setFormData({ ...formData, company_name: e.target.value })}
               />
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Commission (%)</Label>
-                <Input
-                  type="number"
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Commission (%)</Label>
+                  <Input
+                    type="number"
                   min="0"
                   max="100"
                   value={formData.commission_percent}
@@ -673,17 +610,37 @@ export default function Resellers() {
                 onCheckedChange={(checked) => setFormData({ ...formData, is_active: checked })}
               />
             </div>
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>Verified</Label>
-                <p className="text-sm text-muted-foreground">Mark as verified reseller</p>
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>Verified</Label>
+                  <p className="text-sm text-muted-foreground">Mark as verified reseller</p>
+                </div>
+                <Switch
+                  checked={formData.is_verified}
+                  onCheckedChange={(checked) => setFormData({ ...formData, is_verified: checked })}
+                />
               </div>
-              <Switch
-                checked={formData.is_verified}
-                onCheckedChange={(checked) => setFormData({ ...formData, is_verified: checked })}
-              />
+              {editReseller && (
+                <>
+                  <div className="space-y-2">
+                    <Label>Status</Label>
+                    <Input
+                      value={(editReseller.status || (formData.is_active ? 'active' : 'suspended')).toLowerCase()}
+                      readOnly
+                      className="bg-muted/40"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>KYC Status</Label>
+                    <Input
+                      value={(editReseller.kyc_status || (formData.is_verified ? 'verified' : 'pending')).toLowerCase()}
+                      readOnly
+                      className="bg-muted/40"
+                    />
+                  </div>
+                </>
+              )}
             </div>
-          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
             <Button onClick={handleSubmit} disabled={submitting}>
@@ -693,6 +650,7 @@ export default function Resellers() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
 
 
       {/* Application Review */}
