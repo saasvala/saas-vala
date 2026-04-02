@@ -1531,10 +1531,119 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
   return err('Not found', 404)
 }
 
+async function creditWalletRequestIdempotent(admin: any, reqRow: any, actorUserId: string, creditSource: string) {
+  const creditedAt = nowIso()
+  const { data: wallet } = await admin.from('wallets').select('id, balance, locked_balance').eq('user_id', reqRow.user_id).maybeSingle()
+  if (!wallet) return { error: 'Wallet not found', status: 404 }
+
+  const { data: existingTx } = await admin
+    .from('transactions')
+    .select('id, balance_after')
+    .eq('reference_type', 'wallet_request_credit')
+    .eq('reference_id', reqRow.id)
+    .maybeSingle()
+
+  let txId = existingTx?.id || reqRow.credited_tx_id || null
+  let newBalance = Number(wallet.balance || 0)
+
+  if (!existingTx) {
+    newBalance = Number(wallet.balance || 0) + Number(reqRow.amount || 0)
+    const { data: tx, error: txErr } = await admin.from('transactions').insert({
+      wallet_id: wallet.id,
+      type: 'credit',
+      amount: Number(reqRow.amount),
+      balance_after: newBalance,
+      status: 'completed',
+      description: `Wallet funding approved via ${reqRow.method}`,
+      reference_type: 'wallet_request_credit',
+      reference_id: reqRow.id,
+      created_by: actorUserId,
+      source: creditSource,
+      meta: {
+        method: reqRow.method,
+        txn_id: reqRow.txn_id,
+        request_id: reqRow.id,
+      },
+    }).select('id').single()
+
+    if (txErr) return { error: txErr.message, status: 400 }
+    txId = tx?.id || null
+
+    await admin.from('wallets').update({ balance: newBalance, updated_at: creditedAt }).eq('id', wallet.id)
+    await admin.from('wallet_ledger').insert({
+      wallet_id: wallet.id,
+      user_id: reqRow.user_id,
+      entry_type: 'credit',
+      amount: Number(reqRow.amount),
+      balance_before: wallet.balance || 0,
+      balance_after: newBalance,
+      reference_type: 'wallet_request_credit',
+      reference_id: reqRow.id,
+      metadata: {
+        request_id: reqRow.id,
+        method: reqRow.method,
+        txn_id: reqRow.txn_id,
+        source: creditSource,
+      },
+    })
+  }
+
+  await admin.from('wallet_requests').update({
+    status: 'approved',
+    approved_by: actorUserId,
+    approved_at: creditedAt,
+    rejected_by: null,
+    rejected_at: null,
+    rejection_reason: null,
+    credited_tx_id: txId,
+    metadata: { ...(reqRow.metadata || {}), credit_source: creditSource },
+  }).eq('id', reqRow.id)
+
+  return { txId, balance: newBalance, alreadyCredited: !!existingTx }
+}
+
 // ===================== 13. WALLET =====================
 async function handleWallet(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const admin = adminClient()
   const action = pathParts[0]
+  const isServiceWebhook = userId === 'system-webhook'
+  const isAdmin = isServiceWebhook ? true : await isSuperAdminUser(userId)
+
+  // POST /wallet/webhook (external, no JWT)
+  if (method === 'POST' && action === 'webhook') {
+    const missing = validateRequired(body, ['method', 'txn_id', 'signature'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+
+    const methodName = String(body.method || '').trim()
+    if (!['upi', 'crypto'].includes(methodName)) return err('Unsupported webhook method', 422, 'VALIDATION_ERROR')
+
+    const expected = Deno.env.get('WALLET_WEBHOOK_SECRET') || Deno.env.get('PAYMENT_WEBHOOK_SECRET')
+    if (!expected) return err('Webhook secret not configured', 503, 'CONFIG_ERROR')
+    const signatureValid = String(body.signature || '') === expected
+    if (!signatureValid) return err('Invalid webhook signature', 400, 'INVALID_SIGNATURE')
+
+    const txnId = String(body.txn_id || '').trim()
+    const { data: requestRow } = await admin.from('wallet_requests').select('*').eq('txn_id', txnId).maybeSingle()
+    if (!requestRow) return err('Wallet request not found', 404, 'NOT_FOUND')
+    if (requestRow.status === 'rejected') return err('Wallet request rejected', 409, 'INVALID_STATE')
+    if (requestRow.method !== methodName) return err('Payment method mismatch', 409, 'INVALID_STATE')
+
+    const incomingAmount = Number(body.amount || 0)
+    if (incomingAmount > 0 && Number(requestRow.amount || 0) !== incomingAmount) {
+      return err('Amount mismatch', 409, 'INVALID_STATE')
+    }
+
+    const creditRes = await creditWalletRequestIdempotent(admin, requestRow, userId, `webhook:${methodName}`)
+    if ((creditRes as any).error) return err((creditRes as any).error, (creditRes as any).status || 400)
+
+    await logActivity(admin, 'wallet_request', requestRow.id, 'approved_webhook', userId, {
+      txn_id: requestRow.txn_id,
+      method: requestRow.method,
+      signature_valid: true,
+      already_credited: (creditRes as any).alreadyCredited,
+    })
+    return json({ success: true, request_id: requestRow.id, credited: true, ...(creditRes as any) })
+  }
 
   // GET /wallet
   if (method === 'GET' && !action) {
@@ -1545,7 +1654,8 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
 
   // GET /wallet/all (admin)
   if (method === 'GET' && action === 'all') {
-    const { data, error } = await sb.from('wallets').select('*').order('balance', { ascending: false })
+    if (!isAdmin) return err('Forbidden', 403)
+    const { data, error } = await admin.from('wallets').select('*').order('balance', { ascending: false })
     if (error) return err(error.message)
     return json({ data })
   }
@@ -1564,64 +1674,228 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
     return json({ data, total: count })
   }
 
+  // GET /wallet/requests
+  if (method === 'GET' && action === 'requests' && !pathParts[1]) {
+    const page = Number(body?.page || 1)
+    const limit = Number(body?.limit || 25)
+    const status = body?.status ? String(body.status) : ''
+
+    let query = sb.from('wallet_requests')
+      .select('*', { count: 'exact' })
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .range((page - 1) * limit, page * limit - 1)
+    if (status) query = query.eq('status', status)
+    const { data, error, count } = await query
+    if (error) return err(error.message)
+    return json({ data, total: count || 0 })
+  }
+
+  // GET /wallet/requests/all (admin)
+  if (method === 'GET' && action === 'requests' && pathParts[1] === 'all') {
+    if (!isAdmin) return err('Forbidden', 403)
+    const page = Number(body?.page || 1)
+    const limit = Number(body?.limit || 25)
+    const status = body?.status ? String(body.status) : ''
+    const methodFilter = body?.method ? String(body.method) : ''
+    const search = body?.search ? String(body.search) : ''
+
+    let query = admin.from('wallet_requests')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range((page - 1) * limit, page * limit - 1)
+    if (status) query = query.eq('status', status)
+    if (methodFilter) query = query.eq('method', methodFilter)
+    if (search) query = query.or(`txn_id.ilike.%${search}%,proof_url.ilike.%${search}%`)
+
+    const { data, error, count } = await query
+    if (error) return err(error.message)
+    return json({ data, total: count || 0 })
+  }
+
+  // POST /wallet/requests
+  if (method === 'POST' && action === 'requests' && !pathParts[1]) {
+    const missing = validateRequired(body, ['amount', 'method', 'txn_id'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+
+    const amount = Number(body.amount)
+    if (!Number.isFinite(amount) || amount < 50) return err('Minimum amount is 50', 422, 'VALIDATION_ERROR')
+
+    const methodName = String(body.method || '').trim()
+    if (!['bank_transfer', 'upi', 'crypto'].includes(methodName)) return err('Invalid method', 422, 'VALIDATION_ERROR')
+
+    const txnId = String(body.txn_id || '').trim()
+    if (!txnId) return err('Invalid txn_id', 422, 'VALIDATION_ERROR')
+
+    const insertPayload = {
+      user_id: userId,
+      amount,
+      method: methodName,
+      txn_id: txnId,
+      status: 'pending',
+      proof_url: body.proof_url || null,
+      source: body.source ? String(body.source) : 'user_submit',
+      signature_valid: body.signature ? String(body.signature) === (Deno.env.get('WALLET_WEBHOOK_SECRET') || Deno.env.get('PAYMENT_WEBHOOK_SECRET') || '') : null,
+      metadata: {
+        payload: body.payload || null,
+      },
+    }
+
+    const { data, error } = await sb.from('wallet_requests').insert(insertPayload).select('*').single()
+    if (error) {
+      const { data: existing } = await admin.from('wallet_requests').select('*').eq('txn_id', txnId).maybeSingle()
+      if (existing) {
+        if (existing.user_id === userId) return json({ data: existing, duplicate: true })
+        return err('Transaction id already used', 409, 'DUPLICATE_TXN')
+      }
+      return err(error.message)
+    }
+
+    await logActivity(admin, 'wallet_request', data.id, 'created', userId, {
+      method: methodName,
+      amount,
+      txn_id: txnId,
+    })
+    return json({ data }, 201)
+  }
+
+  // POST /wallet/requests/approve (admin)
+  if (method === 'POST' && action === 'requests' && pathParts[1] === 'approve') {
+    if (!isAdmin) return err('Forbidden', 403)
+    const requestId = String(body.request_id || '').trim()
+    if (!requestId) return err('request_id is required', 422, 'VALIDATION_ERROR')
+
+    const { data: requestRow, error: reqErr } = await admin.from('wallet_requests').select('*').eq('id', requestId).maybeSingle()
+    if (reqErr) return err(reqErr.message)
+    if (!requestRow) return err('Wallet request not found', 404, 'NOT_FOUND')
+    if (requestRow.status === 'rejected') return err('Rejected request cannot be approved', 409, 'INVALID_STATE')
+
+    const creditRes = await creditWalletRequestIdempotent(admin, requestRow, userId, 'admin_approval')
+    if ((creditRes as any).error) return err((creditRes as any).error, (creditRes as any).status || 400)
+
+    await logActivity(admin, 'wallet_request', requestRow.id, 'approved', userId, {
+      txn_id: requestRow.txn_id,
+      method: requestRow.method,
+      already_credited: (creditRes as any).alreadyCredited,
+    })
+    return json({ success: true, request_id: requestRow.id, ...(creditRes as any) })
+  }
+
+  // POST /wallet/requests/reject (admin)
+  if (method === 'POST' && action === 'requests' && pathParts[1] === 'reject') {
+    if (!isAdmin) return err('Forbidden', 403)
+    const requestId = String(body.request_id || '').trim()
+    const reason = String(body.reason || '').trim()
+    if (!requestId || !reason) return err('request_id and reason are required', 422, 'VALIDATION_ERROR')
+
+    const { data: requestRow, error: reqErr } = await admin.from('wallet_requests').select('*').eq('id', requestId).maybeSingle()
+    if (reqErr) return err(reqErr.message)
+    if (!requestRow) return err('Wallet request not found', 404, 'NOT_FOUND')
+    if (requestRow.status === 'approved') return err('Approved request cannot be rejected', 409, 'INVALID_STATE')
+
+    const { error: upErr } = await admin.from('wallet_requests').update({
+      status: 'rejected',
+      rejected_by: userId,
+      rejected_at: nowIso(),
+      rejection_reason: reason,
+    }).eq('id', requestRow.id)
+    if (upErr) return err(upErr.message)
+
+    await logActivity(admin, 'wallet_request', requestRow.id, 'rejected', userId, { reason })
+    return json({ success: true, request_id: requestRow.id })
+  }
+
   // POST /wallet/add
   if (method === 'POST' && action === 'add') {
+    const amount = Number(body.amount || 0)
+    if (amount <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
+
+    const requestedWalletId = body.wallet_id ? String(body.wallet_id) : null
+    if (requestedWalletId && !isAdmin) return err('Forbidden', 403)
+
+    const walletQuery = requestedWalletId
+      ? admin.from('wallets').select('id, user_id, balance').eq('id', requestedWalletId).maybeSingle()
+      : sb.from('wallets').select('id, user_id, balance').eq('user_id', userId).maybeSingle()
+    const { data: wallet } = await walletQuery
     if (!wallet) return err('Wallet not found', 404)
 
-    const newBalance = (wallet.balance || 0) + body.amount
-    const { error: txErr } = await sb.from('transactions').insert({
-      wallet_id: wallet.id, type: 'credit', amount: body.amount,
-      balance_after: newBalance, status: 'completed',
-      description: body.description || 'Credit added', created_by: userId,
+    const newBalance = Number(wallet.balance || 0) + amount
+    const { error: txErr } = await admin.from('transactions').insert({
+      wallet_id: wallet.id,
+      type: 'credit',
+      amount,
+      balance_after: newBalance,
+      status: 'completed',
+      description: body.description || 'Credit added',
+      created_by: userId,
+      source: body.source || 'admin_adjustment',
+      reference_id: body.reference_id || null,
+      reference_type: body.reference_type || 'wallet_add',
       meta: body.payment_method ? { payment_method: body.payment_method } : null,
     })
     if (txErr) return err(txErr.message)
 
-    await sb.from('wallets').update({ balance: newBalance }).eq('id', wallet.id)
-    await sb.from('wallet_ledger').insert({
+    await admin.from('wallets').update({ balance: newBalance, updated_at: nowIso() }).eq('id', wallet.id)
+    await admin.from('wallet_ledger').insert({
       wallet_id: wallet.id,
-      user_id: userId,
+      user_id: wallet.user_id,
       entry_type: 'credit',
-      amount: Number(body.amount),
+      amount,
       balance_before: wallet.balance || 0,
       balance_after: newBalance,
-      reference_type: 'wallet_add',
-      reference_id: null,
+      reference_type: body.reference_type || 'wallet_add',
+      reference_id: body.reference_id || null,
       metadata: body.payment_method ? { payment_method: body.payment_method } : {},
     })
-    await logActivity(admin, 'wallet', wallet.id, 'credit_added', userId, { amount: body.amount })
+    await logActivity(admin, 'wallet', wallet.id, 'credit_added', userId, { amount, target_user_id: wallet.user_id })
     return json({ success: true, balance: newBalance })
   }
 
   // POST /wallet/withdraw
   if (method === 'POST' && action === 'withdraw') {
- main
-    if (!wallet) return err('Wallet not found', 404)
-    const available = Number(wallet.balance || 0) - Number(wallet.locked_balance || 0)
-    if (available < Number(body.amount)) return err('Insufficient balance')
+    const amount = Number(body.amount || 0)
+    if (amount <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
 
-    const newBalance = (wallet.balance || 0) - body.amount
-    const { error: txErr } = await sb.from('transactions').insert({
-      wallet_id: wallet.id, type: 'debit', amount: body.amount,
-      balance_after: newBalance, status: 'completed',
-      description: body.description || 'Withdrawal', created_by: userId,
-      reference_id: body.reference_id, reference_type: body.reference_type,
+    const requestedWalletId = body.wallet_id ? String(body.wallet_id) : null
+    if (requestedWalletId && !isAdmin) return err('Forbidden', 403)
+
+    const walletQuery = requestedWalletId
+      ? admin.from('wallets').select('id, user_id, balance, locked_balance').eq('id', requestedWalletId).maybeSingle()
+      : sb.from('wallets').select('id, user_id, balance, locked_balance').eq('user_id', userId).maybeSingle()
+    const { data: wallet } = await walletQuery
+    if (!wallet) return err('Wallet not found', 404)
+
+    const available = Number(wallet.balance || 0) - Number(wallet.locked_balance || 0)
+    if (available < amount) return err('Insufficient balance')
+
+    const newBalance = Number(wallet.balance || 0) - amount
+    const { error: txErr } = await admin.from('transactions').insert({
+      wallet_id: wallet.id,
+      type: 'debit',
+      amount,
+      balance_after: newBalance,
+      status: 'completed',
+      description: body.description || 'Withdrawal',
+      created_by: userId,
+      source: body.source || 'wallet_withdraw',
+      reference_id: body.reference_id || null,
+      reference_type: body.reference_type || 'wallet_withdraw',
     })
     if (txErr) return err(txErr.message)
 
-    await sb.from('wallets').update({ balance: newBalance }).eq('id', wallet.id)
-    await sb.from('wallet_ledger').insert({
+    await admin.from('wallets').update({ balance: newBalance, updated_at: nowIso() }).eq('id', wallet.id)
+    await admin.from('wallet_ledger').insert({
       wallet_id: wallet.id,
-      user_id: userId,
+      user_id: wallet.user_id,
       entry_type: 'debit',
-      amount: Number(body.amount),
+      amount,
       balance_before: wallet.balance || 0,
       balance_after: newBalance,
       reference_type: body.reference_type || 'wallet_withdraw',
       reference_id: body.reference_id || null,
       metadata: {},
     })
-    await logActivity(admin, 'wallet', wallet.id, 'debit', userId, { amount: body.amount })
+    await logActivity(admin, 'wallet', wallet.id, 'debit', userId, { amount, target_user_id: wallet.user_id })
     return json({ success: true, balance: newBalance })
   }
 
@@ -1702,6 +1976,7 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
       reference_type: body.reference_type || 'wallet_refund',
       reference_id: body.reference_id || null,
       created_by: userId,
+      source: body.source || 'wallet_refund',
     })
     await sb.from('wallet_ledger').insert({
       wallet_id: wallet.id,
@@ -1944,6 +2219,12 @@ Deno.serve(async (req) => {
     if (module === 'marketplace' && req.method === 'POST' && subParts[0] === 'payment' && subParts[1] === 'webhook') {
       const admin = adminClient()
       return await handleMarketplace(req.method, subParts, body, 'system-webhook', admin)
+    }
+
+    // External wallet webhook endpoint without JWT
+    if (module === 'wallet' && req.method === 'POST' && subParts[0] === 'webhook') {
+      const admin = adminClient()
+      return await handleWallet(req.method, subParts, body, 'system-webhook', admin)
     }
 
     // Scheduler subscription endpoint without JWT (secret-gated in handler)

@@ -164,10 +164,20 @@ export const apkApi = {
 // ===================== WALLET =====================
 export const walletApi = {
   get: () => apiCall('GET', 'wallet'),
-  add: (amount: number, description?: string, paymentMethod?: string) =>
-    apiCall('POST', 'wallet/add', { amount, description, payment_method: paymentMethod }),
-  withdraw: (amount: number, description?: string, referenceId?: string, referenceType?: string) =>
-    apiCall('POST', 'wallet/withdraw', { amount, description, reference_id: referenceId, reference_type: referenceType }),
+  add: (amount: number, description?: string, paymentMethod?: string, walletId?: string) =>
+    apiCall('POST', 'wallet/add', { amount, description, payment_method: paymentMethod, wallet_id: walletId }),
+  createRequest: (data: { amount: number; method: string; txn_id: string; proof_url?: string | null; source?: string; signature?: string; payload?: Record<string, unknown> }) =>
+    apiCall('POST', 'wallet/requests', data),
+  myRequests: (params?: { page?: number; limit?: number; status?: string }) =>
+    apiCall('GET', 'wallet/requests', params),
+  adminRequests: (params?: { page?: number; limit?: number; status?: string; method?: string; search?: string }) =>
+    apiCall('GET', 'wallet/requests/all', params),
+  approveRequest: (requestId: string) =>
+    apiCall('POST', 'wallet/requests/approve', { request_id: requestId }),
+  rejectRequest: (requestId: string, reason: string) =>
+    apiCall('POST', 'wallet/requests/reject', { request_id: requestId, reason }),
+  withdraw: (amount: number, description?: string, referenceId?: string, referenceType?: string, walletId?: string) =>
+    apiCall('POST', 'wallet/withdraw', { amount, description, reference_id: referenceId, reference_type: referenceType, wallet_id: walletId }),
   lock: (amount: number, referenceId?: string, referenceType?: string, meta?: Record<string, unknown>) =>
     apiCall('POST', 'wallet/lock', { amount, reference_id: referenceId, reference_type: referenceType, meta }),
   unlock: (amount: number, referenceId?: string, referenceType?: string, meta?: Record<string, unknown>) =>
