@@ -69,8 +69,16 @@ export const marketplaceApi = {
   products: () => apiCall('GET', 'marketplace/products'),
   approve: (productId: string) => apiCall('PUT', 'marketplace/approve', { product_id: productId }),
   orders: () => apiCall('GET', 'marketplace/orders'),
+  orderHistory: () => apiCall('GET', 'marketplace/order-history'),
+  downloadHistory: () => apiCall('GET', 'marketplace/download-history'),
   pricing: (productId: string, price: number, discount?: number) =>
     apiCall('PUT', 'marketplace/pricing', { product_id: productId, price, discount_percent: discount }),
+  paymentInit: (data: any) => apiCall('POST', 'marketplace/payment/init', data),
+  paymentWebhook: (data: any) => apiCall('POST', 'marketplace/payment/webhook', data),
+  verifySignature: (data: any) => apiCall('POST', 'marketplace/payment/verify-signature', data),
+  markPaid: (paymentId: string) => apiCall('POST', 'marketplace/payment/mark-paid', { payment_id: paymentId }),
+  retryPayment: (paymentId: string) => apiCall('POST', 'marketplace/payment/retry', { payment_id: paymentId }),
+  refundPayment: (paymentId: string) => apiCall('POST', 'marketplace/payment/refund', { payment_id: paymentId }),
 };
 
 // ===================== KEYS =====================
@@ -144,9 +152,23 @@ export const walletApi = {
     apiCall('POST', 'wallet/add', { amount, description, payment_method: paymentMethod }),
   withdraw: (amount: number, description?: string, referenceId?: string, referenceType?: string) =>
     apiCall('POST', 'wallet/withdraw', { amount, description, reference_id: referenceId, reference_type: referenceType }),
+  lock: (amount: number, referenceId?: string, referenceType?: string, meta?: Record<string, unknown>) =>
+    apiCall('POST', 'wallet/lock', { amount, reference_id: referenceId, reference_type: referenceType, meta }),
+  unlock: (amount: number, referenceId?: string, referenceType?: string, meta?: Record<string, unknown>) =>
+    apiCall('POST', 'wallet/unlock', { amount, reference_id: referenceId, reference_type: referenceType, meta }),
+  refund: (amount: number, description?: string, referenceId?: string, referenceType?: string, meta?: Record<string, unknown>) =>
+    apiCall('POST', 'wallet/refund', { amount, description, reference_id: referenceId, reference_type: referenceType, meta }),
+  ledger: () => apiCall('GET', 'wallet/ledger'),
   transactions: (params?: { page?: number; limit?: number }) =>
     apiCall('GET', 'wallet/transactions', params),
   all: () => apiCall('GET', 'wallet/all'),
+};
+
+// ===================== SUBSCRIPTIONS =====================
+export const subscriptionsApi = {
+  list: () => apiCall('GET', 'subscriptions'),
+  renew: (subscriptionId: string) => apiCall('POST', 'subscriptions/renew', { subscription_id: subscriptionId }),
+  cronRun: (cronSecret?: string) => apiCall('POST', 'subscriptions/cron-run', cronSecret ? { cron_secret: cronSecret } : {}),
 };
 
 // ===================== SEO & LEADS =====================

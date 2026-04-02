@@ -10,8 +10,85 @@ function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: corsHeaders })
 }
 
-function err(message: string, status = 400) {
-  return json({ error: message }, status)
+function err(message: string, status = 400, code = 'BAD_REQUEST') {
+  return json({ error: message, code }, status)
+}
+
+const productListCache: { data: any[] | null; expiresAt: number } = { data: null, expiresAt: 0 }
+const PRODUCT_LIST_CACHE_TTL_MS = 60 * 1000
+const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SECONDS') || '60')
+const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
+
+function invalidateProductCache() {
+  productListCache.data = null
+  productListCache.expiresAt = 0
+}
+
+function nowIso() {
+  return new Date().toISOString()
+}
+
+function generateIdempotencyKey() {
+  return crypto.randomUUID()
+}
+
+function reqIdempotencyFromMeta(meta: any) {
+  if (!meta || typeof meta !== 'object') return null
+  return meta.idempotency_key || meta.idempotencyKey || null
+}
+
+function generateLicenseKey() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+  let key = ''
+  for (let j = 0; j < 4; j++) {
+    if (j > 0) key += '-'
+    for (let i = 0; i < 4; i++) key += chars.charAt(Math.floor(Math.random() * chars.length))
+  }
+  return key
+}
+
+function validateRequired(body: any, fields: string[]) {
+  for (const f of fields) {
+    if (body?.[f] === undefined || body?.[f] === null || body?.[f] === '') {
+      return `Missing field: ${f}`
+    }
+  }
+  return null
+}
+
+async function enforceRateLimit(sb: any, userId: string, endpoint: string) {
+  const windowSeconds = RATE_LIMIT_WINDOW_SECONDS
+  const maxRequests = RATE_LIMIT_MAX_REQUESTS
+  const now = new Date()
+  const windowStart = new Date(now.getTime() - windowSeconds * 1000).toISOString()
+
+  const { data: existing } = await sb.from('rate_limits').select('*')
+    .eq('user_id', userId)
+    .eq('endpoint', endpoint)
+    .gte('window_start', windowStart)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (!existing) {
+    await sb.from('rate_limits').insert({
+      user_id: userId,
+      endpoint,
+      requests_count: 1,
+      window_start: now.toISOString(),
+      window_seconds: windowSeconds,
+      max_requests: maxRequests,
+    })
+    return null
+  }
+
+  const currentCount = Number(existing.requests_count || 0)
+  if (currentCount >= Number(existing.max_requests || maxRequests)) {
+    return err('Rate limit exceeded', 429, 'RATE_LIMITED')
+  }
+
+  await sb.from('rate_limits').update({ requests_count: currentCount + 1, updated_at: now.toISOString() }).eq('id', existing.id)
+  return null
 }
 
 async function authenticate(req: Request) {
@@ -161,6 +238,7 @@ async function handleProducts(method: string, pathParts: string[], body: any, us
       live_url: body.live_url || null,
     }).select().single()
     if (error) return err(error.message)
+    invalidateProductCache()
     await logActivity(admin, 'product', data.id, 'created', userId, { name: body.name })
     return json({ data }, 201)
   }
@@ -173,6 +251,7 @@ async function handleProducts(method: string, pathParts: string[], body: any, us
     }
     const { error } = await sb.from('products').update(updates).eq('id', id)
     if (error) return err(error.message)
+    invalidateProductCache()
     await logActivity(admin, 'product', id, 'updated', userId, updates)
     return json({ success: true })
   }
@@ -181,6 +260,7 @@ async function handleProducts(method: string, pathParts: string[], body: any, us
   if (method === 'DELETE' && id) {
     const { error } = await sb.from('products').delete().eq('id', id)
     if (error) return err(error.message)
+    invalidateProductCache()
     await logActivity(admin, 'product', id, 'deleted', userId)
     return json({ success: true })
   }
@@ -257,10 +337,22 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
     if (body.credit_limit !== undefined) updates.credit_limit = body.credit_limit
     if (body.is_active !== undefined) updates.is_active = body.is_active
     if (body.is_verified !== undefined) updates.is_verified = body.is_verified
+    if (body.tier_level !== undefined) updates.tier_level = body.tier_level
     const { error } = await sb.from('resellers').update(updates).eq('id', id)
     if (error) return err(error.message)
     await logActivity(admin, 'reseller', id, 'updated', userId, updates)
     return json({ success: true })
+  }
+
+  // GET /resellers/commission-logs
+  if (method === 'GET' && id === 'commission-logs') {
+    const { data: reseller } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
+    const resellerId = reseller?.id
+    if (!resellerId) return json({ data: [] })
+    const { data, error } = await sb.from('reseller_commission_logs').select('*')
+      .eq('reseller_id', resellerId).order('created_at', { ascending: false }).limit(200)
+    if (error) return err(error.message)
+    return json({ data })
   }
 
   return err('Not found', 404)
@@ -273,11 +365,16 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
 
   // GET /marketplace/products
   if (method === 'GET' && action === 'products') {
+    const cacheValid = productListCache.data && Date.now() < productListCache.expiresAt
+    if (cacheValid) return json({ data: productListCache.data, cached: true })
+
     const { data, error } = await sb.from('products')
       .select('id, name, slug, description, short_description, price, status, features, thumbnail_url, git_repo_url, marketplace_visible, apk_url, demo_url, demo_login, demo_password, demo_enabled, featured, trending, business_type, deploy_status, discount_percent, rating, tags, apk_enabled, license_enabled')
       .eq('marketplace_visible', true)
       .order('created_at', { ascending: false }).limit(500)
     if (error) return err(error.message)
+    productListCache.data = data || []
+    productListCache.expiresAt = Date.now() + PRODUCT_LIST_CACHE_TTL_MS
     return json({ data })
   }
 
@@ -285,6 +382,7 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
   if (method === 'PUT' && action === 'approve') {
     const { error } = await sb.from('products').update({ status: 'active', marketplace_visible: true }).eq('id', body.product_id)
     if (error) return err(error.message)
+    invalidateProductCache()
     await logActivity(admin, 'marketplace', body.product_id, 'approved', userId)
     return json({ success: true })
   }
@@ -304,11 +402,431 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
       discount_percent: body.discount_percent,
     }).eq('id', body.product_id)
     if (error) return err(error.message)
+    invalidateProductCache()
     await logActivity(admin, 'marketplace', body.product_id, 'pricing_updated', userId, body)
     return json({ success: true })
   }
 
+  // GET /marketplace/order-history
+  if (method === 'GET' && action === 'order-history') {
+    const { data, error } = await sb.from('orders').select('*').eq('user_id', userId)
+      .order('created_at', { ascending: false }).limit(200)
+    if (error) return err(error.message)
+    return json({ data })
+  }
+
+  // GET /marketplace/download-history
+  if (method === 'GET' && action === 'download-history') {
+    const { data, error } = await sb.from('apk_downloads').select('*').eq('user_id', userId)
+      .order('created_at', { ascending: false }).limit(200)
+    if (error) return err(error.message)
+    return json({ data })
+  }
+
+  // POST /marketplace/payment/init
+  if (method === 'POST' && action === 'payment' && pathParts[1] === 'init') {
+    const missing = validateRequired(body, ['product_id', 'amount'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+
+    const requestedIdempotency = body.idempotency_key || reqIdempotencyFromMeta(body.meta) || generateIdempotencyKey()
+    const amount = Number(body.amount || 0)
+    if (!Number.isFinite(amount) || amount <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
+
+    const { data: existingOrder } = await sb.from('orders').select('*').eq('idempotency_key', requestedIdempotency).maybeSingle()
+    if (existingOrder) return json({ data: existingOrder, duplicate: true })
+
+    const { data: productOwner } = await sb.from('products').select('created_by').eq('id', body.product_id).maybeSingle()
+    if (!productOwner?.created_by) return err('Product not found or missing seller', 404, 'NOT_FOUND')
+    const sellerId = productOwner.created_by
+
+    const { data: marketplaceOrder, error: marketplaceOrderError } = await sb.from('marketplace_orders').insert({
+      buyer_id: userId,
+      seller_id: sellerId,
+      amount,
+      final_amount: amount,
+      subtotal: amount,
+      product_id: body.product_id,
+      product_name: body.product_name || null,
+      status: 'pending',
+      payment_status: 'pending',
+      payment_method: body.payment_method || 'gateway',
+      idempotency_key: requestedIdempotency,
+      retry_count: 0,
+    }).select().single()
+    if (marketplaceOrderError) {
+      const { data: duplicateOrder } = await sb.from('orders').select('*').eq('idempotency_key', requestedIdempotency).maybeSingle()
+      if (duplicateOrder) return json({ data: duplicateOrder, duplicate: true })
+      return err(marketplaceOrderError.message)
+    }
+
+    const { data: order, error: orderError } = await sb.from('orders').insert({
+      marketplace_order_id: marketplaceOrder.id,
+      user_id: userId,
+      product_id: body.product_id,
+      amount,
+      currency: body.currency || 'INR',
+      status: 'pending',
+      payment_method: body.payment_method || 'gateway',
+      idempotency_key: requestedIdempotency,
+      metadata: body.meta || {},
+    }).select().single()
+    if (orderError) {
+      const { data: duplicateOrder } = await sb.from('orders').select('*').eq('idempotency_key', requestedIdempotency).maybeSingle()
+      if (duplicateOrder) return json({ data: duplicateOrder, duplicate: true })
+      return err(orderError.message)
+    }
+
+    const { data: payment, error: paymentError } = await sb.from('payments').insert({
+      order_id: order.id,
+      user_id: userId,
+      amount,
+      currency: body.currency || 'INR',
+      gateway: body.gateway || 'manual',
+      gateway_reference: body.gateway_reference || null,
+      status: 'pending',
+      idempotency_key: requestedIdempotency,
+      metadata: body.meta || {},
+    }).select().single()
+    if (paymentError) return err(paymentError.message)
+
+    if (body.lock_wallet === true || body.payment_method === 'wallet') {
+      const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', userId).maybeSingle()
+      if (wallet) {
+        const available = Number(wallet.balance || 0) - Number(wallet.locked_balance || 0)
+        if (available < amount) return err('Insufficient balance', 400, 'INSUFFICIENT_BALANCE')
+        const lockedBefore = Number(wallet.locked_balance || 0)
+        const lockedAfter = lockedBefore + amount
+        await sb.from('wallets').update({ locked_balance: lockedAfter, updated_at: nowIso() }).eq('id', wallet.id)
+        await sb.from('wallet_ledger').insert({
+          wallet_id: wallet.id,
+          user_id: userId,
+          entry_type: 'lock',
+          amount,
+          balance_before: wallet.balance || 0,
+          balance_after: wallet.balance || 0,
+          reference_type: 'order',
+          reference_id: order.id,
+          metadata: { reason: 'payment_init_lock' },
+        })
+      }
+    }
+
+    await sb.from('async_jobs').insert({
+      job_type: 'email',
+      status: 'queued',
+      payload: { kind: 'payment_init', user_id: userId, order_id: order.id, payment_id: payment.id },
+    })
+
+    await logActivity(admin, 'order', order.id, 'payment_init', userId, { idempotency_key: requestedIdempotency })
+    return json({
+      data: {
+        order,
+        payment,
+        payment_status: 'pending',
+        gateway_redirect_url: body.gateway_redirect_url || null,
+      },
+    }, 201)
+  }
+
+  // POST /marketplace/payment/webhook
+  if (method === 'POST' && action === 'payment' && pathParts[1] === 'webhook') {
+    const missing = validateRequired(body, ['provider', 'event_type'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+
+    const eventId = body.event_id || null
+    if (eventId) {
+      const { data: existing } = await sb.from('webhooks').select('id').eq('provider', body.provider).eq('event_id', eventId).maybeSingle()
+      if (existing) return json({ success: true, duplicate: true, webhook_id: existing.id })
+    }
+
+    const { data: payment } = body.payment_id
+      ? await sb.from('payments').select('*').eq('id', body.payment_id).maybeSingle()
+      : { data: null as any }
+
+    const providedSignature = String(body.signature || '')
+    const expectedSignature = Deno.env.get('PAYMENT_WEBHOOK_SECRET')
+    if (!expectedSignature) return err('Webhook secret not configured', 503, 'CONFIG_ERROR')
+    const signatureValid = providedSignature === expectedSignature
+
+    const { data: webhook, error: webhookError } = await sb.from('webhooks').insert({
+      provider: body.provider,
+      event_id: eventId,
+      event_type: body.event_type,
+      payment_id: payment?.id || null,
+      order_id: payment?.order_id || body.order_id || null,
+      status: signatureValid ? 'processed' : 'failed',
+      signature_valid: signatureValid,
+      attempts: 1,
+      payload: body.payload || body,
+      error_message: signatureValid ? null : 'Invalid signature',
+      processed_at: signatureValid ? nowIso() : null,
+    }).select().single()
+    if (webhookError) return err(webhookError.message)
+
+    if (!signatureValid) {
+      await sb.from('async_jobs').insert({
+        job_type: 'webhook_retry',
+        status: 'queued',
+        payload: { webhook_id: webhook.id, reason: 'invalid_signature' },
+        run_at: new Date(Date.now() + 2 * 60 * 1000).toISOString(),
+      })
+      return err('Invalid webhook signature', 400, 'INVALID_SIGNATURE')
+    }
+
+    if (payment && (body.event_type === 'payment.success' || body.event_type === 'charge.succeeded')) {
+      const result = await markPaymentSuccess(admin, sb, userId, payment)
+      return json({ success: true, webhook: webhook.id, result })
+    }
+
+    if (payment && (body.event_type === 'payment.failed' || body.event_type === 'charge.failed')) {
+      const retryCount = Number(payment.retry_count || 0) + 1
+      await sb.from('payments').update({ status: 'failed', retry_count: retryCount, error_message: body.error_message || 'Payment failed', updated_at: nowIso() }).eq('id', payment.id)
+      await sb.from('orders').update({ status: 'failed', retry_count: retryCount, updated_at: nowIso() }).eq('id', payment.order_id)
+      if (payment.order_id) {
+        const { data: ord } = await sb.from('orders').select('marketplace_order_id').eq('id', payment.order_id).maybeSingle()
+        if (ord?.marketplace_order_id) {
+          await sb.from('marketplace_orders').update({ payment_status: 'failed', retry_count: retryCount, payment_error: body.error_message || 'Payment failed' }).eq('id', ord.marketplace_order_id)
+        }
+      }
+      await sb.from('async_jobs').insert({
+        job_type: 'webhook_retry',
+        status: retryCount < 3 ? 'queued' : 'failed',
+        attempts: retryCount,
+        payload: { payment_id: payment.id, event_type: body.event_type },
+        run_at: new Date(Date.now() + retryCount * 60 * 1000).toISOString(),
+      })
+    }
+
+    return json({ success: true, webhook: webhook.id })
+  }
+
+  // POST /marketplace/payment/verify-signature
+  if (method === 'POST' && action === 'payment' && pathParts[1] === 'verify-signature') {
+    const missing = validateRequired(body, ['provider', 'signature'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+    const expected = Deno.env.get('PAYMENT_WEBHOOK_SECRET')
+    if (!expected) return err('Webhook secret not configured', 503, 'CONFIG_ERROR')
+    const valid = String(body.signature) === expected
+    return json({ valid })
+  }
+
+  // POST /marketplace/payment/mark-paid
+  if (method === 'POST' && action === 'payment' && pathParts[1] === 'mark-paid') {
+    const missing = validateRequired(body, ['payment_id'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+    const { data: payment, error } = await sb.from('payments').select('*').eq('id', body.payment_id).maybeSingle()
+    if (error) return err(error.message)
+    if (!payment) return err('Payment not found', 404, 'NOT_FOUND')
+    const result = await markPaymentSuccess(admin, sb, userId, payment)
+    return json({ success: true, result })
+  }
+
+  // POST /marketplace/payment/retry
+  if (method === 'POST' && action === 'payment' && pathParts[1] === 'retry') {
+    const missing = validateRequired(body, ['payment_id'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+    const { data: payment } = await sb.from('payments').select('*').eq('id', body.payment_id).maybeSingle()
+    if (!payment) return err('Payment not found', 404, 'NOT_FOUND')
+    const retryCount = Number(payment.retry_count || 0) + 1
+    await sb.from('payments').update({ status: 'pending', retry_count: retryCount, updated_at: nowIso() }).eq('id', payment.id)
+    await sb.from('orders').update({ retry_count: retryCount, updated_at: nowIso() }).eq('id', payment.order_id)
+    await sb.from('async_jobs').insert({
+      job_type: 'webhook_retry',
+      status: 'queued',
+      attempts: retryCount,
+      payload: { payment_id: payment.id, source: 'manual_retry' },
+      run_at: nowIso(),
+    })
+    return json({ success: true, retry_count: retryCount })
+  }
+
+  // POST /marketplace/payment/refund
+  if (method === 'POST' && action === 'payment' && pathParts[1] === 'refund') {
+    const missing = validateRequired(body, ['payment_id'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+    const { data: payment } = await sb.from('payments').select('*').eq('id', body.payment_id).maybeSingle()
+    if (!payment) return err('Payment not found', 404, 'NOT_FOUND')
+    const { data: order } = await sb.from('orders').select('*').eq('id', payment.order_id).maybeSingle()
+    if (!order) return err('Order not found', 404, 'NOT_FOUND')
+
+    await sb.from('payments').update({ status: 'refunded', updated_at: nowIso() }).eq('id', payment.id)
+    await sb.from('orders').update({ status: 'refunded', updated_at: nowIso() }).eq('id', order.id)
+    if (order.marketplace_order_id) {
+      await sb.from('marketplace_orders').update({ status: 'refunded', payment_status: 'refunded' }).eq('id', order.marketplace_order_id)
+    }
+
+    const { data: wallet } = await sb.from('wallets').select('id, balance').eq('user_id', order.user_id).maybeSingle()
+    if (wallet) {
+      const oldBalance = Number(wallet.balance || 0)
+      const newBalance = oldBalance + Number(order.amount || 0)
+      await sb.from('wallets').update({ balance: newBalance, updated_at: nowIso() }).eq('id', wallet.id)
+      await sb.from('transactions').insert({
+        wallet_id: wallet.id,
+        type: 'refund',
+        amount: Number(order.amount || 0),
+        balance_after: newBalance,
+        status: 'completed',
+        description: 'Payment refund',
+        reference_type: 'order_refund',
+        reference_id: order.id,
+        created_by: userId,
+      })
+      await sb.from('wallet_ledger').insert({
+        wallet_id: wallet.id,
+        user_id: order.user_id,
+        entry_type: 'refund',
+        amount: Number(order.amount || 0),
+        balance_before: oldBalance,
+        balance_after: newBalance,
+        reference_type: 'order_refund',
+        reference_id: order.id,
+        metadata: { payment_id: payment.id },
+      })
+    }
+
+    return json({ success: true })
+  }
+
   return err('Not found', 404)
+}
+
+async function markPaymentSuccess(admin: any, sb: any, userId: string, payment: any) {
+  if (!payment?.order_id) return null
+
+  const { data: order } = await sb.from('orders').select('*').eq('id', payment.order_id).maybeSingle()
+  if (!order) return null
+
+  if (order.status === 'success') return { order, alreadyProcessed: true }
+
+  const paidAt = nowIso()
+  const actorUserId = order.user_id || userId
+
+  await sb.from('payments').update({
+    status: 'success',
+    signature_verified: true,
+    updated_at: paidAt,
+  }).eq('id', payment.id)
+
+  await sb.from('orders').update({
+    status: 'success',
+    updated_at: paidAt,
+  }).eq('id', order.id)
+
+  if (order.marketplace_order_id) {
+    await sb.from('marketplace_orders').update({
+      status: 'completed',
+      payment_status: 'success',
+      completed_at: paidAt,
+    }).eq('id', order.marketplace_order_id)
+  }
+
+  const { data: existingSubscription } = await sb.from('subscriptions')
+    .select('*')
+    .eq('user_id', order.user_id)
+    .eq('product_id', order.product_id)
+    .eq('status', 'active')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  let periodEnd = new Date()
+  periodEnd.setDate(periodEnd.getDate() + 30)
+
+  let subscriptionId = existingSubscription?.id || null
+  if (existingSubscription) {
+    const currentEnd = existingSubscription.current_period_end ? new Date(existingSubscription.current_period_end) : new Date()
+    if (currentEnd > new Date()) {
+      periodEnd = new Date(currentEnd.getTime())
+      periodEnd.setDate(periodEnd.getDate() + 30)
+    }
+    await sb.from('subscriptions').update({
+      status: 'active',
+      auto_renew: true,
+      failed_retry_count: 0,
+      next_retry_at: null,
+      last_payment_id: payment.id,
+      last_renewal_attempt_at: paidAt,
+      current_period_end: periodEnd.toISOString(),
+      updated_at: paidAt,
+    }).eq('id', existingSubscription.id)
+  } else {
+    const { data: newSubscription } = await sb.from('subscriptions').insert({
+      user_id: order.user_id,
+      product_id: order.product_id,
+      plan_name: 'marketplace-default',
+      status: 'active',
+      billing_cycle: 'monthly',
+      amount: order.amount,
+      currency: order.currency || 'INR',
+      current_period_start: paidAt,
+      current_period_end: periodEnd.toISOString(),
+      auto_renew: true,
+      grace_period_days: 3,
+      failed_retry_count: 0,
+      max_failed_retries: 3,
+      last_payment_id: payment.id,
+      last_renewal_attempt_at: paidAt,
+    }).select().single()
+    subscriptionId = newSubscription?.id || null
+  }
+
+  const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', order.user_id).maybeSingle()
+  if (wallet) {
+    const locked = Number(wallet.locked_balance || 0)
+    if (locked > 0) {
+      const unlockAmount = Math.min(locked, Number(order.amount || 0))
+      const nextLocked = Math.max(0, locked - unlockAmount)
+      await sb.from('wallets').update({ locked_balance: nextLocked, updated_at: paidAt }).eq('id', wallet.id)
+      await sb.from('wallet_ledger').insert({
+        wallet_id: wallet.id,
+        user_id: order.user_id,
+        entry_type: 'unlock',
+        amount: unlockAmount,
+        balance_before: wallet.balance || 0,
+        balance_after: wallet.balance || 0,
+        reference_type: 'order',
+        reference_id: order.id,
+        metadata: { reason: 'payment_success_unlock' },
+      })
+    }
+  }
+
+  let createdLicense: any = null
+  if (order.product_id) {
+    const { data: existingLicense } = await sb.from('license_keys').select('*')
+      .filter('meta->>order_id', 'eq', order.id)
+      .maybeSingle()
+    if (existingLicense) {
+      createdLicense = existingLicense
+    } else {
+      const { data: newLicense } = await sb.from('license_keys').insert({
+        product_id: order.product_id,
+        license_key: generateLicenseKey(),
+        key_type: 'monthly',
+        status: 'active',
+        owner_email: null,
+        owner_name: null,
+        max_devices: 1,
+        activated_devices: 0,
+        activated_at: paidAt,
+        expires_at: periodEnd.toISOString(),
+        created_by: actorUserId,
+        notes: 'Auto-generated after payment success',
+        meta: { order_id: order.id, payment_id: payment.id, subscription_id: subscriptionId },
+      }).select().single()
+      createdLicense = newLicense
+    }
+    if (createdLicense?.id && order.marketplace_order_id) {
+      await sb.from('marketplace_orders').update({ license_key_id: createdLicense.id }).eq('id', order.marketplace_order_id)
+    }
+  }
+
+  await sb.from('async_jobs').insert([
+    { job_type: 'email', status: 'queued', payload: { kind: 'payment_success', user_id: order.user_id, order_id: order.id } },
+  ])
+  await logActivity(admin, 'payment', payment.id, 'marked_paid', actorUserId, { order_id: order.id })
+
+  return { order_id: order.id, subscription_id: subscriptionId, license_key: createdLicense?.license_key || null }
 }
 
 // ===================== 5. KEYS =====================
@@ -740,7 +1258,6 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
 
   // POST /wallet/add
   if (method === 'POST' && action === 'add') {
-    const { data: wallet } = await sb.from('wallets').select('id, balance').eq('user_id', userId).maybeSingle()
     if (!wallet) return err('Wallet not found', 404)
 
     const newBalance = (wallet.balance || 0) + body.amount
@@ -753,15 +1270,27 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
     if (txErr) return err(txErr.message)
 
     await sb.from('wallets').update({ balance: newBalance }).eq('id', wallet.id)
+    await sb.from('wallet_ledger').insert({
+      wallet_id: wallet.id,
+      user_id: userId,
+      entry_type: 'credit',
+      amount: Number(body.amount),
+      balance_before: wallet.balance || 0,
+      balance_after: newBalance,
+      reference_type: 'wallet_add',
+      reference_id: null,
+      metadata: body.payment_method ? { payment_method: body.payment_method } : {},
+    })
     await logActivity(admin, 'wallet', wallet.id, 'credit_added', userId, { amount: body.amount })
     return json({ success: true, balance: newBalance })
   }
 
   // POST /wallet/withdraw
   if (method === 'POST' && action === 'withdraw') {
-    const { data: wallet } = await sb.from('wallets').select('id, balance').eq('user_id', userId).maybeSingle()
+ main
     if (!wallet) return err('Wallet not found', 404)
-    if ((wallet.balance || 0) < body.amount) return err('Insufficient balance')
+    const available = Number(wallet.balance || 0) - Number(wallet.locked_balance || 0)
+    if (available < Number(body.amount)) return err('Insufficient balance')
 
     const newBalance = (wallet.balance || 0) - body.amount
     const { error: txErr } = await sb.from('transactions').insert({
@@ -773,7 +1302,110 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
     if (txErr) return err(txErr.message)
 
     await sb.from('wallets').update({ balance: newBalance }).eq('id', wallet.id)
+    await sb.from('wallet_ledger').insert({
+      wallet_id: wallet.id,
+      user_id: userId,
+      entry_type: 'debit',
+      amount: Number(body.amount),
+      balance_before: wallet.balance || 0,
+      balance_after: newBalance,
+      reference_type: body.reference_type || 'wallet_withdraw',
+      reference_id: body.reference_id || null,
+      metadata: {},
+    })
     await logActivity(admin, 'wallet', wallet.id, 'debit', userId, { amount: body.amount })
+    return json({ success: true, balance: newBalance })
+  }
+
+  // GET /wallet/ledger
+  if (method === 'GET' && action === 'ledger') {
+    const { data: wallet } = await sb.from('wallets').select('id').eq('user_id', userId).maybeSingle()
+    if (!wallet) return json({ data: [] })
+    const { data, error } = await sb.from('wallet_ledger').select('*')
+      .eq('wallet_id', wallet.id)
+      .order('created_at', { ascending: false })
+      .limit(200)
+    if (error) return err(error.message)
+    return json({ data })
+  }
+
+  // POST /wallet/lock
+  if (method === 'POST' && action === 'lock') {
+    if (Number(body.amount || 0) <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
+    const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', userId).single()
+    if (!wallet) return err('Wallet not found', 404)
+    const available = Number(wallet.balance || 0) - Number(wallet.locked_balance || 0)
+    if (available < Number(body.amount || 0)) return err('Insufficient balance')
+    const oldLocked = Number(wallet.locked_balance || 0)
+    const newLocked = oldLocked + Number(body.amount)
+    await sb.from('wallets').update({ locked_balance: newLocked, updated_at: nowIso() }).eq('id', wallet.id)
+    await sb.from('wallet_ledger').insert({
+      wallet_id: wallet.id,
+      user_id: userId,
+      entry_type: 'lock',
+      amount: Number(body.amount),
+      balance_before: wallet.balance || 0,
+      balance_after: wallet.balance || 0,
+      reference_type: body.reference_type || 'manual_lock',
+      reference_id: body.reference_id || null,
+      metadata: body.meta || {},
+    })
+    return json({ success: true, locked_balance: newLocked })
+  }
+
+  // POST /wallet/unlock
+  if (method === 'POST' && action === 'unlock') {
+    if (Number(body.amount || 0) <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
+    const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', userId).single()
+    if (!wallet) return err('Wallet not found', 404)
+    const oldLocked = Number(wallet.locked_balance || 0)
+    const unlock = Math.min(oldLocked, Number(body.amount))
+    const newLocked = Math.max(0, oldLocked - unlock)
+    await sb.from('wallets').update({ locked_balance: newLocked, updated_at: nowIso() }).eq('id', wallet.id)
+    await sb.from('wallet_ledger').insert({
+      wallet_id: wallet.id,
+      user_id: userId,
+      entry_type: 'unlock',
+      amount: unlock,
+      balance_before: wallet.balance || 0,
+      balance_after: wallet.balance || 0,
+      reference_type: body.reference_type || 'manual_unlock',
+      reference_id: body.reference_id || null,
+      metadata: body.meta || {},
+    })
+    return json({ success: true, locked_balance: newLocked })
+  }
+
+  // POST /wallet/refund
+  if (method === 'POST' && action === 'refund') {
+    if (Number(body.amount || 0) <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
+    const { data: wallet } = await sb.from('wallets').select('id, balance').eq('user_id', userId).single()
+    if (!wallet) return err('Wallet not found', 404)
+    const oldBalance = Number(wallet.balance || 0)
+    const newBalance = oldBalance + Number(body.amount)
+    await sb.from('wallets').update({ balance: newBalance, updated_at: nowIso() }).eq('id', wallet.id)
+    await sb.from('transactions').insert({
+      wallet_id: wallet.id,
+      type: 'refund',
+      amount: Number(body.amount),
+      balance_after: newBalance,
+      status: 'completed',
+      description: body.description || 'Wallet refund',
+      reference_type: body.reference_type || 'wallet_refund',
+      reference_id: body.reference_id || null,
+      created_by: userId,
+    })
+    await sb.from('wallet_ledger').insert({
+      wallet_id: wallet.id,
+      user_id: userId,
+      entry_type: 'refund',
+      amount: Number(body.amount),
+      balance_before: oldBalance,
+      balance_after: newBalance,
+      reference_type: body.reference_type || 'wallet_refund',
+      reference_id: body.reference_id || null,
+      metadata: body.meta || {},
+    })
     return json({ success: true, balance: newBalance })
   }
 
@@ -824,6 +1456,156 @@ async function handleSeoLeads(method: string, pathParts: string[], body: any, us
   return err('Not found', 404)
 }
 
+// ===================== 15. SUBSCRIPTIONS =====================
+async function handleSubscriptions(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const action = pathParts[0]
+
+  // GET /subscriptions
+  if (method === 'GET' && !action) {
+    const { data, error } = await sb.from('subscriptions').select('*')
+      .eq('user_id', userId).order('created_at', { ascending: false })
+    if (error) return err(error.message)
+    return json({ data })
+  }
+
+  // POST /subscriptions/renew
+  if (method === 'POST' && action === 'renew') {
+    const missing = validateRequired(body, ['subscription_id'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+    const { data: sub } = await sb.from('subscriptions').select('*').eq('id', body.subscription_id).eq('user_id', userId).maybeSingle()
+    if (!sub) return err('Subscription not found', 404, 'NOT_FOUND')
+    const end = sub.current_period_end ? new Date(sub.current_period_end) : new Date()
+    const base = end > new Date() ? end : new Date()
+    base.setDate(base.getDate() + 30)
+    await sb.from('subscriptions').update({
+      status: 'active',
+      failed_retry_count: 0,
+      next_retry_at: null,
+      current_period_end: base.toISOString(),
+      updated_at: nowIso(),
+    }).eq('id', sub.id)
+    await sb.from('async_jobs').insert({
+      job_type: 'email',
+      status: 'queued',
+      payload: { kind: 'manual_renew', subscription_id: sub.id, user_id: userId },
+    })
+    return json({ success: true, subscription_id: sub.id, current_period_end: base.toISOString() })
+  }
+
+  // POST /subscriptions/cron-run
+  if (method === 'POST' && action === 'cron-run') {
+    const isServiceMode = reqHasCronSecret(body)
+    if (!isServiceMode) return err('Forbidden', 403, 'FORBIDDEN')
+
+    const now = new Date()
+    const { data: subs, error } = await sb.from('subscriptions').select('*')
+      .eq('auto_renew', true)
+      .in('status', ['active', 'expired'])
+      .order('current_period_end', { ascending: true })
+      .limit(500)
+    if (error) return err(error.message)
+
+    let processed = 0
+    let charged = 0
+    let failed = 0
+    for (const sub of (subs || [])) {
+      const periodEnd = sub.current_period_end ? new Date(sub.current_period_end) : null
+      if (!periodEnd) continue
+
+      if (periodEnd > now) continue
+      processed++
+
+      const graceDays = Number(sub.grace_period_days || 0)
+      const graceEnd = new Date(periodEnd.getTime())
+      graceEnd.setDate(graceEnd.getDate() + graceDays)
+
+      const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', sub.user_id).maybeSingle()
+      const amount = Number(sub.amount || 0)
+      const available = Number(wallet?.balance || 0) - Number(wallet?.locked_balance || 0)
+      if (!wallet || available < amount) {
+        const retries = Number(sub.failed_retry_count || 0) + 1
+        const shouldExpire = retries >= Number(sub.max_failed_retries || 3) && now > graceEnd
+        await sb.from('subscriptions').update({
+          failed_retry_count: retries,
+          status: shouldExpire ? 'expired' : 'active',
+          next_retry_at: new Date(Date.now() + retries * 24 * 60 * 60 * 1000).toISOString(),
+          last_renewal_attempt_at: nowIso(),
+          updated_at: nowIso(),
+        }).eq('id', sub.id)
+        await sb.from('async_jobs').insert({
+          job_type: 'subscription_cron',
+          status: 'queued',
+          attempts: retries,
+          payload: { subscription_id: sub.id, action: 'retry_charge' },
+          run_at: new Date(Date.now() + retries * 60 * 1000).toISOString(),
+        })
+        failed++
+        continue
+      }
+
+      const oldBalance = Number(wallet.balance || 0)
+      const newBalance = oldBalance - amount
+      await sb.from('wallets').update({ balance: newBalance, updated_at: nowIso() }).eq('id', wallet.id)
+      const { data: tx } = await sb.from('transactions').insert({
+        wallet_id: wallet.id,
+        type: 'debit',
+        amount,
+        balance_after: newBalance,
+        status: 'completed',
+        description: 'Subscription auto renew charge',
+        reference_type: 'subscription_renewal',
+        reference_id: sub.id,
+        created_by: sub.user_id,
+      }).select().single()
+      await sb.from('wallet_ledger').insert({
+        wallet_id: wallet.id,
+        user_id: sub.user_id,
+        entry_type: 'debit',
+        amount,
+        balance_before: oldBalance,
+        balance_after: newBalance,
+        reference_type: 'subscription_renewal',
+        reference_id: sub.id,
+        metadata: {},
+      })
+
+      const nextEnd = new Date(periodEnd.getTime())
+      nextEnd.setDate(nextEnd.getDate() + 30)
+      await sb.from('subscriptions').update({
+        status: 'active',
+        failed_retry_count: 0,
+        next_retry_at: null,
+        last_payment_id: tx?.id || null,
+        last_renewal_attempt_at: nowIso(),
+        current_period_start: nowIso(),
+        current_period_end: nextEnd.toISOString(),
+        updated_at: nowIso(),
+      }).eq('id', sub.id)
+
+      await sb.from('async_jobs').insert({
+        job_type: 'email',
+        status: 'queued',
+        payload: { kind: 'subscription_renewed', subscription_id: sub.id, transaction_id: tx?.id || null },
+      })
+      charged++
+    }
+
+    return json({ success: true, processed, charged, failed })
+  }
+
+  return err('Not found', 404)
+}
+
+function reqHasCronSecret(body: any) {
+  const expected = Deno.env.get('SUBSCRIPTION_CRON_SECRET')
+  if (!expected) {
+    console.error('SUBSCRIPTION_CRON_SECRET is not configured')
+    return false
+  }
+  const provided = String(body?.cron_secret || '')
+  return expected === provided
+}
+
 // ===================== MAIN ROUTER =====================
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -850,11 +1632,26 @@ Deno.serve(async (req) => {
       return await handleAuth(req.method, subParts, body, req)
     }
 
+    // External payment webhook endpoint without JWT
+    if (module === 'marketplace' && req.method === 'POST' && subParts[0] === 'payment' && subParts[1] === 'webhook') {
+      const admin = adminClient()
+      return await handleMarketplace(req.method, subParts, body, 'system-webhook', admin)
+    }
+
+    // Scheduler subscription endpoint without JWT (secret-gated in handler)
+    if (module === 'subscriptions' && req.method === 'POST' && subParts[0] === 'cron-run') {
+      const admin = adminClient()
+      return await handleSubscriptions(req.method, subParts, body, 'system-cron', admin)
+    }
+
     // All other endpoints require JWT
     const auth = await authenticate(req)
     if (!auth) return err('Unauthorized', 401)
 
     const { userId, supabase: sb } = auth
+    const endpointKey = `${module}/${subParts[0] || ''}`
+    const rateLimitRes = await enforceRateLimit(adminClient(), userId, endpointKey)
+    if (rateLimitRes) return rateLimitRes
 
     switch (module) {
       case 'products': return await handleProducts(req.method, subParts, body, userId, sb)
@@ -876,6 +1673,7 @@ Deno.serve(async (req) => {
       case 'auto': return await handleAuto(req.method, subParts, body, userId, sb)
       case 'apk': return await handleApk(req.method, subParts, body, userId, sb)
       case 'wallet': return await handleWallet(req.method, subParts, body, userId, sb)
+      case 'subscriptions': return await handleSubscriptions(req.method, subParts, body, userId, sb)
       case 'leads':
       case 'seo':
         return await handleSeoLeads(req.method, [module, ...subParts], body, userId, sb)
