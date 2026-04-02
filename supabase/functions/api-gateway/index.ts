@@ -367,6 +367,80 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
     return json({ data })
   }
 
+  // GET /resellers/clients
+  if (method === 'GET' && id === 'clients') {
+    const { data: reseller } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
+    if (!reseller?.id) return json({ data: [] })
+    const { data, error } = await sb.from('reseller_clients').select('*')
+      .eq('reseller_id', reseller.id).order('updated_at', { ascending: false }).limit(500)
+    if (error) return err(error.message)
+    return json({ data })
+  }
+
+  // POST /resellers/clients
+  if (method === 'POST' && id === 'clients') {
+    const missing = validateRequired(body, ['client_email'])
+    if (missing) return err(missing)
+    const { data: reseller } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
+    if (!reseller?.id) return err('Reseller profile not found', 404)
+
+    const payload = {
+      reseller_id: reseller.id,
+      client_email: String(body.client_email || '').trim().toLowerCase(),
+      client_name: body.client_name || null,
+      client_phone: body.client_phone || null,
+      product_id: body.product_id || null,
+      purchase_count: Number(body.purchase_count || 0),
+      total_spent: Number(body.total_spent || 0),
+      last_purchase_at: body.last_purchase_at || null,
+      status: body.status || 'active',
+      metadata: body.metadata || {},
+    }
+
+    const { data, error } = await sb
+      .from('reseller_clients')
+      .upsert(payload, { onConflict: 'reseller_id,client_email' })
+      .select()
+      .single()
+    if (error) return err(error.message)
+    await logActivity(admin, 'reseller_client', data.id, 'upserted', userId, { reseller_id: reseller.id })
+    return json({ data }, 201)
+  }
+
+  // GET /resellers/referrals
+  if (method === 'GET' && id === 'referrals') {
+    const { data: reseller } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
+    if (!reseller?.id) return json({ data: [] })
+    const { data, error } = await sb.from('referral_codes').select('*')
+      .eq('reseller_id', reseller.id).order('created_at', { ascending: false }).limit(500)
+    if (error) return err(error.message)
+    return json({ data })
+  }
+
+  // POST /resellers/referrals
+  if (method === 'POST' && id === 'referrals') {
+    const { data: reseller } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
+    if (!reseller?.id) return err('Reseller profile not found', 404)
+
+    const code = (body?.code || crypto.randomUUID().slice(0, 8)).toString().toUpperCase()
+    const payload = {
+      reseller_id: reseller.id,
+      code,
+      primary_code: body?.primary_code ?? false,
+      referred_user_id: body?.referred_user_id || null,
+      status: body?.status || 'pending',
+      commission_earned: Number(body?.commission_earned || 0),
+      signup_at: body?.signup_at || null,
+      purchase_at: body?.purchase_at || null,
+      metadata: body?.metadata || {},
+    }
+
+    const { data, error } = await sb.from('referral_codes').insert(payload).select().single()
+    if (error) return err(error.message)
+    await logActivity(admin, 'referral_code', data.id, 'created', userId, { reseller_id: reseller.id, code })
+    return json({ data }, 201)
+  }
+
   return err('Not found', 404)
 }
 

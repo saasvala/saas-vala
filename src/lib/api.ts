@@ -62,6 +62,10 @@ export const resellersApi = {
   create: (data: any) => apiCall('POST', 'resellers', data),
   update: (id: string, data: any) => apiCall('PUT', `resellers/${id}`, data),
   sales: (id: string) => apiCall('GET', `resellers/${id}/sales`),
+  clients: () => apiCall('GET', 'resellers/clients'),
+  upsertClient: (data: any) => apiCall('POST', 'resellers/clients', data),
+  referrals: () => apiCall('GET', 'resellers/referrals'),
+  createReferral: (data: any) => apiCall('POST', 'resellers/referrals', data),
 };
 
 export const resellerOnboardingApi = {
