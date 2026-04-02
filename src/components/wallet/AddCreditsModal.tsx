@@ -27,6 +27,7 @@ import {
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import softwareValaLogo from '@/assets/softwarevala-logo.png';
+import { walletApi } from '@/lib/api';
 
 interface AddCreditsModalProps {
   open: boolean;
@@ -84,37 +85,22 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
   };
 
   const submitManualPayment = async () => {
-    if (!transactionRef.trim()) {
+    const txnRef = transactionRef.trim();
+    if (!txnRef) {
       toast.error('Please enter your transaction reference number');
       return;
     }
     setStep('processing');
     try {
-      const { supabase } = await import('@/integrations/supabase/client');
-      const { data: userData } = await supabase.auth.getUser();
-      if (userData.user) {
-        const { data: walletData } = await supabase
-          .from('wallets')
-          .select('id')
-          .eq('user_id', userData.user.id)
-          .maybeSingle();
-        if (walletData) {
-          await supabase.from('transactions').insert({
-            wallet_id: walletData.id,
-            type: 'credit',
-            amount: finalAmount,
-            balance_after: null,
-            status: 'pending',
-            description: `${payMethod.toUpperCase()} Transfer - Awaiting Verification`,
-            created_by: userData.user.id,
-            reference_id: transactionRef,
-            reference_type: payMethod === 'crypto' ? 'crypto_transfer' : 'bank_transfer',
-            meta: { payment_method: payMethod, transaction_ref: transactionRef },
-          });
-        }
-      }
+      await walletApi.createRequest({
+        amount: finalAmount,
+        method: payMethod === 'crypto' ? 'crypto' : 'bank_transfer',
+        txn_id: txnRef,
+        source: 'manual',
+      });
       await new Promise(r => setTimeout(r, 800));
       setStep('pending');
+      toast.info('Request submitted and pending verification. Wallet updates after approval.');
     } catch {
       toast.error('Failed to submit. Please try again.');
       setStep('form');
@@ -122,7 +108,8 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
   };
 
   const submitUpiPayment = async () => {
-    if (!transactionRef.trim()) {
+    const txnRef = transactionRef.trim();
+    if (!txnRef) {
       toast.error('Please enter your UPI transaction ID');
       return;
     }
@@ -130,38 +117,14 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
 
     const processPayment = async (attempt: number): Promise<boolean> => {
       try {
-        const { supabase } = await import('@/integrations/supabase/client');
-        const { data: userData } = await supabase.auth.getUser();
-        if (!userData.user) return false;
-
-        const { data: walletData } = await supabase
-          .from('wallets')
-          .select('id, balance')
-          .eq('user_id', userData.user.id)
-          .maybeSingle();
-        if (!walletData) return false;
-
-        const newBalance = (walletData.balance || 0) + finalAmount;
-
-        const { error: txError } = await supabase.from('transactions').insert({
-          wallet_id: walletData.id,
-          type: 'credit',
+        await walletApi.createRequest({
           amount: finalAmount,
-          balance_after: newBalance,
-          status: 'pending',
-          description: 'UPI Payment - Pending Verification',
-          created_by: userData.user.id,
-          reference_id: transactionRef,
-          reference_type: 'upi',
-          meta: { payment_method: 'upi', upi_txn_id: transactionRef },
+          method: 'upi',
+          txn_id: txnRef,
+          source: 'user_submit',
         });
 
-        if (txError && attempt < 3) {
-          setRetryCount(attempt);
-          await new Promise(r => setTimeout(r, 1500));
-          return processPayment(attempt + 1);
-        }
-        return !txError;
+        return true;
       } catch {
         if (attempt < 3) {
           setRetryCount(attempt);
@@ -175,7 +138,7 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
     const success = await processPayment(1);
     if (success) {
       setStep('pending');
-      onSuccess?.();
+      toast.info('UPI request submitted and pending verification. Wallet updates after approval.');
     } else {
       toast.error('Submission failed. Please try again.');
       setStep('form');

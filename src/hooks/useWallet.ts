@@ -85,7 +85,7 @@ export function useWallet() {
 
   const addCredit = async (walletId: string, amount: number, description: string, paymentMethod?: string) => {
     try {
-      const res = await walletApi.add(amount, description, paymentMethod);
+      const res = await walletApi.add(amount, description, paymentMethod, walletId);
       toast.success(`Added ₹${amount} credit`);
       await fetchWallet();
       await fetchAllWallets();
@@ -98,7 +98,7 @@ export function useWallet() {
 
   const deductBalance = async (walletId: string, amount: number, description: string, referenceId?: string, referenceType?: string) => {
     try {
-      const res = await walletApi.withdraw(amount, description, referenceId, referenceType);
+      const res = await walletApi.withdraw(amount, description, referenceId, referenceType, walletId);
       toast.success(`Deducted ₹${amount}`);
       await fetchWallet();
       await fetchAllWallets();
