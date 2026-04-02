@@ -33,6 +33,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const lastRoleUserIdRef = useRef<string | null>(null);
   const inFlightRoleFetchRef = useRef<Promise<void> | null>(null);
 
+  // 1.5s delay is intentionally conservative to cover cold-start latency before role row is visible.
   const ROLE_SYNC_DELAY_MS = 1500;
 
   useEffect(() => {

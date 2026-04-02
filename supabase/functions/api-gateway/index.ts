@@ -52,8 +52,8 @@ async function logActivity(admin: any, entityType: string, entityId: string, act
   }
 }
 
-function isRelationMissingError(message?: string) {
-  return !!message && /relation .* does not exist/i.test(message)
+function isApkVersionsTableMissing(message?: string) {
+  return !!message && /relation\s+"?apk_versions"?\s+does not exist/i.test(message)
 }
 
 // ===================== 1. AUTH =====================
@@ -119,7 +119,10 @@ async function handleProducts(method: string, pathParts: string[], body: any, us
   if (method === 'GET' && id && pathParts[1] === 'versions') {
     const { data, error } = await sb.from('apk_versions').select('*').eq('apk_id', id).order('created_at', { ascending: false })
     if (error) {
-      if (isRelationMissingError(error.message)) return json({ data: [] })
+      if (isApkVersionsTableMissing(error.message)) {
+        console.warn(`apk_versions relation missing on /products/${id}/versions; returning empty versions list`)
+        return json({ data: [] })
+      }
       return err(error.message)
     }
     return json({ data })

@@ -1,5 +1,29 @@
 -- Create missing runtime tables referenced by app and edge functions
 
+-- Ensure foundational helpers exist when this migration runs standalone
+CREATE OR REPLACE FUNCTION public.update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SET search_path = public;
+
+CREATE OR REPLACE FUNCTION public.has_role(_user_id UUID, _role TEXT)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.user_roles
+    WHERE user_id = _user_id
+      AND role::text = _role
+  )
+$$;
+
 -- activity_logs
 CREATE TABLE IF NOT EXISTS public.activity_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -71,7 +95,7 @@ CREATE TABLE IF NOT EXISTS public.apk_versions (
   checksum TEXT,
   is_stable BOOLEAN DEFAULT false,
   created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
   UNIQUE (apk_id, version_code)
 );
 
@@ -246,26 +270,6 @@ DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_policies
-    WHERE schemaname = 'public' AND tablename = 'invoice_otp_codes' AND policyname = 'Invoice owners can create OTP codes'
-  ) THEN
-    CREATE POLICY "Invoice owners can create OTP codes"
-    ON public.invoice_otp_codes
-    FOR INSERT
-    TO authenticated
-    WITH CHECK (
-      EXISTS (
-        SELECT 1 FROM public.invoices i
-        WHERE i.id = invoice_otp_codes.invoice_id
-          AND i.user_id = auth.uid()
-      )
-    );
-  END IF;
-END $$;
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
     WHERE schemaname = 'public' AND tablename = 'invoice_otp_codes' AND policyname = 'Invoice owner can view OTP codes'
   ) THEN
     CREATE POLICY "Invoice owner can view OTP codes"
@@ -370,4 +374,3 @@ CREATE TRIGGER update_invoices_updated_at
 BEFORE UPDATE ON public.invoices
 FOR EACH ROW
 EXECUTE FUNCTION public.update_updated_at_column();
-
