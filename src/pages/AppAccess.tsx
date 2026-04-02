@@ -79,7 +79,7 @@ export default function AppAccess() {
           </p>
           <div className="flex gap-2">
             {product?.demoUrl ? (
-              <Button onClick={() => window.open(product.demoUrl!, '_blank', 'noopener,noreferrer')}>Open App</Button>
+              <Button onClick={() => product.demoUrl && window.open(product.demoUrl, '_blank', 'noopener,noreferrer')}>Open App</Button>
             ) : (
               <Button onClick={() => navigate('/dashboard')}>Open Dashboard</Button>
             )}

@@ -7,6 +7,7 @@ import { MarketplaceHeader } from '@/components/marketplace/MarketplaceHeader';
 import { useMarketplaceProducts } from '@/hooks/useMarketplaceProducts';
 
 const normalize = (value?: string) => (value || '').toLowerCase().replace(/[-_]/g, ' ').trim();
+const DEFAULT_CATEGORY_PRODUCTS_LIMIT = 24;
 
 export default function CategoryFlow() {
   const navigate = useNavigate();
@@ -34,7 +35,7 @@ export default function CategoryFlow() {
     });
   }, [filtered, products, terms]);
 
-  const listing = fallback.length > 0 ? fallback : products.slice(0, 24);
+  const listing = fallback.length > 0 ? fallback : products.slice(0, DEFAULT_CATEGORY_PRODUCTS_LIMIT);
   const title = [macro, sub, micro].filter(Boolean).join(' / ') || 'Category';
 
   return (
