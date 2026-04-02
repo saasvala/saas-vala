@@ -68,7 +68,10 @@ function ChangePasswordForm() {
       setInvalidatingSessions(true);
       const { error: signOutError } = await supabase.auth.signOut({ scope: 'global' });
       if (signOutError) {
-        toast.error(signOutError.message || 'Password changed, but failed to invalidate sessions');
+        toast.error(
+          signOutError.message ||
+          'Password updated successfully, but some sessions could not be terminated. Please manually log out from other devices.'
+        );
         return;
       }
       toast.success('Password updated. All sessions were terminated. Please log in again.');

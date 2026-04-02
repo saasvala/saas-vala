@@ -66,8 +66,8 @@ export default function Auth() {
   const { myApplications, submitApplication } = useResellerApplications();
  
    // Redirect based on role after login
-   useEffect(() => {
-     if (user && role && !loading) {
+  useEffect(() => {
+    if (user && role && !loading) {
        if (role === 'super_admin') {
          navigate('/dashboard', { replace: true });
        } else if (role === 'reseller') {
@@ -76,7 +76,13 @@ export default function Auth() {
          navigate('/', { replace: true });
        }
      }
-   }, [user, role, loading, navigate]);
+  }, [user, role, loading, navigate]);
+
+  useEffect(() => {
+    if (signupRefFromUrl) {
+      setSignupReferralCode(signupRefFromUrl.trim().toUpperCase());
+    }
+  }, [signupRefFromUrl]);
  
    const handleLogin = async (e: React.FormEvent) => {
      e.preventDefault();
@@ -853,8 +859,3 @@ export default function Auth() {
      </div>
    );
  }
-  useEffect(() => {
-    if (signupRefFromUrl) {
-      setSignupReferralCode(signupRefFromUrl.trim().toUpperCase());
-    }
-  }, [signupRefFromUrl]);

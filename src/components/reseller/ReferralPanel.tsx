@@ -26,7 +26,7 @@ export function ReferralPanel() {
   const referralLink = `https://saasvala.com/ref/${referralCode}`;
  
    const totalEarned = referrals.reduce((sum, r) => sum + Number(r.commission_earned || 0), 0);
-   const totalReferrals = referrals.filter((r) => !!r.referred_user_id).length;
+   const totalReferrals = referrals.filter((r) => r.referred_user_id != null).length;
    const activeReferrals = referrals.filter((r) => r.status === 'active').length;
  
    const copyLink = () => {

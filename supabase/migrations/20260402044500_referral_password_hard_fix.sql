@@ -22,7 +22,7 @@ DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
     WHERE conname = 'referrals_no_self_referral'
-      AND connamespace = 'public'::regnamespace
+      AND connamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')
   ) THEN
     ALTER TABLE public.referrals
       ADD CONSTRAINT referrals_no_self_referral CHECK (referrer_id <> referred_user_id);

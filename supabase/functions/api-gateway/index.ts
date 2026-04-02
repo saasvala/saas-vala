@@ -1243,6 +1243,7 @@ async function markPaymentSuccess(admin: any, sb: any, userId: string, payment: 
     .maybeSingle()
 
   if (referral?.id && referral.referrer_id && referral.referrer_id !== order.user_id) {
+    const orderAmount = Number(order.amount || 0)
     const { data: existingCommission } = await admin
       .from('referral_commissions')
       .select('id, order_id')
@@ -1265,7 +1266,7 @@ async function markPaymentSuccess(admin: any, sb: any, userId: string, payment: 
         .maybeSingle()
 
       const commissionRate = Number(referrerReseller?.commission_percent ?? referrerReseller?.commission_rate ?? 10)
-      const commissionAmount = toMoney((Number(order.amount || 0) * commissionRate) / 100)
+      const commissionAmount = toMoney((orderAmount * commissionRate) / 100)
 
       if (commissionAmount > 0) {
         const { data: createdCommission, error: createCommissionError } = await admin
