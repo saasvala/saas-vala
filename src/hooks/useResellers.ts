@@ -2,13 +2,15 @@ import { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { resellersApi } from '@/lib/api';
 import type { Json } from '@/integrations/supabase/types';
+import { supabase } from '@/integrations/supabase/client';
 
 export interface Reseller {
   id: string;
   user_id: string;
   company_name: string | null;
+  status?: 'active' | 'suspended' | string | null;
+  kyc_status?: 'pending' | 'verified' | 'rejected' | string | null;
   tier?: string | null;
-  status?: string | null;
   commission_percent: number;
   credit_limit: number;
   total_sales: number;
@@ -20,6 +22,7 @@ export interface Reseller {
   updated_at: string;
   profile?: {
     full_name: string | null;
+    company_name?: string | null;
     email: string | null;
     phone: string | null;
   };
@@ -67,31 +70,29 @@ export function useResellers() {
     }
   };
 
-  const deleteReseller = async (id: string) => {
-    try {
-      await resellersApi.update(id, { is_active: false } as any);
-      toast.success('Reseller deleted');
-      await fetchResellers();
-    } catch (e: any) {
-      toast.error('Failed to delete reseller');
-      throw e;
-    }
-  };
-
   const suspendReseller = async (id: string) => {
-    await updateReseller(id, { is_active: false });
+    await updateReseller(id, { status: 'suspended', is_active: false });
   };
 
   const activateReseller = async (id: string) => {
-    await updateReseller(id, { is_active: true });
+    await updateReseller(id, { status: 'active', is_active: true });
   };
 
   const verifyReseller = async (id: string) => {
-    await updateReseller(id, { is_verified: true });
+    await updateReseller(id, { kyc_status: 'verified', is_verified: true });
   };
 
   useEffect(() => {
     fetchResellers();
+    const channel = supabase
+      .channel('resellers-admin-table')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'resellers' }, () => {
+        fetchResellers();
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   return {
@@ -101,7 +102,6 @@ export function useResellers() {
     fetchResellers,
     createReseller,
     updateReseller,
-    deleteReseller,
     suspendReseller,
     activateReseller,
     verifyReseller,

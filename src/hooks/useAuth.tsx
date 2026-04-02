@@ -118,10 +118,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return;
         }
 
+        const hasSuperAdmin = data?.some(({ role }) => role === 'super_admin');
+        const hasResellerRole = data?.some(({ role }) => role === 'reseller');
+
+        let resellerIsActive = false;
+        if (hasResellerRole) {
+          const { data: resellerRow } = await supabase
+            .from('resellers')
+            .select('status, is_active')
+            .eq('user_id', userId)
+            .maybeSingle();
+          const normalizedStatus = String(resellerRow?.status || (resellerRow?.is_active === false ? 'suspended' : 'active')).toLowerCase();
+          resellerIsActive = normalizedStatus === 'active';
+        }
+
         const resolvedRole: AppRole | null =
-          data?.some(({ role }) => role === 'super_admin')
+          hasSuperAdmin
             ? 'super_admin'
-            : data?.some(({ role }) => role === 'reseller')
+            : hasResellerRole && resellerIsActive
               ? 'reseller'
               : null;
 
