@@ -44,7 +44,6 @@ import {
   Percent,
   CheckCircle,
   Download,
-  Eye,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useResellers, type Reseller } from '@/hooks/useResellers';
@@ -474,18 +473,24 @@ export default function Resellers() {
                           <Badge
                             variant="outline"
                             className={cn(
-
+                              resellerStatus(reseller) === 'active'
                                 ? 'bg-success/20 text-success border-success/30'
                                 : 'bg-destructive/20 text-destructive border-destructive/30'
                             )}
                           >
-
+                            {resellerStatus(reseller)}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          {resellerKycStatus(reseller) === 'verified' ? (
                             <Badge variant="outline" className="bg-cyan/20 text-cyan border-cyan/30">
                               <CheckCircle className="h-3 w-3 mr-1" />
                               Verified
                             </Badge>
                           ) : (
-
+                            <Badge variant="outline" className="bg-warning/20 text-warning border-warning/30">
+                              Pending
+                            </Badge>
                           )}
                         </TableCell>
                         <TableCell>

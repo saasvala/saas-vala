@@ -82,15 +82,28 @@ const getActionIcon = (action: string) => {
    return <Badge variant="outline" className={variant.class}>{variant.label}</Badge>;
  };
  
- export function ResellerActivityPanel() {
-   const [activities, setActivities] = useState<ActivityLog[]>([]);
-   const [loading, setLoading] = useState(true);
- 
+export function ResellerActivityPanel() {
+  const [activities, setActivities] = useState<ActivityLog[]>([]);
+  const [loading, setLoading] = useState(true);
+
   const fetchActivities = async () => {
     setLoading(true);
     try {
+      const { data } = await supabase
+        .from('activity_logs')
+        .select('id, action, table_name, record_id, details, created_at, user_id')
+        .order('created_at', { ascending: false })
+        .limit(50);
+      setActivities((data || []) as ActivityLog[]);
+    } catch {
+      setActivities([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    };
+  useEffect(() => {
+    fetchActivities();
   }, []);
  
    return (
