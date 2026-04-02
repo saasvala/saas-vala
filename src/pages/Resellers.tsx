@@ -56,12 +56,14 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useResellers, type Reseller } from '@/hooks/useResellers';
+import { resellersApi } from '@/lib/api';
 import { PaginationControls } from '@/components/ui/pagination-controls';
 import { Switch } from '@/components/ui/switch';
  import { ResellerActivityPanel } from '@/components/reseller/ResellerActivityPanel';
  import { ResellerQuickActions } from '@/components/reseller/ResellerQuickActions';
 import { useResellerApplications, type ResellerApplication } from '@/hooks/useResellerApplications';
 import { Textarea } from '@/components/ui/textarea';
+import { toast } from 'sonner';
 
 const ITEMS_PER_PAGE = 25;
 
@@ -78,6 +80,8 @@ export default function Resellers() {
   const [selectedApplication, setSelectedApplication] = useState<ResellerApplication | null>(null);
   const [adminNotes, setAdminNotes] = useState('');
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [userId, setUserId] = useState('');
 
   // Form state
   const [formData, setFormData] = useState({
@@ -121,6 +125,7 @@ export default function Resellers() {
 
   const openCreateDialog = () => {
     setEditReseller(null);
+    setUserId('');
     setFormData({
       company_name: '',
       commission_percent: 10,
@@ -144,12 +149,31 @@ export default function Resellers() {
   };
 
   const handleSubmit = async () => {
+    const commission = Number(formData.commission_percent);
+    const creditLimit = Number(formData.credit_limit);
+    if (!Number.isFinite(commission) || commission < 0 || commission > 100) {
+      toast.error('Commission must be between 0 and 100');
+      return;
+    }
+    if (!Number.isFinite(creditLimit) || creditLimit < 0) {
+      toast.error('Credit limit must be 0 or higher');
+      return;
+    }
     setSubmitting(true);
     try {
       if (editReseller) {
         await updateReseller(editReseller.id, formData);
+      } else {
+        if (!userId.trim()) {
+          toast.error('User ID is required to create reseller');
+          return;
+        }
+        await resellersApi.create({
+          user_id: userId.trim(),
+          ...formData,
+        });
+        await fetchResellers(currentPage, ITEMS_PER_PAGE, searchQuery);
       }
-      // Note: Creating new reseller requires user_id from an existing user
       setDialogOpen(false);
     } finally {
       setSubmitting(false);
@@ -194,6 +218,28 @@ export default function Resellers() {
 
   const pendingApplications = adminApplications.filter((app) => app.status === 'pending');
 
+  const downloadCsv = (filename: string, csv: string) => {
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 100);
+  };
+
+  const handleExport = async (type: 'resellers' | 'sales' | 'commissions') => {
+    setExporting(true);
+    try {
+      const res = await resellersApi.exportData(type);
+      const csv = String(res?.csv || '');
+      const filename = String(res?.filename || `reseller-${type}.csv`);
+      if (!csv) return;
+      downloadCsv(filename, csv);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   useEffect(() => {
     fetchAdminApplications({ page: 1, limit: 100, status: 'pending' });
   }, [fetchAdminApplications]);
@@ -220,10 +266,25 @@ export default function Resellers() {
               <Users className="h-4 w-4" />
               Reseller Dashboard
             </Button>
-            <Button variant="outline" className="gap-2 border-border">
-              <Download className="h-4 w-4" />
-              Export
-            </Button>
+             <DropdownMenu>
+               <DropdownMenuTrigger asChild>
+                 <Button variant="outline" className="gap-2 border-border" disabled={exporting}>
+                   <Download className="h-4 w-4" />
+                   Export
+                 </Button>
+               </DropdownMenuTrigger>
+               <DropdownMenuContent align="end" className="bg-popover border-border">
+                 <DropdownMenuItem className="cursor-pointer" onClick={() => handleExport('resellers')}>
+                   Resellers CSV
+                 </DropdownMenuItem>
+                 <DropdownMenuItem className="cursor-pointer" onClick={() => handleExport('sales')}>
+                   Sales CSV
+                 </DropdownMenuItem>
+                 <DropdownMenuItem className="cursor-pointer" onClick={() => handleExport('commissions')}>
+                   Commissions CSV
+                 </DropdownMenuItem>
+               </DropdownMenuContent>
+             </DropdownMenu>
               <Button onClick={openCreateDialog} className="bg-orange-gradient hover:opacity-90 text-white gap-2">
                 <Plus className="h-4 w-4" />
                 Add Reseller
@@ -477,6 +538,16 @@ export default function Resellers() {
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
+              {!editReseller && (
+                <>
+                  <Label>User ID</Label>
+                  <Input
+                    placeholder="Existing auth user UUID"
+                    value={userId}
+                    onChange={(e) => setUserId(e.target.value)}
+                  />
+                </>
+              )}
               <Label>Company Name</Label>
               <Input
                 placeholder="Acme Corp"
@@ -542,7 +613,7 @@ export default function Resellers() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Reseller?</AlertDialogTitle>
             <AlertDialogDescription>
-              This action cannot be undone. This will permanently delete the reseller account.
+              This will soft delete the reseller (suspend access) and can be reactivated later.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

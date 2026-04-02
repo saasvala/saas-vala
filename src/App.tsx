@@ -7,7 +7,8 @@ import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import { SidebarProvider } from "@/hooks/useSidebarState";
 import { CartProvider } from "@/hooks/useCart";
 import { Loader2 } from "lucide-react";
-import React, { Suspense } from "react";
+import React, { Suspense, useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
 
 // Only eagerly load the landing page (Marketplace) and Auth
 import Marketplace from "./pages/Marketplace";
@@ -93,9 +94,42 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
 }
 
 function ResellerRoute({ children }: { children: React.ReactNode }) {
-  const { isReseller, loading } = useAuth();
+  const { isReseller, loading, user } = useAuth();
+  const [statusLoading, setStatusLoading] = useState(true);
+  const [isSuspended, setIsSuspended] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    const loadResellerStatus = async () => {
+      if (!user?.id || !isReseller) {
+        if (mounted) {
+          setIsSuspended(false);
+          setStatusLoading(false);
+        }
+        return;
+      }
+      setStatusLoading(true);
+      const { data } = await supabase
+        .from('resellers')
+        .select('is_active,status')
+        .eq('user_id', user.id)
+        .maybeSingle();
+      if (mounted) {
+        const suspended = !!data && (data.is_active === false || data.status === 'suspended' || data.status === 'inactive');
+        setIsSuspended(suspended);
+        setStatusLoading(false);
+      }
+    };
+    loadResellerStatus();
+    return () => {
+      mounted = false;
+    };
+  }, [user?.id, isReseller]);
+
   if (loading) return <PageLoader />;
+  if (statusLoading) return <PageLoader />;
   if (!isReseller) return <Navigate to="/" replace />;
+  if (isSuspended) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
