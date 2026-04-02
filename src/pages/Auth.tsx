@@ -34,6 +34,7 @@ export default function Auth() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const applyReseller = searchParams.get('apply') === 'reseller';
+  const signupRefFromUrl = searchParams.get('ref') || '';
   const { user, role, signIn, signUp, loading, initializing } = useAuth();
   const { toast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -852,3 +853,8 @@ export default function Auth() {
      </div>
    );
  }
+  useEffect(() => {
+    if (signupRefFromUrl) {
+      setSignupReferralCode(signupRefFromUrl.trim().toUpperCase());
+    }
+  }, [signupRefFromUrl]);

@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useParams } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import { SidebarProvider } from "@/hooks/useSidebarState";
 import { CartProvider } from "@/hooks/useCart";
@@ -99,11 +99,18 @@ function ResellerRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function ReferralRedirect() {
+  const { code } = useParams();
+  const ref = code ? encodeURIComponent(code) : '';
+  return <Navigate to={ref ? `/auth?ref=${ref}` : '/auth'} replace />;
+}
+
 function AppRoutes() {
   return (
     <Suspense fallback={<PageLoader />}>
       <Routes>
         <Route path="/auth" element={<Auth />} />
+        <Route path="/ref/:code" element={<ReferralRedirect />} />
         <Route path="/" element={<Marketplace />} />
         <Route path="/marketplace" element={<Marketplace />} />
 

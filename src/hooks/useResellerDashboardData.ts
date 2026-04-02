@@ -29,6 +29,8 @@ export interface ReferralItem {
   status: string;
   commission_earned: number;
   signup_at: string | null;
+  purchase_at: string | null;
+  referred_user_id: string | null;
 }
 
 const defaultKpis: ResellerKpis = {
@@ -104,7 +106,7 @@ export function useResellerDashboardData() {
           .order('updated_at', { ascending: false }),
         supabase
           .from('referral_codes')
-          .select('id, code, status, commission_earned, signup_at')
+          .select('id, code, status, commission_earned, signup_at, purchase_at, referred_user_id')
           .eq('reseller_id', reseller.id)
           .order('created_at', { ascending: false }),
         supabase

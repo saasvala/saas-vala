@@ -26,8 +26,8 @@ export function ReferralPanel() {
   const referralLink = `https://saasvala.com/ref/${referralCode}`;
  
    const totalEarned = referrals.reduce((sum, r) => sum + Number(r.commission_earned || 0), 0);
-   const totalReferrals = referrals.length;
-   const activeReferrals = referrals.filter(r => r.status === 'active').length;
+   const totalReferrals = referrals.filter((r) => !!r.referred_user_id).length;
+   const activeReferrals = referrals.filter((r) => r.status === 'active').length;
  
    const copyLink = () => {
      navigator.clipboard.writeText(referralLink);
@@ -187,15 +187,18 @@ export function ReferralPanel() {
                     </p>
                   </div>
                   <div className="flex items-center gap-3">
-                   <Badge
-                     variant="outline"
-                     className={referral.status === 'active' 
-                       ? 'bg-green-500/20 text-green-500 border-green-500/30'
-                       : 'bg-amber-500/20 text-amber-500 border-amber-500/30'
-                     }
-                   >
-                     {referral.status}
-                   </Badge>
+                    <Badge
+                      variant="outline"
+                      className={
+                        referral.status === 'paid' || referral.status === 'converted'
+                          ? 'bg-emerald-500/20 text-emerald-500 border-emerald-500/30'
+                          : referral.status === 'active'
+                            ? 'bg-green-500/20 text-green-500 border-green-500/30'
+                            : 'bg-amber-500/20 text-amber-500 border-amber-500/30'
+                      }
+                    >
+                      {referral.status}
+                    </Badge>
                     {referral.commission_earned > 0 && (
                       <span className="font-semibold text-green-500">+${referral.commission_earned}</span>
                     )}
