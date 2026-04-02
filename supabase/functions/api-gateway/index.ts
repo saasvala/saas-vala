@@ -15,6 +15,9 @@ function err(message: string, status = 400, code = 'BAD_REQUEST') {
 }
 
 const productListCache: { data: any[] | null; expiresAt: number } = { data: null, expiresAt: 0 }
+const PRODUCT_LIST_CACHE_TTL_MS = 60 * 1000
+const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SECONDS') || '60')
+const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
 
 function invalidateProductCache() {
   productListCache.data = null
@@ -54,8 +57,8 @@ function validateRequired(body: any, fields: string[]) {
 }
 
 async function enforceRateLimit(sb: any, userId: string, endpoint: string) {
-  const windowSeconds = 60
-  const maxRequests = 120
+  const windowSeconds = RATE_LIMIT_WINDOW_SECONDS
+  const maxRequests = RATE_LIMIT_MAX_REQUESTS
   const now = new Date()
   const windowStart = new Date(now.getTime() - windowSeconds * 1000).toISOString()
 
@@ -334,7 +337,7 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
   // GET /resellers/commission-logs
   if (method === 'GET' && id === 'commission-logs') {
     const { data: reseller } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
-    const resellerId = body?.reseller_id || reseller?.id
+    const resellerId = reseller?.id
     if (!resellerId) return json({ data: [] })
     const { data, error } = await sb.from('reseller_commission_logs').select('*')
       .eq('reseller_id', resellerId).order('created_at', { ascending: false }).limit(200)
@@ -361,7 +364,7 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
       .order('created_at', { ascending: false }).limit(500)
     if (error) return err(error.message)
     productListCache.data = data || []
-    productListCache.expiresAt = Date.now() + 60 * 1000
+    productListCache.expiresAt = Date.now() + PRODUCT_LIST_CACHE_TTL_MS
     return json({ data })
   }
 
@@ -422,9 +425,13 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     const { data: existingOrder } = await sb.from('orders').select('*').eq('idempotency_key', requestedIdempotency).maybeSingle()
     if (existingOrder) return json({ data: existingOrder, duplicate: true })
 
+    const { data: productOwner } = await sb.from('products').select('created_by').eq('id', body.product_id).maybeSingle()
+    if (!productOwner?.created_by) return err('Product not found or missing seller', 404, 'NOT_FOUND')
+    const sellerId = productOwner.created_by
+
     const { data: marketplaceOrder, error: marketplaceOrderError } = await sb.from('marketplace_orders').insert({
       buyer_id: userId,
-      seller_id: userId,
+      seller_id: sellerId,
       amount,
       final_amount: amount,
       subtotal: amount,
@@ -436,7 +443,11 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
       idempotency_key: requestedIdempotency,
       retry_count: 0,
     }).select().single()
-    if (marketplaceOrderError) return err(marketplaceOrderError.message)
+    if (marketplaceOrderError) {
+      const { data: duplicateOrder } = await sb.from('orders').select('*').eq('idempotency_key', requestedIdempotency).maybeSingle()
+      if (duplicateOrder) return json({ data: duplicateOrder, duplicate: true })
+      return err(marketplaceOrderError.message)
+    }
 
     const { data: order, error: orderError } = await sb.from('orders').insert({
       marketplace_order_id: marketplaceOrder.id,
@@ -449,7 +460,11 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
       idempotency_key: requestedIdempotency,
       metadata: body.meta || {},
     }).select().single()
-    if (orderError) return err(orderError.message)
+    if (orderError) {
+      const { data: duplicateOrder } = await sb.from('orders').select('*').eq('idempotency_key', requestedIdempotency).maybeSingle()
+      if (duplicateOrder) return json({ data: duplicateOrder, duplicate: true })
+      return err(orderError.message)
+    }
 
     const { data: payment, error: paymentError } = await sb.from('payments').insert({
       order_id: order.id,
@@ -467,6 +482,8 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     if (body.lock_wallet === true || body.payment_method === 'wallet') {
       const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', userId).maybeSingle()
       if (wallet) {
+        const available = Number(wallet.balance || 0) - Number(wallet.locked_balance || 0)
+        if (available < amount) return err('Insufficient balance', 400, 'INSUFFICIENT_BALANCE')
         const lockedBefore = Number(wallet.locked_balance || 0)
         const lockedAfter = lockedBefore + amount
         await sb.from('wallets').update({ locked_balance: lockedAfter, updated_at: nowIso() }).eq('id', wallet.id)
@@ -517,8 +534,9 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
       : { data: null as any }
 
     const providedSignature = String(body.signature || '')
-    const expectedSignature = Deno.env.get('PAYMENT_WEBHOOK_SECRET') || ''
-    const signatureValid = expectedSignature ? providedSignature === expectedSignature : !!providedSignature
+    const expectedSignature = Deno.env.get('PAYMENT_WEBHOOK_SECRET')
+    if (!expectedSignature) return err('Webhook secret not configured', 503, 'CONFIG_ERROR')
+    const signatureValid = providedSignature === expectedSignature
 
     const { data: webhook, error: webhookError } = await sb.from('webhooks').insert({
       provider: body.provider,
@@ -576,8 +594,9 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
   if (method === 'POST' && action === 'payment' && pathParts[1] === 'verify-signature') {
     const missing = validateRequired(body, ['provider', 'signature'])
     if (missing) return err(missing, 422, 'VALIDATION_ERROR')
-    const expected = Deno.env.get('PAYMENT_WEBHOOK_SECRET') || ''
-    const valid = expected ? String(body.signature) === expected : true
+    const expected = Deno.env.get('PAYMENT_WEBHOOK_SECRET')
+    if (!expected) return err('Webhook secret not configured', 503, 'CONFIG_ERROR')
+    const valid = String(body.signature) === expected
     return json({ valid })
   }
 
@@ -1261,9 +1280,10 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
   // POST /wallet/withdraw
   if (method === 'POST' && action === 'withdraw') {
     if (Number(body.amount || 0) <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
-    const { data: wallet } = await sb.from('wallets').select('id, balance').eq('user_id', userId).single()
+    const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', userId).single()
     if (!wallet) return err('Wallet not found', 404)
-    if ((wallet.balance || 0) < body.amount) return err('Insufficient balance')
+    const available = Number(wallet.balance || 0) - Number(wallet.locked_balance || 0)
+    if (available < Number(body.amount)) return err('Insufficient balance')
 
     const newBalance = (wallet.balance || 0) - body.amount
     const { error: txErr } = await sb.from('transactions').insert({
@@ -1307,7 +1327,8 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
     if (Number(body.amount || 0) <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
     const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', userId).single()
     if (!wallet) return err('Wallet not found', 404)
-    if (Number(wallet.balance || 0) < Number(body.amount || 0)) return err('Insufficient balance')
+    const available = Number(wallet.balance || 0) - Number(wallet.locked_balance || 0)
+    if (available < Number(body.amount || 0)) return err('Insufficient balance')
     const oldLocked = Number(wallet.locked_balance || 0)
     const newLocked = oldLocked + Number(body.amount)
     await sb.from('wallets').update({ locked_balance: newLocked, updated_at: nowIso() }).eq('id', wallet.id)
@@ -1491,9 +1512,10 @@ async function handleSubscriptions(method: string, pathParts: string[], body: an
       const graceEnd = new Date(periodEnd.getTime())
       graceEnd.setDate(graceEnd.getDate() + graceDays)
 
-      const { data: wallet } = await sb.from('wallets').select('id, balance').eq('user_id', sub.user_id).maybeSingle()
+      const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', sub.user_id).maybeSingle()
       const amount = Number(sub.amount || 0)
-      if (!wallet || Number(wallet.balance || 0) < amount) {
+      const available = Number(wallet?.balance || 0) - Number(wallet?.locked_balance || 0)
+      if (!wallet || available < amount) {
         const retries = Number(sub.failed_retry_count || 0) + 1
         const shouldExpire = retries >= Number(sub.max_failed_retries || 3) && now > graceEnd
         await sb.from('subscriptions').update({
@@ -1546,7 +1568,7 @@ async function handleSubscriptions(method: string, pathParts: string[], body: an
         status: 'active',
         failed_retry_count: 0,
         next_retry_at: null,
-        last_payment_id: null,
+        last_payment_id: tx?.id || null,
         last_renewal_attempt_at: nowIso(),
         current_period_start: nowIso(),
         current_period_end: nextEnd.toISOString(),
@@ -1569,7 +1591,10 @@ async function handleSubscriptions(method: string, pathParts: string[], body: an
 
 function reqHasCronSecret(body: any) {
   const expected = Deno.env.get('SUBSCRIPTION_CRON_SECRET')
-  if (!expected) return true
+  if (!expected) {
+    console.error('SUBSCRIPTION_CRON_SECRET is not configured')
+    return false
+  }
   const provided = String(body?.cron_secret || '')
   return expected === provided
 }
