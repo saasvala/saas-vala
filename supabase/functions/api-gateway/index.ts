@@ -52,6 +52,10 @@ async function logActivity(admin: any, entityType: string, entityId: string, act
   }
 }
 
+function isRelationMissingError(message?: string) {
+  return !!message && /relation .* does not exist/i.test(message)
+}
+
 // ===================== 1. AUTH =====================
 async function handleAuth(method: string, pathParts: string[], body: any, req: Request) {
   const action = pathParts[0]
@@ -114,7 +118,10 @@ async function handleProducts(method: string, pathParts: string[], body: any, us
   // GET /products/:id/versions
   if (method === 'GET' && id && pathParts[1] === 'versions') {
     const { data, error } = await sb.from('apk_versions').select('*').eq('apk_id', id).order('created_at', { ascending: false })
-    if (error) return err(error.message)
+    if (error) {
+      if (isRelationMissingError(error.message)) return json({ data: [] })
+      return err(error.message)
+    }
     return json({ data })
   }
 
@@ -730,7 +737,7 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
 
   // POST /wallet/add
   if (method === 'POST' && action === 'add') {
-    const { data: wallet } = await sb.from('wallets').select('id, balance').eq('user_id', userId).single()
+    const { data: wallet } = await sb.from('wallets').select('id, balance').eq('user_id', userId).maybeSingle()
     if (!wallet) return err('Wallet not found', 404)
 
     const newBalance = (wallet.balance || 0) + body.amount
@@ -749,7 +756,7 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
 
   // POST /wallet/withdraw
   if (method === 'POST' && action === 'withdraw') {
-    const { data: wallet } = await sb.from('wallets').select('id, balance').eq('user_id', userId).single()
+    const { data: wallet } = await sb.from('wallets').select('id, balance').eq('user_id', userId).maybeSingle()
     if (!wallet) return err('Wallet not found', 404)
     if ((wallet.balance || 0) < body.amount) return err('Insufficient balance')
 
