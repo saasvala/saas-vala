@@ -9,10 +9,11 @@
  import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp';
  import { Loader2, Mail, Lock, User, Eye, EyeOff, KeyRound, Store } from 'lucide-react';
  import { supabase } from '@/integrations/supabase/client';
- import { useToast } from '@/hooks/use-toast';
- import { z } from 'zod';
- import { motion, AnimatePresence } from 'framer-motion';
- import saasValaLogo from '@/assets/saas-vala-logo.jpg';
+import { useToast } from '@/hooks/use-toast';
+import { z } from 'zod';
+import { motion, AnimatePresence } from 'framer-motion';
+import saasValaLogo from '@/assets/saas-vala-logo.jpg';
+import { useResellerApplications } from '@/hooks/useResellerApplications';
  
  const loginSchema = z.object({
    email: z.string().email('Please enter a valid email address'),
@@ -55,8 +56,12 @@ export default function Auth() {
    const [signupEmail, setSignupEmail] = useState('');
    const [signupPassword, setSignupPassword] = useState('');
     const [signupConfirmPassword, setSignupConfirmPassword] = useState('');
-    const [signupRole, setSignupRole] = useState<'user' | 'reseller'>(applyReseller ? 'reseller' : 'user');
-    const [signupErrors, setSignupErrors] = useState<Record<string, string>>({});
+  const [signupRole, setSignupRole] = useState<'user' | 'reseller'>(applyReseller ? 'reseller' : 'user');
+  const [signupErrors, setSignupErrors] = useState<Record<string, string>>({});
+  const [applyBusinessName, setApplyBusinessName] = useState('');
+  const [applyContact, setApplyContact] = useState('');
+  const [applyNotes, setApplyNotes] = useState('');
+  const { myApplications, submitApplication } = useResellerApplications();
  
    // Redirect based on role after login
    useEffect(() => {
@@ -163,14 +168,57 @@ export default function Auth() {
          title: 'Signup failed',
          description: message,
        });
-     } else {
-       toast({
-         title: 'Account created!',
-         description: 'Please check your email to verify your account.',
-       });
-       setAuthMode('login');
-     }
-   };
+      } else {
+        toast({
+          title: 'Account created!',
+          description: 'Please check your email to verify your account.',
+        });
+        if (signupRole === 'reseller') {
+          setApplyBusinessName(signupFullName);
+          setApplyContact(signupEmail);
+          toast({
+            title: 'Next step',
+            description: 'Once logged in, submit reseller application details.',
+          });
+        }
+        setAuthMode('login');
+      }
+    };
+
+  const latestApplication = myApplications[0];
+  const hasPendingOrApprovedApplication = myApplications.some(
+    (app) => app.status === 'pending' || app.status === 'approved'
+  );
+
+  const handleApplyReseller = async () => {
+    if (!user) {
+      toast({
+        variant: 'destructive',
+        title: 'Login required',
+        description: 'Please login before submitting reseller application.',
+      });
+      return;
+    }
+    if (!applyBusinessName.trim() || !applyContact.trim()) {
+      toast({
+        variant: 'destructive',
+        title: 'Missing details',
+        description: 'Business name and contact are required.',
+      });
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      await submitApplication({
+        business_name: applyBusinessName.trim(),
+        contact: applyContact.trim(),
+        notes: applyNotes.trim() || undefined,
+      });
+      setApplyNotes('');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
  
    if (initializing) {
      return (
@@ -234,8 +282,100 @@ export default function Auth() {
              </div>
  
              <AnimatePresence mode="wait">
-               {/* 2FA Flow */}
-               {show2FA ? (
+                {applyReseller && user && role !== 'reseller' ? (
+                  <motion.div
+                    key="apply-reseller"
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -20 }}
+                    className="space-y-5"
+                  >
+                    <div className="text-center">
+                      <div className="mx-auto w-14 h-14 rounded-xl bg-primary/20 flex items-center justify-center mb-4">
+                        <Store className="h-7 w-7 text-primary" />
+                      </div>
+                      <h2 className="text-lg font-semibold text-foreground">Apply as Reseller</h2>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        Submit your business details for admin review.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="apply-business" className="text-foreground text-sm">Business Name</Label>
+                      <Input
+                        id="apply-business"
+                        type="text"
+                        value={applyBusinessName}
+                        onChange={(e) => setApplyBusinessName(e.target.value)}
+                        className="h-12 bg-muted/30 border-border/50 focus:border-primary"
+                        placeholder="Your Business Name"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="apply-contact" className="text-foreground text-sm">Contact</Label>
+                      <Input
+                        id="apply-contact"
+                        type="text"
+                        value={applyContact}
+                        onChange={(e) => setApplyContact(e.target.value)}
+                        className="h-12 bg-muted/30 border-border/50 focus:border-primary"
+                        placeholder="Phone or Email"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="apply-notes" className="text-foreground text-sm">Notes (optional)</Label>
+                      <Input
+                        id="apply-notes"
+                        type="text"
+                        value={applyNotes}
+                        onChange={(e) => setApplyNotes(e.target.value)}
+                        className="h-12 bg-muted/30 border-border/50 focus:border-primary"
+                        placeholder="Anything admin should know"
+                      />
+                    </div>
+
+                    {latestApplication && (
+                      <div className="rounded-lg border border-border/70 bg-muted/20 p-3 text-sm">
+                        <p className="text-foreground font-medium">
+                          Latest status: <span className="capitalize">{latestApplication.status}</span>
+                        </p>
+                        {latestApplication.notes && (
+                          <p className="text-muted-foreground mt-1">{latestApplication.notes}</p>
+                        )}
+                      </div>
+                    )}
+
+                    <Button
+                      className="w-full bg-gradient-to-r from-primary to-orange-500 hover:opacity-90 text-white font-semibold h-12"
+                      disabled={isSubmitting || hasPendingOrApprovedApplication}
+                      onClick={handleApplyReseller}
+                    >
+                      {isSubmitting ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Submitting...
+                        </>
+                      ) : hasPendingOrApprovedApplication ? (
+                        'Application Already Submitted'
+                      ) : (
+                        'Submit Reseller Application'
+                      )}
+                    </Button>
+
+                    <Button
+                      variant="ghost"
+                      className="w-full text-muted-foreground"
+                      onClick={() => navigate('/')}
+                    >
+                      Back to Marketplace
+                    </Button>
+                  </motion.div>
+                ) : (
+                <>
+                {/* 2FA Flow */}
+                {show2FA ? (
                  <motion.div
                    key="2fa"
                    initial={{ opacity: 0, x: 20 }}
@@ -664,8 +804,10 @@ export default function Auth() {
                      </button>
                    </p>
                  </motion.form>
-               )}
-             </AnimatePresence>
+                 )}
+                </>
+                )}
+              </AnimatePresence>
  
              {/* Footer Links */}
              <div className="mt-8 pt-6 border-t border-border/50">
