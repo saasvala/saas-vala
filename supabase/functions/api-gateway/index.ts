@@ -398,7 +398,7 @@ async function handleAdminResellerApplications(method: string, pathParts: string
       .from('user_roles')
       .insert({ user_id: application.user_id, role: 'reseller' })
       .select('id')
-    if (roleError && !String(roleError.message || '').toLowerCase().includes('duplicate')) {
+    if (roleError && roleError.code !== '23505') {
       return err(roleError.message)
     }
 

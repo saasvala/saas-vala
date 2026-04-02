@@ -11,7 +11,7 @@ import {
   DollarSign,
   Wallet,
   Percent,
-  BanknoteArrowUp,
+  ArrowDownToLine,
   ArrowRight,
   AlertCircle,
 } from 'lucide-react';
@@ -23,7 +23,7 @@ const quickModules = [
   { title: 'Commissions', description: 'Review your commission earnings', icon: Percent, tab: 'commissions', color: 'from-secondary to-cyan-500' },
   { title: 'Users', description: 'Manage reseller users and clients', icon: Users, tab: 'users', color: 'from-green-500 to-emerald-500' },
   { title: 'Wallet', description: 'Top up and manage wallet balance', icon: Wallet, tab: 'wallet', color: 'from-purple-500 to-pink-500' },
-  { title: 'Withdrawals', description: 'Track and request withdrawals', icon: BanknoteArrowUp, tab: 'withdrawals', color: 'from-amber-500 to-orange-500' },
+  { title: 'Withdrawals', description: 'Track and request withdrawals', icon: ArrowDownToLine, tab: 'withdrawals', color: 'from-amber-500 to-orange-500' },
 ];
  
  export function ResellerOverview() {

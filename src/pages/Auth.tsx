@@ -176,12 +176,10 @@ export default function Auth() {
         if (signupRole === 'reseller') {
           setApplyBusinessName(signupFullName);
           setApplyContact(signupEmail);
-          setAuthMode('login');
           toast({
             title: 'Next step',
-            description: 'Login and submit reseller application details.',
+            description: 'Once logged in, submit reseller application details.',
           });
-          return;
         }
         setAuthMode('login');
       }
@@ -375,6 +373,7 @@ export default function Auth() {
                     </Button>
                   </motion.div>
                 ) : (
+                <>
                 {/* 2FA Flow */}
                 {show2FA ? (
                  <motion.div
@@ -805,7 +804,8 @@ export default function Auth() {
                      </button>
                    </p>
                  </motion.form>
-                )}
+                 )}
+                </>
                 )}
               </AnimatePresence>
  

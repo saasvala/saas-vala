@@ -8,7 +8,7 @@ import {
   Percent,
   Users,
   Wallet,
-  BanknoteArrowUp,
+  ArrowDownToLine,
   ChevronLeft,
   ChevronRight,
   LogOut,
@@ -29,7 +29,7 @@ const resellerNavItems: NavItem[] = [
   { title: 'Commissions', icon: Percent, href: '/reseller-dashboard?tab=commissions' },
   { title: 'Users', icon: Users, href: '/reseller-dashboard?tab=users' },
   { title: 'Wallet', icon: Wallet, href: '/reseller-dashboard?tab=wallet' },
-  { title: 'Withdrawals', icon: BanknoteArrowUp, href: '/reseller-dashboard?tab=withdrawals' },
+  { title: 'Withdrawals', icon: ArrowDownToLine, href: '/reseller-dashboard?tab=withdrawals' },
 ];
  
  export function ResellerSidebar() {

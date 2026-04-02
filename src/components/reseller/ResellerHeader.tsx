@@ -11,7 +11,7 @@
    DropdownMenuTrigger,
  } from '@/components/ui/dropdown-menu';
  import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { ArrowLeft, Bell, Lock, LogOut, Wallet } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, Bell, LogOut, Wallet } from 'lucide-react';
  import { useWallet } from '@/hooks/useWallet';
  
 const pageTitles: Record<string, string> = {
@@ -109,7 +109,7 @@ const pageTitles: Record<string, string> = {
              </DropdownMenuLabel>
              <DropdownMenuSeparator className="bg-border" />
               <DropdownMenuItem className="cursor-pointer" onClick={() => navigate('/reseller-dashboard?tab=withdrawals')}>
-                <Lock className="mr-2 h-4 w-4" />
+                <ArrowDownToLine className="mr-2 h-4 w-4" />
                 <span>Withdrawals</span>
               </DropdownMenuItem>
              <DropdownMenuSeparator className="bg-border" />

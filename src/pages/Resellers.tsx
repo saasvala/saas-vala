@@ -76,7 +76,7 @@ export default function Resellers() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [selectedApplication, setSelectedApplication] = useState<ResellerApplication | null>(null);
-  const [rejectReason, setRejectReason] = useState('');
+  const [adminNotes, setAdminNotes] = useState('');
   const [reviewLoading, setReviewLoading] = useState(false);
 
   // Form state
@@ -164,29 +164,29 @@ export default function Resellers() {
 
   const handleOpenApplication = (app: ResellerApplication) => {
     setSelectedApplication(app);
-    setRejectReason(app.notes || '');
+    setAdminNotes(app.notes || '');
   };
 
   const handleApproveApplication = async () => {
     if (!selectedApplication) return;
     setReviewLoading(true);
     try {
-      await approveApplication(selectedApplication.id, { notes: rejectReason || undefined });
+      await approveApplication(selectedApplication.id, { notes: adminNotes || undefined });
       await fetchResellers(currentPage, ITEMS_PER_PAGE, searchQuery);
       setSelectedApplication(null);
-      setRejectReason('');
+      setAdminNotes('');
     } finally {
       setReviewLoading(false);
     }
   };
 
   const handleRejectApplication = async () => {
-    if (!selectedApplication || !rejectReason.trim()) return;
+    if (!selectedApplication || !adminNotes.trim()) return;
     setReviewLoading(true);
     try {
-      await rejectApplication(selectedApplication.id, rejectReason.trim());
+      await rejectApplication(selectedApplication.id, adminNotes.trim());
       setSelectedApplication(null);
-      setRejectReason('');
+      setAdminNotes('');
     } finally {
       setReviewLoading(false);
     }
@@ -196,7 +196,7 @@ export default function Resellers() {
 
   useEffect(() => {
     fetchAdminApplications({ page: 1, limit: 100, status: 'pending' });
-  }, []);
+  }, [fetchAdminApplications]);
 
   return (
     <DashboardLayout>
@@ -573,8 +573,8 @@ export default function Resellers() {
               <div className="space-y-2">
                 <Label>Notes / Reject reason</Label>
                 <Textarea
-                  value={rejectReason}
-                  onChange={(e) => setRejectReason(e.target.value)}
+                  value={adminNotes}
+                  onChange={(e) => setAdminNotes(e.target.value)}
                   placeholder="Optional on approve, required on reject"
                 />
               </div>
@@ -587,7 +587,7 @@ export default function Resellers() {
             <Button
               variant="destructive"
               onClick={handleRejectApplication}
-              disabled={reviewLoading || !rejectReason.trim()}
+              disabled={reviewLoading || !adminNotes.trim()}
             >
               {reviewLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Reject

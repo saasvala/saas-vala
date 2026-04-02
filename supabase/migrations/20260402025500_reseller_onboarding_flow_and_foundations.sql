@@ -82,8 +82,22 @@ END $$;
 
 -- 2) Resellers table alignment (tier + status)
 ALTER TABLE public.resellers
-  ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'standard',
-  ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+  ADD COLUMN IF NOT EXISTS tier TEXT,
+  ADD COLUMN IF NOT EXISTS status TEXT;
+
+UPDATE public.resellers
+SET tier = COALESCE(tier, 'standard')
+WHERE tier IS NULL;
+
+UPDATE public.resellers
+SET status = COALESCE(status, 'active')
+WHERE status IS NULL;
+
+ALTER TABLE public.resellers
+  ALTER COLUMN tier SET DEFAULT 'standard',
+  ALTER COLUMN status SET DEFAULT 'active',
+  ALTER COLUMN tier SET NOT NULL,
+  ALTER COLUMN status SET NOT NULL;
 
 DO $$
 BEGIN
@@ -281,4 +295,3 @@ CREATE TABLE IF NOT EXISTS public.cron_schedules (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-

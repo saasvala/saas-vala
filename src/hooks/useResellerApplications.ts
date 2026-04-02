@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { resellerOnboardingApi } from '@/lib/api';
 
@@ -25,7 +25,7 @@ export function useResellerApplications() {
   const [adminLoading, setAdminLoading] = useState(false);
   const [total, setTotal] = useState(0);
 
-  const fetchMyApplications = async () => {
+  const fetchMyApplications = useCallback(async () => {
     setLoading(true);
     try {
       const res = await resellerOnboardingApi.myApplications();
@@ -35,7 +35,7 @@ export function useResellerApplications() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   const submitApplication = async (data: { business_name: string; contact: string; notes?: string }) => {
     try {
@@ -49,7 +49,7 @@ export function useResellerApplications() {
     }
   };
 
-  const fetchAdminApplications = async (params?: { page?: number; limit?: number; status?: string; search?: string }) => {
+  const fetchAdminApplications = useCallback(async (params?: { page?: number; limit?: number; status?: string; search?: string }) => {
     setAdminLoading(true);
     try {
       const res = await resellerOnboardingApi.adminListApplications(params);
@@ -61,7 +61,7 @@ export function useResellerApplications() {
     } finally {
       setAdminLoading(false);
     }
-  };
+  }, []);
 
   const approveApplication = async (
     applicationId: string,
@@ -90,7 +90,7 @@ export function useResellerApplications() {
 
   useEffect(() => {
     fetchMyApplications();
-  }, []);
+  }, [fetchMyApplications]);
 
   return {
     myApplications,
@@ -105,4 +105,3 @@ export function useResellerApplications() {
     rejectApplication,
   };
 }
-
