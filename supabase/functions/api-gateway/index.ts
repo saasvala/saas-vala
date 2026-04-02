@@ -782,7 +782,6 @@ async function handleResellerOnboarding(method: string, pathParts: string[], bod
         contact,
         notes,
         status: 'pending',
-        terms_accepted_at: nowIso(),
       })
       .select('*')
       .single()
@@ -941,7 +940,7 @@ async function handleAdminResellerApplications(method: string, pathParts: string
       ? selectedFeaturesPayload.features
       : normalizeFeatureKeys(application.features_checklist)
     const termsVersion = String(body.terms_version || application.terms_version || 'v1').trim() || 'v1'
-    const termsAcceptedAt = application.terms_accepted_at || nowIso()
+    const termsAcceptedAt = nowIso()
 
     const { error: roleError } = await admin
       .from('user_roles')
@@ -1027,16 +1026,6 @@ async function handleAdminResellerApplications(method: string, pathParts: string
         },
       })
     if (termsLogErr) return err(termsLogErr.message)
-
-    const { error: appFeatureUpdateErr } = await admin
-      .from('reseller_applications')
-      .update({
-        features_checklist: selectedFeatures,
-        terms_version: termsVersion,
-        terms_accepted_at: termsAcceptedAt,
-      })
-      .eq('id', application.id)
-    if (appFeatureUpdateErr) return err(appFeatureUpdateErr.message)
 
     const { error: appUpdateErr } = await admin
       .from('reseller_applications')

@@ -1,7 +1,7 @@
 -- Final reseller gaps + ultra layer feature controls (additive)
 
 ALTER TABLE public.reseller_applications
-  ADD COLUMN IF NOT EXISTS features_checklist JSONB NOT NULL DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS features_checklist JSONB,
   ADD COLUMN IF NOT EXISTS terms_version TEXT NOT NULL DEFAULT 'v1',
   ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ;
 
