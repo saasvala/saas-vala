@@ -73,7 +73,17 @@ export const resellerOnboardingApi = {
   apply: (data: any) => apiCall('POST', 'reseller/apply', data),
   adminListApplications: (params?: { page?: number; limit?: number; status?: string; search?: string }) =>
     apiCall('GET', 'admin/reseller-applications', params),
-  adminApprove: (applicationId: string, options?: { notes?: string; tier?: string; commission_percent?: number }) =>
+  adminApprove: (
+    applicationId: string,
+    options?: {
+      notes?: string;
+      tier?: string;
+      commission_percent?: number;
+      credit_limit?: number;
+      selected_features?: string[];
+      terms_version?: string;
+    }
+  ) =>
     apiCall('POST', 'admin/reseller-approve', { application_id: applicationId, ...options }),
   adminReject: (applicationId: string, reason: string) =>
     apiCall('POST', 'admin/reseller-reject', { application_id: applicationId, reason }),

@@ -16,6 +16,9 @@ export interface ResellerApplication {
     phone?: string | null;
     company_name?: string | null;
   } | null;
+  features_checklist?: string[] | null;
+  terms_version?: string | null;
+  terms_accepted_at?: string | null;
 }
 
 export function useResellerApplications() {
@@ -65,7 +68,14 @@ export function useResellerApplications() {
 
   const approveApplication = async (
     applicationId: string,
-    options?: { notes?: string; tier?: string; commission_percent?: number }
+    options?: {
+      notes?: string;
+      tier?: string;
+      commission_percent?: number;
+      credit_limit?: number;
+      selected_features?: string[];
+      terms_version?: string;
+    }
   ) => {
     try {
       await resellerOnboardingApi.adminApprove(applicationId, options);

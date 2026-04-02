@@ -19,6 +19,43 @@ const PRODUCT_LIST_CACHE_TTL_MS = 60 * 1000
 const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SECONDS') || '60')
 const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
 const DEFAULT_COMMISSION_RATE = 10
+const FINAL_RESELLER_GAP_FEATURE_KEYS = [
+  'tier_based_dynamic_commission_engine',
+  'per_product_commission_override',
+  'credit_risk_scoring_auto_block',
+  'reseller_sla_uptime_tracking',
+  'auto_payout_scheduling',
+  'commission_dispute_system',
+  'multi_level_reseller_hierarchy',
+  'geo_country_restriction',
+  'tax_split_per_reseller',
+  'reseller_performance_scoring',
+  'limits_per_day_month_keys_sales',
+  'auto_suspend_on_fraud_triggers',
+  'contract_terms_acceptance_log',
+] as const
+const FINAL_ULTRA_LAYER_FEATURE_KEYS = [
+  'real_time_event_bus_pub_sub',
+  'distributed_job_queue_priority_retries',
+  'event_sourcing_for_critical_flows',
+  'read_write_db_separation',
+  'horizontal_scaling_stateless_apis',
+  'feature_toggle_per_reseller',
+  'ai_anomaly_detection_sales_fraud',
+  'smart_retry_with_backoff',
+  'dead_letter_queue_handling',
+  'versioned_apis_v1_v2',
+  'blue_green_deployment',
+  'canary_release_control',
+  'auto_schema_migration_rollback',
+  'data_partitioning_large_tables',
+  'cold_storage_archive_strategy',
+  'edge_caching_with_invalidation_rules',
+] as const
+const RESELLER_FEATURE_KEY_SET = new Set<string>([
+  ...FINAL_RESELLER_GAP_FEATURE_KEYS,
+  ...FINAL_ULTRA_LAYER_FEATURE_KEYS,
+])
 
 function invalidateProductCache() {
   productListCache.data = null
@@ -27,6 +64,40 @@ function invalidateProductCache() {
 
 function nowIso() {
   return new Date().toISOString()
+}
+
+function normalizeFeatureKeys(input: unknown): string[] {
+  if (!Array.isArray(input)) return []
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const item of input) {
+    const key = String(item || '').trim()
+    if (!key || seen.has(key) || !RESELLER_FEATURE_KEY_SET.has(key)) continue
+    seen.add(key)
+    result.push(key)
+  }
+  return result
+}
+
+function parseSelectedFeatures(input: unknown): { provided: boolean; valid: boolean; features: string[] } {
+  if (input === undefined || input === null) {
+    return { provided: false, valid: true, features: [] }
+  }
+  if (!Array.isArray(input)) {
+    return { provided: true, valid: false, features: [] }
+  }
+  const normalizedRaw = Array.from(
+    new Set(
+      input
+        .map((item) => String(item || '').trim())
+        .filter((key) => key.length > 0)
+    )
+  )
+  const hasInvalid = normalizedRaw.some((key) => !RESELLER_FEATURE_KEY_SET.has(key))
+  if (hasInvalid) {
+    return { provided: true, valid: false, features: [] }
+  }
+  return { provided: true, valid: true, features: normalizedRaw }
 }
 
 function generateIdempotencyKey() {
@@ -711,6 +782,7 @@ async function handleResellerOnboarding(method: string, pathParts: string[], bod
         contact,
         notes,
         status: 'pending',
+        terms_accepted_at: nowIso(),
       })
       .select('*')
       .single()
@@ -729,7 +801,11 @@ async function handleResellerOnboarding(method: string, pathParts: string[], bod
       .order('created_at', { ascending: false })
 
     if (error) return err(error.message)
-    return json({ data })
+    const normalized = (data || []).map((a: any) => ({
+      ...a,
+      features_checklist: normalizeFeatureKeys(a?.features_checklist),
+    }))
+    return json({ data: normalized })
   }
 
   return err('Not found', 404)
@@ -827,6 +903,7 @@ async function handleAdminResellerApplications(method: string, pathParts: string
 
     const enriched = (data || []).map((a: any) => ({
       ...a,
+      features_checklist: normalizeFeatureKeys(a?.features_checklist),
       profile: profileMap[a.user_id] || null,
     }))
 
@@ -856,6 +933,15 @@ async function handleAdminResellerApplications(method: string, pathParts: string
     }
     const tier = body.tier ? String(body.tier) : 'standard'
     const adminNotes = body.notes ? String(body.notes) : application.notes
+    const selectedFeaturesPayload = parseSelectedFeatures(body.selected_features)
+    if (!selectedFeaturesPayload.valid) {
+      return err('selected_features must be an array of supported feature keys', 422, 'VALIDATION_ERROR')
+    }
+    const selectedFeatures = selectedFeaturesPayload.provided
+      ? selectedFeaturesPayload.features
+      : normalizeFeatureKeys(application.features_checklist)
+    const termsVersion = String(body.terms_version || application.terms_version || 'v1').trim() || 'v1'
+    const termsAcceptedAt = application.terms_accepted_at || nowIso()
 
     const { error: roleError } = await admin
       .from('user_roles')
@@ -870,6 +956,8 @@ async function handleAdminResellerApplications(method: string, pathParts: string
       .select('id')
       .eq('user_id', application.user_id)
       .maybeSingle()
+
+    let resellerId = existingReseller?.id || null
 
     if (existingReseller?.id) {
       const { error: updateResellerError } = await admin
@@ -886,7 +974,7 @@ async function handleAdminResellerApplications(method: string, pathParts: string
         .eq('id', existingReseller.id)
       if (updateResellerError) return err(updateResellerError.message)
     } else {
-      const { error: createResellerError } = await admin
+      const { data: createdReseller, error: createResellerError } = await admin
         .from('resellers')
         .insert({
           user_id: application.user_id,
@@ -898,14 +986,66 @@ async function handleAdminResellerApplications(method: string, pathParts: string
           tier,
           status: 'active',
         })
+        .select('id')
+        .single()
       if (createResellerError) return err(createResellerError.message)
+      resellerId = createdReseller?.id || null
     }
+
+    if (!resellerId) {
+      const { data: resellerRow, error: resellerFetchErr } = await admin
+        .from('resellers')
+        .select('id')
+        .eq('user_id', application.user_id)
+        .maybeSingle()
+      if (resellerFetchErr || !resellerRow?.id) return err(resellerFetchErr?.message || 'Reseller profile not found', 404)
+      resellerId = resellerRow.id
+    }
+
+    const featureRows = Array.from(RESELLER_FEATURE_KEY_SET).map((featureKey) => ({
+      reseller_id: resellerId,
+      feature_key: featureKey,
+      enabled: selectedFeatures.includes(featureKey),
+      source: 'application_review',
+    }))
+    const { error: featureUpsertErr } = await admin
+      .from('reseller_feature_flags')
+      .upsert(featureRows, { onConflict: 'reseller_id,feature_key' })
+    if (featureUpsertErr) return err(featureUpsertErr.message)
+
+    const { error: termsLogErr } = await admin
+      .from('reseller_terms_acceptance_logs')
+      .insert({
+        application_id: application.id,
+        reseller_id: resellerId,
+        reseller_user_id: application.user_id,
+        accepted_by: userId,
+        terms_version: termsVersion,
+        accepted_at: termsAcceptedAt,
+        metadata: {
+          selected_features: selectedFeatures,
+        },
+      })
+    if (termsLogErr) return err(termsLogErr.message)
+
+    const { error: appFeatureUpdateErr } = await admin
+      .from('reseller_applications')
+      .update({
+        features_checklist: selectedFeatures,
+        terms_version: termsVersion,
+        terms_accepted_at: termsAcceptedAt,
+      })
+      .eq('id', application.id)
+    if (appFeatureUpdateErr) return err(appFeatureUpdateErr.message)
 
     const { error: appUpdateErr } = await admin
       .from('reseller_applications')
       .update({
         status: 'approved',
         notes: adminNotes,
+        features_checklist: selectedFeatures,
+        terms_version: termsVersion,
+        terms_accepted_at: termsAcceptedAt,
         updated_at: new Date().toISOString(),
       })
       .eq('id', application.id)
@@ -915,6 +1055,8 @@ async function handleAdminResellerApplications(method: string, pathParts: string
       applicant_user_id: application.user_id,
       tier,
       commission_percent: commissionPercent,
+      selected_features: selectedFeatures,
+      terms_version: termsVersion,
     })
 
     return json({ success: true })
