@@ -14,7 +14,20 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:api": "vitest run src/test/api-suite.test.ts",
+    "test:realtime": "vitest run src/test/realtime-validation.test.ts",
+    "test:db": "node scripts/ultra-next/db-integrity-check.mjs",
+    "monitor:run": "node scripts/ultra-next/monitoring-engine.mjs",
+    "alert:run": "node scripts/ultra-next/alert-engine.mjs",
+    "selfheal:run": "node scripts/ultra-next/self-heal.mjs",
+    "perf:test": "node scripts/ultra-next/performance-test.mjs",
+    "ultra:test": "npm run test && npm run test:api && npm run test:realtime && npm run test:e2e",
+    "ultra:detect": "npm run monitor:run && npm run alert:run && npm run test:db",
+    "ultra:fix": "npm run selfheal:run",
+    "ultra:retest": "npm run test:api && npm run test:realtime",
+    "ultra:loop": "node scripts/ultra-next/continuous-loop.mjs"
   },
   "dependencies": {
     "@elevenlabs/react": "^0.14.0",
@@ -77,6 +90,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.32.0",
+    "@playwright/test": "^1.59.1",
     "@tailwindcss/typography": "^0.5.16",
     "@testing-library/jest-dom": "^6.6.0",
     "@testing-library/react": "^16.0.0",
