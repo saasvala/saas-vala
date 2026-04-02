@@ -30,10 +30,15 @@ import { useResellerApplications } from '@/hooks/useResellerApplications';
  
 type AuthMode = 'login' | 'signup' | 'forgot_password';
 
+function normalizeReferralCode(value: string) {
+  return value.trim().toUpperCase();
+}
+
 export default function Auth() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const applyReseller = searchParams.get('apply') === 'reseller';
+  const signupRefFromUrl = searchParams.get('ref') || '';
   const { user, role, signIn, signUp, loading, initializing } = useAuth();
   const { toast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -57,6 +62,7 @@ export default function Auth() {
    const [signupPassword, setSignupPassword] = useState('');
     const [signupConfirmPassword, setSignupConfirmPassword] = useState('');
   const [signupRole, setSignupRole] = useState<'user' | 'reseller'>(applyReseller ? 'reseller' : 'user');
+  const [signupReferralCode, setSignupReferralCode] = useState('');
   const [signupErrors, setSignupErrors] = useState<Record<string, string>>({});
   const [applyBusinessName, setApplyBusinessName] = useState('');
   const [applyContact, setApplyContact] = useState('');
@@ -64,8 +70,8 @@ export default function Auth() {
   const { myApplications, submitApplication } = useResellerApplications();
  
    // Redirect based on role after login
-   useEffect(() => {
-     if (user && role && !loading) {
+  useEffect(() => {
+    if (user && role && !loading) {
        if (role === 'super_admin') {
          navigate('/dashboard', { replace: true });
        } else if (role === 'reseller') {
@@ -74,7 +80,13 @@ export default function Auth() {
          navigate('/', { replace: true });
        }
      }
-   }, [user, role, loading, navigate]);
+  }, [user, role, loading, navigate]);
+
+  useEffect(() => {
+    if (signupRefFromUrl) {
+      setSignupReferralCode(normalizeReferralCode(signupRefFromUrl));
+    }
+  }, [signupRefFromUrl]);
  
    const handleLogin = async (e: React.FormEvent) => {
      e.preventDefault();
@@ -155,7 +167,14 @@ export default function Auth() {
      }
  
       setIsSubmitting(true);
-      const { error } = await signUp(signupEmail, signupPassword, signupFullName, signupRole === 'reseller' ? 'reseller' : undefined);
+       const normalizedRefCode = normalizeReferralCode(signupReferralCode);
+       const { error } = await signUp(
+         signupEmail,
+         signupPassword,
+         signupFullName,
+         signupRole === 'reseller' ? 'reseller' : undefined,
+         normalizedRefCode || undefined
+       );
      setIsSubmitting(false);
  
      if (error) {
@@ -433,7 +452,7 @@ export default function Auth() {
                     className="space-y-5"
                   >
  
-                   {/* Email */}
+                    {/* Email */}
                    <div className="space-y-2">
                      <Label htmlFor="login-email" className="text-foreground text-sm">Email</Label>
                      <div className="relative">
@@ -556,6 +575,22 @@ export default function Auth() {
                             <div className="text-[9px] text-cyan-400/70">Fill Email</div>
                           </div>
                         </motion.button>
+                      </div>
+                    </div>
+
+                    {/* Referral Code */}
+                    <div className="space-y-2">
+                      <Label htmlFor="signup-ref-code" className="text-foreground text-sm">Referral Code (Optional)</Label>
+                      <div className="relative">
+                        <Input
+                          id="signup-ref-code"
+                          type="text"
+                          placeholder="ENTER CODE"
+                          value={signupReferralCode}
+                          onChange={(e) => setSignupReferralCode(normalizeReferralCode(e.target.value))}
+                          className="h-12 bg-muted/30 border-border/50 focus:border-primary uppercase"
+                          maxLength={32}
+                        />
                       </div>
                     </div>
 

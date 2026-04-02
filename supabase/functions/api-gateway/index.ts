@@ -18,6 +18,7 @@ const productListCache: { data: any[] | null; expiresAt: number } = { data: null
 const PRODUCT_LIST_CACHE_TTL_MS = 60 * 1000
 const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SECONDS') || '60')
 const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
+const DEFAULT_COMMISSION_RATE = 10
 
 function invalidateProductCache() {
   productListCache.data = null
@@ -59,6 +60,10 @@ function generateLicenseKey() {
     for (let i = 0; i < 4; i++) key += chars.charAt(Math.floor(Math.random() * chars.length))
   }
   return key
+}
+
+function toMoney(value: number) {
+  return Number((value || 0).toFixed(2))
 }
 
 function validateRequired(body: any, fields: string[]) {
@@ -1070,6 +1075,75 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     return json({ success: true })
   }
 
+  // POST /marketplace/referrals/link
+  if (method === 'POST' && action === 'referrals' && pathParts[1] === 'link') {
+    const missing = validateRequired(body, ['ref_code'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+
+    const refCode = String(body.ref_code || '').trim().toUpperCase()
+    if (!refCode) return err('Invalid referral code', 422, 'VALIDATION_ERROR')
+
+    const { data: existingMapping } = await admin
+      .from('referrals')
+      .select('id')
+      .eq('referred_user_id', userId)
+      .maybeSingle()
+    if (existingMapping?.id) return err('User already has a referrer', 409, 'ALREADY_LINKED')
+
+    const { data: referralCode, error: referralCodeError } = await admin
+      .from('referral_codes')
+      .select('id, code, reseller_id, referred_user_id, status')
+      .eq('code', refCode)
+      .maybeSingle()
+    if (referralCodeError) return err(referralCodeError.message)
+    if (!referralCode?.id || !referralCode.reseller_id) return err('Referral code not found', 404, 'NOT_FOUND')
+    if (referralCode.referred_user_id && referralCode.referred_user_id !== userId) {
+      return err('Referral code already used', 409, 'DUPLICATE_REFERRAL')
+    }
+
+    const { data: referrerReseller } = await admin
+      .from('resellers')
+      .select('id, user_id')
+      .eq('id', referralCode.reseller_id)
+      .maybeSingle()
+    if (!referrerReseller?.user_id) return err('Referrer not found', 404, 'NOT_FOUND')
+    if (referrerReseller.user_id === userId) return err('Self-referral is not allowed', 422, 'SELF_REFERRAL')
+
+    const { data: insertedReferral, error: insertReferralError } = await admin
+      .from('referrals')
+      .insert({
+        referrer_id: referrerReseller.user_id,
+        referred_user_id: userId,
+        code: refCode,
+        status: 'pending',
+      })
+      .select()
+      .single()
+    if (insertReferralError) {
+      if ((insertReferralError as any)?.code === '23505') {
+        return err('User already has a referrer', 409, 'ALREADY_LINKED')
+      }
+      return err(insertReferralError.message)
+    }
+
+    await admin
+      .from('referral_codes')
+      .update({
+        referred_user_id: userId,
+        signup_at: nowIso(),
+        status: 'active',
+        updated_at: nowIso(),
+      })
+      .eq('id', referralCode.id)
+
+    await logActivity(admin, 'referral', insertedReferral.id, 'linked', userId, {
+      ref_code: refCode,
+      referrer_id: referrerReseller.user_id,
+    })
+
+    return json({ data: insertedReferral }, 201)
+  }
+
   return err('Not found', 404)
 }
 
@@ -1171,6 +1245,141 @@ async function markPaymentSuccess(admin: any, sb: any, userId: string, payment: 
         reference_id: order.id,
         metadata: { reason: 'payment_success_unlock' },
       })
+    }
+  }
+
+  // Referral flow: user_signup(ref_code) -> map_referrer -> user_purchase -> commission_create -> credit_wallet
+  const { data: referral } = await admin
+    .from('referrals')
+    .select('*')
+    .eq('referred_user_id', order.user_id)
+    .in('status', ['pending', 'active'])
+    .order('created_at', { ascending: false })
+    .maybeSingle()
+
+  if (referral?.id && referral.referrer_id && referral.referrer_id !== order.user_id) {
+    const orderAmount = Number(order.amount || 0)
+    const { data: existingCommission } = await admin
+      .from('referral_commissions')
+      .select('id, order_id')
+      .eq('order_id', order.id)
+      .maybeSingle()
+
+    // anti-abuse: only reward once per order; order_id is unique in referral_commissions
+    if (!existingCommission) {
+      const { data: referrerReseller } = await admin
+        .from('resellers')
+        .select('id, commission_percent, commission_rate')
+        .eq('user_id', referral.referrer_id)
+        .maybeSingle()
+
+      // Keep backward compatibility: legacy rows may still use commission_rate.
+      const commissionRate = Number(
+        referrerReseller?.commission_percent ?? referrerReseller?.commission_rate ?? DEFAULT_COMMISSION_RATE
+      )
+      const commissionAmount = toMoney((orderAmount * commissionRate) / 100)
+
+      if (commissionAmount > 0) {
+        const { data: createdCommission, error: createCommissionError } = await admin
+          .from('referral_commissions')
+          .insert({
+            referral_id: referral.id,
+            order_id: order.id,
+            amount: commissionAmount,
+            status: 'pending',
+          })
+          .select()
+          .single()
+
+        if (!createCommissionError && createdCommission?.id) {
+          await admin
+            .from('referrals')
+            .update({ status: 'active', updated_at: paidAt })
+            .eq('id', referral.id)
+
+          await admin
+            .from('referral_commissions')
+            .update({ status: 'active', updated_at: paidAt })
+            .eq('id', createdCommission.id)
+
+          let walletId: string | null = null
+          let oldBalance = 0
+          const { data: referrerWallet } = await admin
+            .from('wallets')
+            .select('id, balance')
+            .eq('user_id', referral.referrer_id)
+            .maybeSingle()
+
+          if (referrerWallet?.id) {
+            walletId = referrerWallet.id
+            oldBalance = Number(referrerWallet.balance || 0)
+          } else {
+            const { data: createdWallet } = await admin
+              .from('wallets')
+              .insert({ user_id: referral.referrer_id, balance: 0, currency: order.currency || 'INR' })
+              .select('id, balance')
+              .single()
+            walletId = createdWallet?.id || null
+            oldBalance = Number(createdWallet?.balance || 0)
+          }
+
+          if (walletId) {
+            const newBalance = toMoney(oldBalance + commissionAmount)
+            await admin.from('wallets').update({ balance: newBalance, updated_at: paidAt }).eq('id', walletId)
+
+            await admin.from('transactions').insert({
+              wallet_id: walletId,
+              type: 'credit',
+              amount: commissionAmount,
+              balance_after: newBalance,
+              status: 'completed',
+              description: 'Referral commission credited',
+              reference_type: 'referral_commission',
+              reference_id: createdCommission.id,
+              created_by: actorUserId,
+            })
+
+            await admin.from('wallet_ledger').insert({
+              wallet_id: walletId,
+              user_id: referral.referrer_id,
+              entry_type: 'credit',
+              amount: commissionAmount,
+              balance_before: oldBalance,
+              balance_after: newBalance,
+              reference_type: 'referral_commission',
+              reference_id: createdCommission.id,
+              metadata: { referral_id: referral.id, order_id: order.id },
+            })
+          }
+
+          await admin
+            .from('referral_commissions')
+            .update({ status: 'paid', updated_at: paidAt })
+            .eq('id', createdCommission.id)
+
+          await admin
+            .from('referrals')
+            .update({ status: 'paid', updated_at: paidAt })
+            .eq('id', referral.id)
+
+          await admin
+            .from('referral_codes')
+            .update({
+              status: 'converted',
+              commission_earned: commissionAmount,
+              purchase_at: paidAt,
+              updated_at: paidAt,
+            })
+            .eq('code', referral.code)
+
+          await logActivity(admin, 'referral', referral.id, 'commission_paid', actorUserId, {
+            order_id: order.id,
+            referral_commission_id: createdCommission.id,
+            amount: commissionAmount,
+            rate: commissionRate,
+          })
+        }
+      }
     }
   }
 
