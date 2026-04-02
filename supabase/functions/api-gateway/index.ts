@@ -115,6 +115,18 @@ function adminClient() {
   )
 }
 
+async function getUserRoles(userId: string) {
+  const admin = adminClient()
+  const { data, error } = await admin.from('user_roles').select('role').eq('user_id', userId)
+  if (error) return []
+  return (data || []).map((r: any) => r.role)
+}
+
+async function isSuperAdminUser(userId: string) {
+  const roles = await getUserRoles(userId)
+  return roles.includes('super_admin')
+}
+
 async function logActivity(admin: any, entityType: string, entityId: string, action: string, userId: string, details: any = {}) {
   try {
     await admin.from('activity_logs').insert({
@@ -427,6 +439,228 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
     if (error) return err(error.message)
     await logActivity(admin, 'referral_code', data.id, 'created', userId, { reseller_id: reseller.id, code })
     return json({ data }, 201)
+  }
+
+  return err('Not found', 404)
+}
+
+// ===================== 3B. RESELLER ONBOARDING =====================
+async function handleResellerOnboarding(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const admin = adminClient()
+  const action = pathParts[0]
+
+  // POST /reseller/apply
+  if (method === 'POST' && action === 'apply') {
+    const businessName = String(body.business_name || '').trim()
+    const contact = String(body.contact || '').trim()
+    const notes = body.notes ? String(body.notes) : null
+
+    if (!businessName || !contact) {
+      return err('business_name and contact are required')
+    }
+
+    const roles = await getUserRoles(userId)
+    if (roles.includes('reseller')) {
+      return err('User is already a reseller', 409)
+    }
+
+    const { data: existing } = await admin
+      .from('reseller_applications')
+      .select('id, status')
+      .eq('user_id', userId)
+      .in('status', ['pending', 'approved'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+
+    if ((existing || []).length > 0) {
+      return err('A pending/approved reseller application already exists', 409)
+    }
+
+    const { data, error } = await admin
+      .from('reseller_applications')
+      .insert({
+        user_id: userId,
+        business_name: businessName,
+        contact,
+        notes,
+        status: 'pending',
+      })
+      .select('*')
+      .single()
+
+    if (error) return err(error.message)
+    await logActivity(admin, 'reseller_application', data.id, 'created', userId, { business_name: businessName })
+    return json({ data }, 201)
+  }
+
+  // GET /reseller/applications
+  if (method === 'GET' && action === 'applications') {
+    const { data, error } = await sb
+      .from('reseller_applications')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+
+    if (error) return err(error.message)
+    return json({ data })
+  }
+
+  return err('Not found', 404)
+}
+
+// ===================== 3C. ADMIN RESELLER APPLICATIONS =====================
+async function handleAdminResellerApplications(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const admin = adminClient()
+  const action = pathParts[0]
+
+  const isAdmin = await isSuperAdminUser(userId)
+  if (!isAdmin) return err('Forbidden', 403)
+
+  // GET /admin/reseller-applications
+  if (method === 'GET' && action === 'reseller-applications') {
+    const page = Number(body?.page || 1)
+    const limit = Number(body?.limit || 25)
+    const status = body?.status ? String(body.status) : ''
+    const search = body?.search ? String(body.search) : ''
+
+    let query = admin
+      .from('reseller_applications')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range((page - 1) * limit, page * limit - 1)
+
+    if (status) query = query.eq('status', status)
+    if (search) query = query.or(`business_name.ilike.%${search}%,contact.ilike.%${search}%`)
+
+    const { data, error, count } = await query
+    if (error) return err(error.message)
+
+    const userIds = (data || []).map((r: any) => r.user_id).filter(Boolean)
+    let profileMap: Record<string, any> = {}
+    if (userIds.length > 0) {
+      const { data: profiles } = await admin
+        .from('profiles')
+        .select('user_id, full_name, phone, company_name')
+        .in('user_id', userIds)
+      ;(profiles || []).forEach((p: any) => { profileMap[p.user_id] = p })
+    }
+
+    const enriched = (data || []).map((a: any) => ({
+      ...a,
+      profile: profileMap[a.user_id] || null,
+    }))
+
+    return json({ data: enriched, total: count || 0 })
+  }
+
+  // POST /admin/reseller-approve
+  if (method === 'POST' && action === 'reseller-approve') {
+    const applicationId = String(body.application_id || '').trim()
+    if (!applicationId) return err('application_id is required')
+
+    const { data: application, error: appErr } = await admin
+      .from('reseller_applications')
+      .select('*')
+      .eq('id', applicationId)
+      .single()
+    if (appErr || !application) return err('Application not found', 404)
+    if (application.status !== 'pending') return err('Only pending applications can be approved', 409)
+
+    const commissionPercent = Number(body.commission_percent ?? 10)
+    const tier = body.tier ? String(body.tier) : 'standard'
+    const adminNotes = body.notes ? String(body.notes) : application.notes
+
+    const { error: roleError } = await admin
+      .from('user_roles')
+      .insert({ user_id: application.user_id, role: 'reseller' })
+      .select('id')
+    if (roleError && roleError.code !== '23505') {
+      return err(roleError.message)
+    }
+
+    const { data: existingReseller } = await admin
+      .from('resellers')
+      .select('id')
+      .eq('user_id', application.user_id)
+      .maybeSingle()
+
+    if (existingReseller?.id) {
+      const { error: updateResellerError } = await admin
+        .from('resellers')
+        .update({
+          company_name: application.business_name,
+          commission_percent: commissionPercent,
+          is_active: true,
+          is_verified: true,
+          tier,
+          status: 'active',
+        })
+        .eq('id', existingReseller.id)
+      if (updateResellerError) return err(updateResellerError.message)
+    } else {
+      const { error: createResellerError } = await admin
+        .from('resellers')
+        .insert({
+          user_id: application.user_id,
+          company_name: application.business_name,
+          commission_percent: commissionPercent,
+          is_active: true,
+          is_verified: true,
+          tier,
+          status: 'active',
+        })
+      if (createResellerError) return err(createResellerError.message)
+    }
+
+    const { error: appUpdateErr } = await admin
+      .from('reseller_applications')
+      .update({
+        status: 'approved',
+        notes: adminNotes,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', application.id)
+    if (appUpdateErr) return err(appUpdateErr.message)
+
+    await logActivity(admin, 'reseller_application', application.id, 'approved', userId, {
+      applicant_user_id: application.user_id,
+      tier,
+      commission_percent: commissionPercent,
+    })
+
+    return json({ success: true })
+  }
+
+  // POST /admin/reseller-reject
+  if (method === 'POST' && action === 'reseller-reject') {
+    const applicationId = String(body.application_id || '').trim()
+    const reason = String(body.reason || '').trim()
+    if (!applicationId || !reason) return err('application_id and reason are required')
+
+    const { data: application, error: appErr } = await admin
+      .from('reseller_applications')
+      .select('*')
+      .eq('id', applicationId)
+      .single()
+    if (appErr || !application) return err('Application not found', 404)
+    if (application.status !== 'pending') return err('Only pending applications can be rejected', 409)
+
+    const { error: appUpdateErr } = await admin
+      .from('reseller_applications')
+      .update({
+        status: 'rejected',
+        notes: reason,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', application.id)
+    if (appUpdateErr) return err(appUpdateErr.message)
+
+    await logActivity(admin, 'reseller_application', application.id, 'rejected', userId, {
+      applicant_user_id: application.user_id,
+      reason,
+    })
+
+    return json({ success: true })
   }
 
   return err('Not found', 404)
@@ -1730,6 +1964,8 @@ Deno.serve(async (req) => {
     switch (module) {
       case 'products': return await handleProducts(req.method, subParts, body, userId, sb)
       case 'resellers': return await handleResellers(req.method, subParts, body, userId, sb)
+      case 'reseller': return await handleResellerOnboarding(req.method, subParts, body, userId, sb)
+      case 'admin': return await handleAdminResellerApplications(req.method, subParts, body, userId, sb)
       case 'marketplace': return await handleMarketplace(req.method, subParts, body, userId, sb)
       case 'keys': return await handleKeys(req.method, subParts, body, userId, sb)
       case 'projects':

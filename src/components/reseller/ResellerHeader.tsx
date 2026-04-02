@@ -11,17 +11,17 @@
    DropdownMenuTrigger,
  } from '@/components/ui/dropdown-menu';
  import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { ArrowLeft, Bell, Lock, LogOut, Wallet } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, Bell, LogOut, Wallet } from 'lucide-react';
  import { useWallet } from '@/hooks/useWallet';
  
- const pageTitles: Record<string, string> = {
-   '/reseller-dashboard': 'Reseller Dashboard',
-   '/reseller-dashboard?tab=keys': 'Generate Keys',
-   '/reseller-dashboard?tab=clients': 'My Clients',
-   '/reseller-dashboard?tab=wallet': 'Add Balance',
-   '/reseller-dashboard?tab=referral': 'Refer & Earn',
-   '/reseller-dashboard?tab=password': 'Change Password',
- };
+const pageTitles: Record<string, string> = {
+  '/reseller-dashboard': 'Reseller Dashboard',
+  '/reseller-dashboard?tab=sales': 'Sales',
+  '/reseller-dashboard?tab=commissions': 'Commissions',
+  '/reseller-dashboard?tab=users': 'Users',
+  '/reseller-dashboard?tab=wallet': 'Wallet',
+  '/reseller-dashboard?tab=withdrawals': 'Withdrawals',
+};
  
  export function ResellerHeader() {
    const navigate = useNavigate();
@@ -108,10 +108,10 @@ import { ArrowLeft, Bell, Lock, LogOut, Wallet } from 'lucide-react';
                </div>
              </DropdownMenuLabel>
              <DropdownMenuSeparator className="bg-border" />
-             <DropdownMenuItem className="cursor-pointer" onClick={() => navigate('/reseller-dashboard?tab=password')}>
-               <Lock className="mr-2 h-4 w-4" />
-               <span>Change Password</span>
-             </DropdownMenuItem>
+              <DropdownMenuItem className="cursor-pointer" onClick={() => navigate('/reseller-dashboard?tab=withdrawals')}>
+                <ArrowDownToLine className="mr-2 h-4 w-4" />
+                <span>Withdrawals</span>
+              </DropdownMenuItem>
              <DropdownMenuSeparator className="bg-border" />
              <DropdownMenuItem
                className="cursor-pointer text-destructive focus:text-destructive"

@@ -3,29 +3,17 @@
  import { Card, CardContent } from '@/components/ui/card';
  import { Button } from '@/components/ui/button';
  import { Badge } from '@/components/ui/badge';
-import { useAuth } from '@/hooks/useAuth';
-import { useWallet } from '@/hooks/useWallet';
-import { useResellerDashboardData } from '@/hooks/useResellerDashboardData';
- import {
-   Key,
-   Users,
-   DollarSign,
-   Wallet,
-   Share2,
-   Lock,
-   ArrowRight,
-   AlertCircle,
- } from 'lucide-react';
+main
  
  const MINIMUM_BALANCE = 50;
  
- const quickModules = [
-   { title: 'Generate Keys', description: 'Create license keys for clients', icon: Key, tab: 'keys', color: 'from-primary to-orange-500' },
-   { title: 'My Clients', description: 'Track client purchases', icon: Users, tab: 'clients', color: 'from-secondary to-cyan-500' },
-   { title: 'Add Balance', description: 'Top up your wallet', icon: Wallet, tab: 'wallet', color: 'from-green-500 to-emerald-500' },
-   { title: 'Refer & Earn', description: 'Earn commission on referrals', icon: Share2, tab: 'referral', color: 'from-purple-500 to-pink-500' },
-   { title: 'Change Password', description: 'Update your security', icon: Lock, tab: 'password', color: 'from-amber-500 to-orange-500' },
- ];
+const quickModules = [
+  { title: 'Sales', description: 'Track your sales performance', icon: BarChart3, tab: 'sales', color: 'from-primary to-orange-500' },
+  { title: 'Commissions', description: 'Review your commission earnings', icon: Percent, tab: 'commissions', color: 'from-secondary to-cyan-500' },
+  { title: 'Users', description: 'Manage reseller users and clients', icon: Users, tab: 'users', color: 'from-green-500 to-emerald-500' },
+  { title: 'Wallet', description: 'Top up and manage wallet balance', icon: Wallet, tab: 'wallet', color: 'from-purple-500 to-pink-500' },
+  { title: 'Withdrawals', description: 'Track and request withdrawals', icon: ArrowDownToLine, tab: 'withdrawals', color: 'from-amber-500 to-orange-500' },
+];
  
  export function ResellerOverview() {
    const navigate = useNavigate();
@@ -108,14 +96,7 @@ import { useResellerDashboardData } from '@/hooks/useResellerDashboardData';
          >
            <Card className="glass-card border-border/50 hover:border-primary/30 transition-all">
              <CardContent className="p-5">
-               <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-secondary to-cyan-500 flex items-center justify-center">
-                 <Key className="h-6 w-6 text-white" />
-               </div>
-                <div className="mt-4">
-                  <p className="text-2xl font-bold text-foreground">{kpis.keysGenerated}</p>
-                  <p className="text-sm text-muted-foreground">Keys Generated</p>
-                </div>
-              </CardContent>
+
            </Card>
          </motion.div>
  
