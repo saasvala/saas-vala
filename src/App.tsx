@@ -92,6 +92,13 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function ResellerRoute({ children }: { children: React.ReactNode }) {
+  const { isReseller, loading } = useAuth();
+  if (loading) return <PageLoader />;
+  if (!isReseller) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
 function AppRoutes() {
   return (
     <Suspense fallback={<PageLoader />}>
@@ -146,7 +153,7 @@ function AppRoutes() {
         <Route path="/ai-apis" element={<ProtectedRoute><AiApis /></ProtectedRoute>} />
         <Route path="/wallet" element={<ProtectedRoute><Wallet /></ProtectedRoute>} />
         <Route path="/seo-leads" element={<ProtectedRoute><SeoLeads /></ProtectedRoute>} />
-        <Route path="/reseller-dashboard" element={<ProtectedRoute><ResellerDashboard /></ProtectedRoute>} />
+        <Route path="/reseller-dashboard" element={<ProtectedRoute><ResellerRoute><ResellerDashboard /></ResellerRoute></ProtectedRoute>} />
 
         {/* Admin routes */}
         <Route path="/reseller-manager" element={<ProtectedRoute><AdminRoute><Resellers /></AdminRoute></ProtectedRoute>} />

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -60,11 +60,14 @@ import { PaginationControls } from '@/components/ui/pagination-controls';
 import { Switch } from '@/components/ui/switch';
  import { ResellerActivityPanel } from '@/components/reseller/ResellerActivityPanel';
  import { ResellerQuickActions } from '@/components/reseller/ResellerQuickActions';
+import { useResellerApplications, type ResellerApplication } from '@/hooks/useResellerApplications';
+import { Textarea } from '@/components/ui/textarea';
 
 const ITEMS_PER_PAGE = 25;
 
 export default function Resellers() {
    const { resellers, loading, total, fetchResellers, updateReseller, deleteReseller } = useResellers();
+   const { adminApplications, adminLoading, fetchAdminApplications, approveApplication, rejectApplication } = useResellerApplications();
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
@@ -72,6 +75,9 @@ export default function Resellers() {
   const [editReseller, setEditReseller] = useState<Reseller | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [selectedApplication, setSelectedApplication] = useState<ResellerApplication | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [reviewLoading, setReviewLoading] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -156,6 +162,42 @@ export default function Resellers() {
     setDeleteId(null);
   };
 
+  const handleOpenApplication = (app: ResellerApplication) => {
+    setSelectedApplication(app);
+    setRejectReason(app.notes || '');
+  };
+
+  const handleApproveApplication = async () => {
+    if (!selectedApplication) return;
+    setReviewLoading(true);
+    try {
+      await approveApplication(selectedApplication.id, { notes: rejectReason || undefined });
+      await fetchResellers(currentPage, ITEMS_PER_PAGE, searchQuery);
+      setSelectedApplication(null);
+      setRejectReason('');
+    } finally {
+      setReviewLoading(false);
+    }
+  };
+
+  const handleRejectApplication = async () => {
+    if (!selectedApplication || !rejectReason.trim()) return;
+    setReviewLoading(true);
+    try {
+      await rejectApplication(selectedApplication.id, rejectReason.trim());
+      setSelectedApplication(null);
+      setRejectReason('');
+    } finally {
+      setReviewLoading(false);
+    }
+  };
+
+  const pendingApplications = adminApplications.filter((app) => app.status === 'pending');
+
+  useEffect(() => {
+    fetchAdminApplications({ page: 1, limit: 100, status: 'pending' });
+  }, []);
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -182,12 +224,44 @@ export default function Resellers() {
               <Download className="h-4 w-4" />
               Export
             </Button>
-            <Button onClick={openCreateDialog} className="bg-orange-gradient hover:opacity-90 text-white gap-2">
-              <Plus className="h-4 w-4" />
-              Add Reseller
-            </Button>
+              <Button onClick={openCreateDialog} className="bg-orange-gradient hover:opacity-90 text-white gap-2">
+                <Plus className="h-4 w-4" />
+                Add Reseller
+              </Button>
+            </div>
           </div>
-        </div>
+
+          {/* Pending reseller applications */}
+          <div className="glass-card rounded-xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-foreground">Reseller Applications (Pending)</h3>
+              <Badge variant="outline" className="border-border">
+                {pendingApplications.length}
+              </Badge>
+            </div>
+            {adminLoading ? (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading applications...
+              </div>
+            ) : pendingApplications.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No pending reseller applications.</p>
+            ) : (
+              <div className="space-y-2">
+                {pendingApplications.slice(0, 8).map((app) => (
+                  <div key={app.id} className="flex flex-col md:flex-row md:items-center justify-between gap-2 border border-border/60 rounded-lg p-3">
+                    <div>
+                      <p className="font-medium text-foreground">{app.business_name}</p>
+                      <p className="text-sm text-muted-foreground">{app.contact}</p>
+                    </div>
+                    <Button size="sm" variant="outline" onClick={() => handleOpenApplication(app)}>
+                      Review
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
         {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -479,6 +553,52 @@ export default function Resellers() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Application Review */}
+      <Dialog open={!!selectedApplication} onOpenChange={(open) => !open && setSelectedApplication(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Review Reseller Application</DialogTitle>
+            <DialogDescription>Approve or reject this reseller request.</DialogDescription>
+          </DialogHeader>
+          {selectedApplication && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-border p-3">
+                <p className="font-medium text-foreground">{selectedApplication.business_name}</p>
+                <p className="text-sm text-muted-foreground">{selectedApplication.contact}</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Submitted: {new Date(selectedApplication.created_at).toLocaleString()}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label>Notes / Reject reason</Label>
+                <Textarea
+                  value={rejectReason}
+                  onChange={(e) => setRejectReason(e.target.value)}
+                  placeholder="Optional on approve, required on reject"
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSelectedApplication(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleRejectApplication}
+              disabled={reviewLoading || !rejectReason.trim()}
+            >
+              {reviewLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Reject
+            </Button>
+            <Button onClick={handleApproveApplication} disabled={reviewLoading}>
+              {reviewLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Approve
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 }

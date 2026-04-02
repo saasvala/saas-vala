@@ -7,6 +7,8 @@ export interface Reseller {
   id: string;
   user_id: string;
   company_name: string | null;
+  tier?: string | null;
+  status?: string | null;
   commission_percent: number;
   credit_limit: number;
   total_sales: number;
