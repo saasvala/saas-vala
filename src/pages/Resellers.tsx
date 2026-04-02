@@ -63,6 +63,7 @@ import { Switch } from '@/components/ui/switch';
  import { ResellerQuickActions } from '@/components/reseller/ResellerQuickActions';
 import { useResellerApplications, type ResellerApplication } from '@/hooks/useResellerApplications';
 import { Textarea } from '@/components/ui/textarea';
+import { toast } from 'sonner';
 
 const ITEMS_PER_PAGE = 25;
 
@@ -151,9 +152,11 @@ export default function Resellers() {
     const commission = Number(formData.commission_percent);
     const creditLimit = Number(formData.credit_limit);
     if (!Number.isFinite(commission) || commission < 0 || commission > 100) {
+      toast.error('Commission must be between 0 and 100');
       return;
     }
     if (!Number.isFinite(creditLimit) || creditLimit < 0) {
+      toast.error('Credit limit must be 0 or higher');
       return;
     }
     setSubmitting(true);
@@ -161,7 +164,10 @@ export default function Resellers() {
       if (editReseller) {
         await updateReseller(editReseller.id, formData);
       } else {
-        if (!userId.trim()) return;
+        if (!userId.trim()) {
+          toast.error('User ID is required to create reseller');
+          return;
+        }
         await resellersApi.create({
           user_id: userId.trim(),
           ...formData,

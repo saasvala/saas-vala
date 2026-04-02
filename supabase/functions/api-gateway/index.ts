@@ -727,7 +727,8 @@ async function handleAdminResellerApplications(method: string, pathParts: string
     if (type === 'sales') {
       const { data: resellerRows } = await admin.from('resellers').select('id,user_id,company_name')
       const resellerUserIds = (resellerRows || []).map((r: any) => r.user_id).filter(Boolean)
-      if (resellerUserIds.length === 0) return json({ filename: 'reseller-sales.csv', csv: toCsv(['id', 'created_by', 'amount', 'status', 'created_at', 'company_name'], []) })
+      const salesHeaders = ['id', 'created_by', 'amount', 'status', 'created_at', 'company_name']
+      if (resellerUserIds.length === 0) return json({ filename: 'reseller-sales.csv', csv: toCsv(salesHeaders, []) })
       const { data: txRows, error } = await admin
         .from('transactions')
         .select('id,created_by,amount,status,created_at')
@@ -740,7 +741,7 @@ async function handleAdminResellerApplications(method: string, pathParts: string
         ...r,
         company_name: companyByUser[r.created_by] || '',
       }))
-      const csv = toCsv(['id', 'created_by', 'amount', 'status', 'created_at', 'company_name'], rows)
+      const csv = toCsv(salesHeaders, rows)
       return json({ filename: 'reseller-sales.csv', csv })
     }
 
@@ -839,7 +840,7 @@ async function handleAdminResellerApplications(method: string, pathParts: string
           commission_percent: commissionPercent,
           credit_limit: creditLimit,
           is_active: true,
-          is_verified: false,
+          is_verified: true,
           tier,
           status: 'active',
         })
@@ -854,7 +855,7 @@ async function handleAdminResellerApplications(method: string, pathParts: string
           commission_percent: commissionPercent,
           credit_limit: creditLimit,
           is_active: true,
-          is_verified: false,
+          is_verified: true,
           tier,
           status: 'active',
         })

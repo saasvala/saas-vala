@@ -2,8 +2,22 @@
 
 -- 1) Extend resellers with credit tracking + KYC state
 ALTER TABLE public.resellers
-  ADD COLUMN IF NOT EXISTS credit_used DECIMAL(12,2) NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS kyc_status TEXT NOT NULL DEFAULT 'pending';
+  ADD COLUMN IF NOT EXISTS credit_used DECIMAL(12,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS kyc_status TEXT DEFAULT 'pending';
+
+UPDATE public.resellers
+SET credit_used = COALESCE(credit_used, 0)
+WHERE credit_used IS NULL;
+
+UPDATE public.resellers
+SET kyc_status = COALESCE(kyc_status, 'pending')
+WHERE kyc_status IS NULL;
+
+ALTER TABLE public.resellers
+  ALTER COLUMN credit_used SET DEFAULT 0,
+  ALTER COLUMN credit_used SET NOT NULL,
+  ALTER COLUMN kyc_status SET DEFAULT 'pending',
+  ALTER COLUMN kyc_status SET NOT NULL;
 
 DO $$
 BEGIN
