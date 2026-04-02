@@ -1,9 +1,21 @@
- import { motion } from 'framer-motion';
- import { useNavigate } from 'react-router-dom';
- import { Card, CardContent } from '@/components/ui/card';
- import { Button } from '@/components/ui/button';
- import { Badge } from '@/components/ui/badge';
-main
+import { motion } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
+import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import {
+  AlertCircle,
+  ArrowDownToLine,
+  ArrowRight,
+  BarChart3,
+  DollarSign,
+  Percent,
+  Users,
+  Wallet,
+} from 'lucide-react';
+import { useAuth } from '@/hooks/useAuth';
+import { useWallet } from '@/hooks/useWallet';
+import { useResellerDashboardData } from '@/hooks/useResellerDashboardData';
  
  const MINIMUM_BALANCE = 50;
  
@@ -89,16 +101,23 @@ const quickModules = [
            </Card>
          </motion.div>
  
-         <motion.div
-           initial={{ opacity: 0, y: 20 }}
-           animate={{ opacity: 1, y: 0 }}
-           transition={{ delay: 0.2 }}
-         >
-           <Card className="glass-card border-border/50 hover:border-primary/30 transition-all">
-             <CardContent className="p-5">
-
-           </Card>
-         </motion.div>
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2 }}
+          >
+            <Card className="glass-card border-border/50 hover:border-primary/30 transition-all">
+              <CardContent className="p-5">
+                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-500 flex items-center justify-center">
+                  <BarChart3 className="h-6 w-6 text-white" />
+                </div>
+                <div className="mt-4">
+                  <p className="text-2xl font-bold text-foreground">{kpis.keysGenerated}</p>
+                  <p className="text-sm text-muted-foreground">Keys Generated</p>
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
  
          <motion.div
            initial={{ opacity: 0, y: 20 }}

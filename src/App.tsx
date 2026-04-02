@@ -68,6 +68,12 @@ const Cart = React.lazy(() => import("./pages/Cart"));
 const ApkPipeline = React.lazy(() => import("./pages/ApkPipeline"));
 const OfflineAppTemplate = React.lazy(() => import("./pages/OfflineAppTemplate"));
 const MarketplaceAdmin = React.lazy(() => import("./pages/MarketplaceAdmin"));
+const CategoryFlow = React.lazy(() => import("./pages/CategoryFlow"));
+const ProductDetail = React.lazy(() => import("./pages/ProductDetail"));
+const Checkout = React.lazy(() => import("./pages/Checkout"));
+const Success = React.lazy(() => import("./pages/Success"));
+const Subscription = React.lazy(() => import("./pages/Subscription"));
+const AppAccess = React.lazy(() => import("./pages/AppAccess"));
 
 const queryClient = new QueryClient();
 
@@ -178,9 +184,20 @@ function AppRoutes() {
         <Route path="/analytics-pwa" element={<AnalyticsPwa />} />
         <Route path="/cart" element={<Cart />} />
         <Route path="/offline-app" element={<OfflineAppTemplate />} />
+        <Route path="/category/:macro" element={<CategoryFlow />} />
+        <Route path="/category/:macro/:sub" element={<CategoryFlow />} />
+        <Route path="/category/:macro/:sub/:micro" element={<CategoryFlow />} />
+        <Route path="/product/:id" element={<ProductDetail />} />
 
         {/* Protected routes */}
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+        <Route path="/dashboard/apps" element={<ProtectedRoute><Navigate to="/products" replace /></ProtectedRoute>} />
+        <Route path="/dashboard/orders" element={<ProtectedRoute><Navigate to="/keys" replace /></ProtectedRoute>} />
+        <Route path="/dashboard/subscription" element={<ProtectedRoute><Navigate to="/subscription" replace /></ProtectedRoute>} />
+        <Route path="/checkout" element={<ProtectedRoute><Checkout /></ProtectedRoute>} />
+        <Route path="/success" element={<ProtectedRoute><Success /></ProtectedRoute>} />
+        <Route path="/subscription" element={<ProtectedRoute><Subscription /></ProtectedRoute>} />
+        <Route path="/app/:id" element={<ProtectedRoute><AppAccess /></ProtectedRoute>} />
         <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
         <Route path="/keys" element={<ProtectedRoute><Keys /></ProtectedRoute>} />
         <Route path="/servers" element={<ProtectedRoute><Servers /></ProtectedRoute>} />
@@ -195,8 +212,12 @@ function AppRoutes() {
         <Route path="/wallet" element={<ProtectedRoute><Wallet /></ProtectedRoute>} />
         <Route path="/seo-leads" element={<ProtectedRoute><SeoLeads /></ProtectedRoute>} />
         <Route path="/reseller-dashboard" element={<ProtectedRoute><ResellerRoute><ResellerDashboard /></ResellerRoute></ProtectedRoute>} />
+        <Route path="/reseller/dashboard" element={<ProtectedRoute><ResellerRoute><Navigate to="/reseller-dashboard" replace /></ResellerRoute></ProtectedRoute>} />
+        <Route path="/reseller/users" element={<ProtectedRoute><ResellerRoute><Navigate to="/reseller-dashboard?tab=users" replace /></ResellerRoute></ProtectedRoute>} />
+        <Route path="/reseller/earnings" element={<ProtectedRoute><ResellerRoute><Navigate to="/reseller-dashboard?tab=commissions" replace /></ResellerRoute></ProtectedRoute>} />
 
         {/* Admin routes */}
+        <Route path="/admin" element={<ProtectedRoute><AdminRoute><Navigate to="/dashboard" replace /></AdminRoute></ProtectedRoute>} />
         <Route path="/reseller-manager" element={<ProtectedRoute><AdminRoute><Resellers /></AdminRoute></ProtectedRoute>} />
         <Route path="/resellers" element={<ProtectedRoute><AdminRoute><Resellers /></AdminRoute></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><AdminRoute><Settings /></AdminRoute></ProtectedRoute>} />

@@ -77,8 +77,7 @@ export default function Cart() {
                 className="w-full h-12 text-sm font-black gap-2"
                 style={{ background: 'linear-gradient(135deg, #2563eb, #4f46e5)' }}
                 onClick={() => {
-                  // Buy first item and navigate to marketplace checkout
-                  if (items[0]) navigate('/?buy=' + items[0].id);
+                  if (items[0]) navigate('/checkout');
                 }}
               >
                 <CreditCard className="h-4 w-4" />
