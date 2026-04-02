@@ -1,5 +1,5 @@
- import { useState, useEffect } from 'react';
- import { supabase } from '@/integrations/supabase/client';
+import { useState, useEffect } from 'react';
+import { supabase } from '@/integrations/supabase/client';
  import { Badge } from '@/components/ui/badge';
  import { ScrollArea } from '@/components/ui/scroll-area';
  import { Button } from '@/components/ui/button';
@@ -28,11 +28,17 @@ interface ActivityLog {
   user_id: string | null;
 }
  
- const getActionIcon = (action: string) => {
-   switch (action.toLowerCase()) {
-     case 'verify':
-     case 'approve':
-       return <Shield className="h-4 w-4 text-cyan" />;
+const getActionIcon = (action: string) => {
+  switch (action.toLowerCase()) {
+      case 'reseller_joined':
+        return <Plus className="h-4 w-4 text-primary" />;
+      case 'approved':
+        return <Shield className="h-4 w-4 text-cyan" />;
+      case 'sales_made':
+        return <DollarSign className="h-4 w-4 text-success" />;
+      case 'verify':
+      case 'approve':
+        return <Shield className="h-4 w-4 text-cyan" />;
      case 'suspend':
      case 'deactivate':
        return <Ban className="h-4 w-4 text-destructive" />;
@@ -55,10 +61,13 @@ interface ActivityLog {
    }
  };
  
- const getActionBadge = (action: string) => {
-   const variants: Record<string, { class: string; label: string }> = {
-     verify: { class: 'bg-cyan/20 text-cyan border-cyan/30', label: 'Verified' },
-     approve: { class: 'bg-cyan/20 text-cyan border-cyan/30', label: 'Approved' },
+  const getActionBadge = (action: string) => {
+    const variants: Record<string, { class: string; label: string }> = {
+      reseller_joined: { class: 'bg-primary/20 text-primary border-primary/30', label: 'Reseller Joined' },
+      approved: { class: 'bg-cyan/20 text-cyan border-cyan/30', label: 'Approved' },
+      sales_made: { class: 'bg-success/20 text-success border-success/30', label: 'Sales Made' },
+      verify: { class: 'bg-cyan/20 text-cyan border-cyan/30', label: 'Verified' },
+      approve: { class: 'bg-cyan/20 text-cyan border-cyan/30', label: 'Approved' },
      suspend: { class: 'bg-destructive/20 text-destructive border-destructive/30', label: 'Suspended' },
      deactivate: { class: 'bg-destructive/20 text-destructive border-destructive/30', label: 'Deactivated' },
      activate: { class: 'bg-success/20 text-success border-success/30', label: 'Activated' },
@@ -80,40 +89,7 @@ interface ActivityLog {
   const fetchActivities = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('audit_logs')
-        .select('id, action, table_name, record_id, new_data, created_at, user_id')
-        .or('table_name.eq.resellers,table_name.eq.orders')
-        .order('created_at', { ascending: false })
-        .limit(100);
 
-        if (error) throw error;
-        const mapped = (data || [])
-          .map((row: any) => ({
-            id: row.id,
-            action: String(row?.new_data?.event || row.action || 'unknown'),
-            table_name: row.table_name,
-            record_id: row.record_id,
-            details: (row?.new_data || null) as Record<string, unknown> | null,
-            created_at: row.created_at,
-            user_id: row.user_id,
-          }));
-        setActivities(mapped as ActivityLog[]);
-      } catch (error) {
-        console.error('Failed to fetch activities:', error);
-      } finally {
-        setLoading(false);
-      }
-   };
- 
-  useEffect(() => {
-    fetchActivities();
-    const channel = supabase
-      .channel('reseller-activity-audit')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, () => fetchActivities())
-      .subscribe();
-    return () => {
-      supabase.removeChannel(channel);
     };
   }, []);
  

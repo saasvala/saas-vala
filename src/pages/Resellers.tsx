@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -32,6 +33,7 @@ import {
   Search,
   Filter,
   MoreVertical,
+  Eye,
   Users,
   Edit,
   Ban,
@@ -55,8 +57,13 @@ import { useResellerApplications, type ResellerApplication } from '@/hooks/useRe
 import { Textarea } from '@/components/ui/textarea';
 
 const ITEMS_PER_PAGE = 25;
+const getResellerStatus = (reseller: Reseller) =>
+  (reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase();
+const getResellerKycStatus = (reseller: Reseller) =>
+  (reseller.kyc_status || (reseller.is_verified ? 'verified' : 'pending')).toLowerCase();
 
 export default function Resellers() {
+
    const { resellers, loading, total, fetchResellers, updateReseller } = useResellers();
    const { adminApplications, adminLoading, fetchAdminApplications, approveApplication, rejectApplication } = useResellerApplications();
   const [searchQuery, setSearchQuery] = useState('');
@@ -68,6 +75,8 @@ export default function Resellers() {
   const [selectedApplication, setSelectedApplication] = useState<ResellerApplication | null>(null);
   const [adminNotes, setAdminNotes] = useState('');
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [selectedReseller, setSelectedReseller] = useState<any | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -86,9 +95,7 @@ export default function Resellers() {
     const profileName = (reseller.profile?.full_name || '').toLowerCase();
     const matchesSearch = !searchQuery || name.includes(searchQuery.toLowerCase()) || profileName.includes(searchQuery.toLowerCase());
     if (!matchesSearch) return false;
-    if (activeTab === 'active') return resellerStatus(reseller) === 'active';
-    if (activeTab === 'suspended') return resellerStatus(reseller) === 'suspended';
-    if (activeTab === 'verified') return resellerKycStatus(reseller) === 'verified';
+
     return true;
   });
 
@@ -96,9 +103,7 @@ export default function Resellers() {
 
   const stats = {
     total: resellers.length,
-    active: resellers.filter(r => resellerStatus(r) === 'active').length,
-    suspended: resellers.filter(r => resellerStatus(r) === 'suspended').length,
-    verified: resellers.filter(r => resellerKycStatus(r) === 'verified').length,
+
   };
 
   const handlePageChange = (page: number) => {
@@ -170,30 +175,7 @@ export default function Resellers() {
   };
 
   const openDetailDialog = async (reseller: Reseller) => {
-    setDetailOpen(true);
-    setDetailLoading(true);
-    setDetailReseller(null);
-    try {
-      const res = await resellersApi.get(reseller.id);
-      setDetailReseller(res);
-    } finally {
-      setDetailLoading(false);
-    }
-  };
 
-  const toggleSuspend = async (reseller: Reseller) => {
-    const isActive = resellerStatus(reseller) === 'active';
-    await updateReseller(reseller.id, {
-      status: isActive ? 'suspended' : 'active',
-      is_active: !isActive,
-    });
-  };
-
-  const markVerified = async (reseller: Reseller) => {
-    await updateReseller(reseller.id, {
-      kyc_status: 'verified',
-      is_verified: true,
-    });
   };
 
   const handleOpenApplication = (app: ResellerApplication) => {
@@ -473,22 +455,18 @@ export default function Resellers() {
                           <Badge
                             variant="outline"
                             className={cn(
-                              resellerStatus(reseller) === 'active'
+
                                 ? 'bg-success/20 text-success border-success/30'
                                 : 'bg-destructive/20 text-destructive border-destructive/30'
                             )}
                           >
-                            {resellerStatus(reseller) === 'active' ? 'Active' : 'Suspended'}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          {resellerKycStatus(reseller) === 'verified' ? (
+
                             <Badge variant="outline" className="bg-cyan/20 text-cyan border-cyan/30">
                               <CheckCircle className="h-3 w-3 mr-1" />
                               Verified
                             </Badge>
                           ) : (
-                            <span className="text-muted-foreground">{resellerKycStatus(reseller)}</span>
+
                           )}
                         </TableCell>
                         <TableCell>
@@ -510,6 +488,7 @@ export default function Resellers() {
                               </DropdownMenuItem>
                               <DropdownMenuItem className="gap-2 cursor-pointer" onClick={() => openDetailDialog(reseller)}>
                                 <Eye className="h-4 w-4" /> View
+
                               </DropdownMenuItem>
                               <DropdownMenuItem className="gap-2 cursor-pointer" onClick={() => toggleSuspend(reseller)}>
                                 {resellerStatus(reseller) === 'active' ? (
@@ -581,11 +560,11 @@ export default function Resellers() {
                 onChange={(e) => setFormData({ ...formData, company_name: e.target.value })}
               />
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Commission (%)</Label>
-                <Input
-                  type="number"
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Commission (%)</Label>
+                  <Input
+                    type="number"
                   min="0"
                   max="100"
                   value={formData.commission_percent}
@@ -612,17 +591,37 @@ export default function Resellers() {
                 onCheckedChange={(checked) => setFormData({ ...formData, is_active: checked })}
               />
             </div>
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>Verified</Label>
-                <p className="text-sm text-muted-foreground">Mark as verified reseller</p>
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>Verified</Label>
+                  <p className="text-sm text-muted-foreground">Mark as verified reseller</p>
+                </div>
+                <Switch
+                  checked={formData.is_verified}
+                  onCheckedChange={(checked) => setFormData({ ...formData, is_verified: checked })}
+                />
               </div>
-              <Switch
-                checked={formData.is_verified}
-                onCheckedChange={(checked) => setFormData({ ...formData, is_verified: checked })}
-              />
+              {editReseller && (
+                <>
+                  <div className="space-y-2">
+                    <Label>Status</Label>
+                    <Input
+                      value={(editReseller.status || (formData.is_active ? 'active' : 'suspended')).toLowerCase()}
+                      readOnly
+                      className="bg-muted/40"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>KYC Status</Label>
+                    <Input
+                      value={(editReseller.kyc_status || (formData.is_verified ? 'verified' : 'pending')).toLowerCase()}
+                      readOnly
+                      className="bg-muted/40"
+                    />
+                  </div>
+                </>
+              )}
             </div>
-          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
             <Button onClick={handleSubmit} disabled={submitting}>
@@ -632,6 +631,7 @@ export default function Resellers() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
 
 
       {/* Application Review */}

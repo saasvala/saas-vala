@@ -15,6 +15,8 @@ export interface Reseller {
   credit_limit: number;
   total_sales: number;
   total_commission: number;
+  order_count?: number;
+  keys_generated?: number;
   is_active: boolean;
   is_verified: boolean;
   meta: Json;
@@ -79,7 +81,6 @@ export function useResellers() {
   };
 
   const verifyReseller = async (id: string) => {
-    await updateReseller(id, { kyc_status: 'verified', is_verified: true });
   };
 
   useEffect(() => {
@@ -90,6 +91,19 @@ export function useResellers() {
         fetchResellers();
       })
       .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('resellers-admin-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'resellers' }, () => {
+        fetchResellers();
+      })
+      .subscribe();
+
     return () => {
       supabase.removeChannel(channel);
     };
