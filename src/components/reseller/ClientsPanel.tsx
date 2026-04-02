@@ -1,8 +1,10 @@
- import { useState } from 'react';
- import { MaskedField } from '@/components/ui/masked-field';
- import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
- import { Input } from '@/components/ui/input';
- import { Badge } from '@/components/ui/badge';
+import { useState } from 'react';
+import { MaskedField } from '@/components/ui/masked-field';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useResellerDashboardData } from '@/hooks/useResellerDashboardData';
  import {
    Table,
    TableBody,
@@ -20,27 +22,18 @@
    Phone,
  } from 'lucide-react';
  
- // Mock client data
- const mockClients = [
-   { id: 1, name: 'Rajesh Kumar', email: 'rajesh@example.com', phone: '+91 98765 43210', keys: 5, lastPurchase: '2024-01-15', status: 'active' },
-   { id: 2, name: 'Priya Sharma', email: 'priya@example.com', phone: '+91 87654 32109', keys: 3, lastPurchase: '2024-01-10', status: 'active' },
-   { id: 3, name: 'Amit Patel', email: 'amit@example.com', phone: '+91 76543 21098', keys: 8, lastPurchase: '2024-01-08', status: 'active' },
-   { id: 4, name: 'Sunita Verma', email: 'sunita@example.com', phone: '+91 65432 10987', keys: 2, lastPurchase: '2024-01-05', status: 'inactive' },
-   { id: 5, name: 'Vikram Singh', email: 'vikram@example.com', phone: '+91 54321 09876', keys: 12, lastPurchase: '2024-01-02', status: 'active' },
- ];
+export function ClientsPanel() {
+  const [searchQuery, setSearchQuery] = useState('');
+  const { clients, loading } = useResellerDashboardData();
  
- export function ClientsPanel() {
-   const [searchQuery, setSearchQuery] = useState('');
-   const [clients] = useState(mockClients);
- 
-   const filteredClients = clients.filter(client =>
-     client.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-     client.email.toLowerCase().includes(searchQuery.toLowerCase())
-   );
+  const filteredClients = clients.filter(client =>
+    (client.client_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+    client.client_email.toLowerCase().includes(searchQuery.toLowerCase())
+  );
  
    const totalClients = clients.length;
    const activeClients = clients.filter(c => c.status === 'active').length;
-   const totalKeys = clients.reduce((sum, c) => sum + c.keys, 0);
+  const totalKeys = clients.reduce((sum, c) => sum + Number(c.purchase_count || 0), 0);
  
    return (
      <div className="space-y-6">
@@ -126,35 +119,35 @@
                  </TableRow>
                </TableHeader>
                <TableBody>
-                 {filteredClients.map((client) => (
-                   <TableRow key={client.id} className="hover:bg-muted/30">
-                     <TableCell>
-                       <div className="font-medium text-foreground">{client.name}</div>
-                     </TableCell>
-                     <TableCell>
-                       <div className="flex flex-col gap-1">
-                           <div className="flex items-center gap-1 text-sm">
-                             <Mail className="h-3 w-3 text-muted-foreground" />
-                             <MaskedField value={client.email} type="email" />
-                           </div>
-                           <div className="flex items-center gap-1 text-sm">
-                             <Phone className="h-3 w-3 text-muted-foreground" />
-                             <MaskedField value={client.phone} type="phone" />
-                           </div>
-                       </div>
-                     </TableCell>
-                     <TableCell className="text-center">
-                       <Badge variant="outline" className="font-mono">
-                         {client.keys}
-                       </Badge>
-                     </TableCell>
-                     <TableCell>
-                       <div className="flex items-center gap-1 text-sm text-muted-foreground">
-                         <Calendar className="h-3 w-3" />
-                         {client.lastPurchase}
-                       </div>
-                     </TableCell>
-                     <TableCell>
+                  {filteredClients.map((client) => (
+                    <TableRow key={client.id} className="hover:bg-muted/30">
+                      <TableCell>
+                        <div className="font-medium text-foreground">{client.client_name || 'Client'}</div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-1 text-sm">
+                              <Mail className="h-3 w-3 text-muted-foreground" />
+                              <MaskedField value={client.client_email} type="email" />
+                            </div>
+                            <div className="flex items-center gap-1 text-sm">
+                              <Phone className="h-3 w-3 text-muted-foreground" />
+                              <MaskedField value={client.client_phone || ''} type="phone" />
+                            </div>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Badge variant="outline" className="font-mono">
+                          {client.purchase_count}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                          <Calendar className="h-3 w-3" />
+                          {client.last_purchase_at ? new Date(client.last_purchase_at).toLocaleDateString() : '—'}
+                        </div>
+                      </TableCell>
+                      <TableCell>
                        <Badge
                          variant="outline"
                          className={client.status === 'active' 
@@ -171,10 +164,18 @@
              </Table>
            </div>
  
-           {filteredClients.length === 0 && (
-             <div className="text-center py-8 text-muted-foreground">
-               No clients found matching your search.
-             </div>
+            {loading && (
+              <div className="space-y-2 py-2">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            )}
+
+            {!loading && filteredClients.length === 0 && (
+              <div className="text-center py-8 text-muted-foreground">
+                No clients found matching your search.
+              </div>
            )}
          </CardContent>
        </Card>
