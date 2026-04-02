@@ -224,7 +224,7 @@ export default function Resellers() {
     link.href = URL.createObjectURL(blob);
     link.download = filename;
     link.click();
-    URL.revokeObjectURL(link.href);
+    setTimeout(() => URL.revokeObjectURL(link.href), 100);
   };
 
   const handleExport = async (type: 'resellers' | 'sales' | 'commissions') => {

@@ -461,6 +461,10 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
     if (duplicateReseller?.id) {
       return err('Duplicate reseller for user_id', 409, 'DUPLICATE_RESELLER')
     }
+    const { data: userExists } = await admin.auth.admin.getUserById(String(body.user_id))
+    if (!userExists?.user?.id) {
+      return err('Invalid user_id', 422, 'VALIDATION_ERROR')
+    }
     const requestedStatus = body.status ? String(body.status) : null
     if (requestedStatus && !['active', 'suspended', 'pending', 'inactive'].includes(requestedStatus)) {
       return err('Invalid status', 422, 'VALIDATION_ERROR')
@@ -736,7 +740,7 @@ async function handleAdminResellerApplications(method: string, pathParts: string
         .order('created_at', { ascending: false })
       if (error) return err(error.message)
       const companyByUser: Record<string, string> = {}
-      ;(resellerRows || []).forEach((r: any) => { companyByUser[r.user_id] = r.company_name || '' })
+      (resellerRows || []).forEach((r: any) => { companyByUser[r.user_id] = r.company_name || '' })
       const rows = (txRows || []).map((r: any) => ({
         ...r,
         company_name: companyByUser[r.created_by] || '',
@@ -2201,8 +2205,8 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
       .select('credit_limit')
       .eq('user_id', wallet.user_id)
       .maybeSingle()
-    if (walletOwnerReseller?.credit_limit !== undefined && walletOwnerReseller?.credit_limit !== null) {
-      allowedNegative = Number(walletOwnerReseller.credit_limit || 0)
+    if (walletOwnerReseller) {
+      allowedNegative = Number(walletOwnerReseller.credit_limit ?? 0)
     }
     if ((available - amount) < -allowedNegative) {
       return err('Insufficient balance beyond credit limit', 422, 'CREDIT_LIMIT_EXCEEDED')
