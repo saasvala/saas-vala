@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useWallet } from '@/hooks/useWallet';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { keysApi } from '@/lib/api';
 import {
   Key,
   AlertCircle,
@@ -31,13 +32,6 @@ const products = [
   { id: 'gym-mgmt', name: 'Gym Management System', price: 5 },
 ];
 
-// Generate license key format: XXXX-XXXX-XXXX-XXXX
-const generateLicenseKey = () => {
-  return Array(4).fill(0).map(() => 
-    Math.random().toString(36).substring(2, 6).toUpperCase()
-  ).join('-');
-};
-
 // Generate invoice number
 const generateInvoiceNumber = () => {
   const year = new Date().getFullYear();
@@ -46,7 +40,7 @@ const generateInvoiceNumber = () => {
 };
 
 export function KeyGeneratorPanel() {
-  const { wallet, fetchWallet, deductBalance } = useWallet();
+  const { wallet, fetchWallet } = useWallet();
   const [selectedProduct, setSelectedProduct] = useState('');
   const [clientName, setClientName] = useState('');
   const [clientEmail, setClientEmail] = useState('');
@@ -54,11 +48,16 @@ export function KeyGeneratorPanel() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedKeys, setGeneratedKeys] = useState<string[]>([]);
   const [lastInvoice, setLastInvoice] = useState<string | null>(null);
+  const [lastDeficit, setLastDeficit] = useState<number>(0);
+  const [pendingIdempotencyKey, setPendingIdempotencyKey] = useState<string | null>(null);
 
   const balance = wallet?.balance || 0;
   const canGenerate = balance >= MINIMUM_BALANCE;
   const totalCost = quantity * KEY_COST;
   const hasEnoughBalance = balance >= totalCost;
+  const exactDeficit = !canGenerate
+    ? Math.max(0, MINIMUM_BALANCE - balance)
+    : Math.max(0, totalCost - balance);
   const selectedProductData = products.find(p => p.id === selectedProduct);
 
   const handleGenerate = async () => {
@@ -82,8 +81,10 @@ export function KeyGeneratorPanel() {
     }
 
     if (!hasEnoughBalance) {
+      const deficit = Math.max(0, totalCost - balance);
+      setLastDeficit(deficit);
       toast.error(`⛔ BLOCKED: Insufficient balance`, {
-        description: `Need $${totalCost} but have $${balance.toFixed(2)}`
+        description: `Need $${totalCost} but have $${balance.toFixed(2)} (Deficit: $${deficit.toFixed(2)})`
       });
       return;
     }
@@ -94,8 +95,6 @@ export function KeyGeneratorPanel() {
     }
 
     setIsGenerating(true);
-    const keys: string[] = [];
-
     try {
       const { data: userData } = await supabase.auth.getUser();
       if (!userData.user) {
@@ -116,37 +115,30 @@ export function KeyGeneratorPanel() {
         return;
       }
 
-      // Generate keys and insert into database
-      for (let i = 0; i < quantity; i++) {
-        const key = generateLicenseKey();
-        keys.push(key);
+      const idempotencyKey = pendingIdempotencyKey || crypto.randomUUID();
+      if (!pendingIdempotencyKey) setPendingIdempotencyKey(idempotencyKey);
 
-        // Insert license key with all required fields
-        const { error: keyError } = await supabase.from('license_keys').insert({
-          license_key: key,
-          product_id: productData.id,
-          owner_name: clientName,
-          owner_email: clientEmail,
-          status: 'active',
-          key_type: 'yearly' as const,
-          created_by: userData.user.id,
-          expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-        });
+      const result = await keysApi.generate({
+        product_id: productData.id,
+        client_name: clientName.trim(),
+        client_email: clientEmail.trim(),
+        client_phone: null,
+        quantity,
+        cost_per_key: KEY_COST,
+        min_balance: MINIMUM_BALANCE,
+        idempotency_key: idempotencyKey,
+        key_type: 'yearly',
+        expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      });
 
-        if (keyError) {
-          console.error('Key insert error:', keyError);
-          throw new Error(`Failed to create key: ${keyError.message}`);
-        }
+      const response = result?.data || {};
+      const generated = Array.isArray(response.keys)
+        ? response.keys.map((k: any) => k.license_key).filter(Boolean)
+        : [];
+
+      if (!generated.length) {
+        throw new Error('No keys returned from atomic generation');
       }
-
-      // Deduct from wallet
-      await deductBalance(
-        wallet.id,
-        totalCost,
-        `Generated ${quantity} license key(s) for ${clientName}`,
-        keys[0], // Reference first key
-        'license_key'
-      );
 
       // Auto-generate invoice
       const invoiceNumber = generateInvoiceNumber();
@@ -164,7 +156,7 @@ export function KeyGeneratorPanel() {
         subtotal: totalCost,
         total_amount: totalCost,
         status: 'paid',
-        notes: `Auto-generated invoice for ${quantity} license key(s). Keys: ${keys.join(', ')}`
+          notes: `Auto-generated invoice for ${quantity} license key(s). Keys: ${generated.join(', ')}`
       };
 
       const { error: invoiceError } = await supabase
@@ -179,7 +171,7 @@ export function KeyGeneratorPanel() {
       // Log activity
       await supabase.from('activity_logs').insert({
         entity_type: 'license_key',
-        entity_id: keys[0],
+        entity_id: generated[0],
         action: 'reseller_key_generation',
         performed_by: userData.user.id,
         details: {
@@ -189,11 +181,15 @@ export function KeyGeneratorPanel() {
           product: selectedProductData?.name,
           total_cost: totalCost,
           invoice_number: invoiceNumber,
-          keys: keys
+          keys: generated,
+          idempotency_key: response.idempotency_key || idempotencyKey,
+          order_id: response.order_id || null,
+          client_id: response.client_id || null,
         }
       });
 
-      setGeneratedKeys(keys);
+      setGeneratedKeys(generated);
+      setPendingIdempotencyKey(null);
       toast.success(`✅ ${quantity} license key(s) generated successfully!`, {
         description: `Invoice: ${invoiceNumber} | Charged: $${totalCost}`
       });
@@ -203,7 +199,11 @@ export function KeyGeneratorPanel() {
       
     } catch (error: any) {
       console.error('Key generation error:', error);
-      toast.error('Failed to generate keys: ' + error.message);
+      const msg = String(error?.message || '');
+      const deficitMatch = msg.match(/deficit[^0-9]*([0-9]+(?:\.[0-9]+)?)/i);
+      const parsedDeficit = deficitMatch ? Number(deficitMatch[1]) : 0;
+      if (parsedDeficit > 0) setLastDeficit(parsedDeficit);
+      toast.error('Failed to generate keys: ' + msg);
     } finally {
       setIsGenerating(false);
     }
@@ -405,7 +405,12 @@ export function KeyGeneratorPanel() {
             </div>
             {!hasEnoughBalance && canGenerate && (
               <p className="text-sm text-destructive mt-2">
-                ⛔ Insufficient balance for this order
+                ⛔ Insufficient balance for this order. Deficit: ${exactDeficit.toFixed(2)}
+              </p>
+            )}
+            {lastDeficit > 0 && (
+              <p className="text-xs text-destructive mt-1">
+                Exact required top-up: ${lastDeficit.toFixed(2)}
               </p>
             )}
           </div>
