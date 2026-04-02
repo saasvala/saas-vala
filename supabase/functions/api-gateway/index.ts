@@ -146,6 +146,18 @@ async function isSuperAdminUser(userId: string) {
   return roles.includes('super_admin')
 }
 
+function normalizeResellerStatus(value: unknown) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (['active', 'suspended', 'pending', 'inactive'].includes(normalized)) return normalized
+  return null
+}
+
+function normalizeKycStatus(value: unknown) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (['pending', 'verified', 'rejected'].includes(normalized)) return normalized
+  return null
+}
+
 async function logActivity(admin: any, entityType: string, entityId: string, action: string, userId: string, details: any = {}) {
   try {
     await admin.from('activity_logs').insert({
@@ -157,6 +169,29 @@ async function logActivity(admin: any, entityType: string, entityId: string, act
     })
   } catch (e) {
     console.error('Activity log failed:', e)
+  }
+}
+
+async function logAuditEvent(
+  admin: any,
+  userId: string,
+  action: 'create' | 'update' | 'suspend' | 'activate',
+  tableName: string,
+  recordId: string,
+  oldData: Record<string, unknown> | null,
+  newData: Record<string, unknown> | null
+) {
+  try {
+    await admin.from('audit_logs').insert({
+      user_id: userId,
+      action,
+      table_name: tableName,
+      record_id: recordId,
+      old_data: oldData,
+      new_data: newData,
+    })
+  } catch (e) {
+    console.error('Audit log failed:', e)
   }
 }
 
@@ -303,18 +338,25 @@ async function handleProducts(method: string, pathParts: string[], body: any, us
 async function handleResellers(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const admin = adminClient()
   const id = pathParts[0]
+  const isAdmin = await isSuperAdminUser(userId)
 
   // GET /resellers
   if (method === 'GET' && !id) {
+    if (!isAdmin) return err('Forbidden', 403)
     const page = Number(body?.page || 1)
     const limit = Number(body?.limit || 25)
     const search = body?.search || ''
 
-    let query = sb.from('resellers').select('*', { count: 'exact' })
+    let query = admin.from('resellers').select('*', { count: 'exact' })
       .order('created_at', { ascending: false })
       .range((page - 1) * limit, page * limit - 1)
 
-    if (search) query = query.ilike('company_name', `%${search}%`)
+    if (search) {
+      const safeSearch = String(search).replace(/[%_,()[\]\\]/g, '').trim()
+      if (safeSearch) {
+        query = query.or(`company_name.ilike.%${safeSearch}%,status.ilike.%${safeSearch}%,kyc_status.ilike.%${safeSearch}%`)
+      }
+    }
     const { data, error, count } = await query
     if (error) return err(error.message)
 
@@ -322,14 +364,59 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
     const userIds = (data || []).map((r: any) => r.user_id).filter(Boolean)
     let profileMap: Record<string, any> = {}
     if (userIds.length > 0) {
-      const { data: profiles } = await sb.from('profiles').select('user_id, full_name, phone').in('user_id', userIds)
-      ;(profiles || []).forEach((p: any) => { profileMap[p.user_id] = { full_name: p.full_name, phone: p.phone } })
+      const { data: profiles } = await admin.from('profiles').select('user_id, full_name, phone, company_name').in('user_id', userIds)
+      ;(profiles || []).forEach((p: any) => { profileMap[p.user_id] = { full_name: p.full_name, phone: p.phone, company_name: p.company_name } })
+    }
+
+    const resellerIds = (data || []).map((r: any) => r.id).filter(Boolean)
+    let ordersByReseller: Record<string, { total_sales: number; order_count: number }> = {}
+    let keysByReseller: Record<string, number> = {}
+    let commissionsByReseller: Record<string, number> = {}
+
+    if (resellerIds.length > 0) {
+      const { data: ordersRows } = await admin
+        .from('orders')
+        .select('reseller_id, amount')
+        .in('reseller_id', resellerIds)
+        .eq('status', 'success')
+      for (const row of ordersRows || []) {
+        const rid = row.reseller_id
+        if (!rid) continue
+        const current = ordersByReseller[rid] || { total_sales: 0, order_count: 0 }
+        current.total_sales = toMoney(current.total_sales + Number(row.amount || 0))
+        current.order_count += 1
+        ordersByReseller[rid] = current
+      }
+
+      const { data: keysRows } = await admin
+        .from('license_keys')
+        .select('reseller_id')
+        .in('reseller_id', resellerIds)
+      for (const row of keysRows || []) {
+        const rid = row.reseller_id
+        if (!rid) continue
+        keysByReseller[rid] = (keysByReseller[rid] || 0) + 1
+      }
+
+      const { data: commissionRows } = await admin
+        .from('reseller_commission_logs')
+        .select('reseller_id, amount')
+        .in('reseller_id', resellerIds)
+      for (const row of commissionRows || []) {
+        const rid = row.reseller_id
+        if (!rid) continue
+        commissionsByReseller[rid] = toMoney((commissionsByReseller[rid] || 0) + Number(row.amount || 0))
+      }
     }
 
     const enriched = (data || []).map((r: any) => ({
       ...r,
       profile: profileMap[r.user_id] || null,
-      company_name: r.company_name || profileMap[r.user_id]?.full_name || 'Unnamed Reseller',
+      company_name: r.company_name || profileMap[r.user_id]?.company_name || profileMap[r.user_id]?.full_name || 'Unnamed Reseller',
+      total_sales: Number(ordersByReseller[r.id]?.total_sales ?? r.total_sales ?? 0),
+      total_commission: Number(commissionsByReseller[r.id] ?? r.total_commission ?? 0),
+      order_count: ordersByReseller[r.id]?.order_count ?? 0,
+      keys_generated: keysByReseller[r.id] || 0,
     }))
 
     return json({ data: enriched, total: count })
@@ -337,12 +424,87 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
 
   // GET /resellers/:id/sales
   if (method === 'GET' && id && pathParts[1] === 'sales') {
+    if (!isAdmin) return err('Forbidden', 403)
     const { data: reseller } = await sb.from('resellers').select('user_id').eq('id', id).single()
     if (!reseller) return err('Reseller not found', 404)
     const { data, error } = await sb.from('transactions').select('*')
       .eq('created_by', reseller.user_id).order('created_at', { ascending: false }).limit(50)
     if (error) return err(error.message)
     return json({ data })
+  }
+
+  // GET /resellers/:id/detail
+  if (method === 'GET' && id && pathParts[1] === 'detail') {
+    if (!isAdmin) return err('Forbidden', 403)
+    const { data: reseller, error: resellerError } = await admin
+      .from('resellers')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle()
+    if (resellerError) return err(resellerError.message)
+    if (!reseller) return err('Reseller not found', 404)
+
+    const [profileRes, logsRes, clientsRes, ordersRes, commissionRes, keysRes] = await Promise.all([
+      admin.from('profiles').select('user_id, full_name, phone, company_name').eq('user_id', reseller.user_id).maybeSingle(),
+      admin
+        .from('activity_logs')
+        .select('id, action, entity_type, entity_id, details, performed_by, created_at')
+        .eq('entity_type', 'reseller')
+        .eq('entity_id', reseller.id)
+        .order('created_at', { ascending: false })
+        .limit(100),
+      admin
+        .from('reseller_clients')
+        .select('id, client_name, client_email, status, purchase_count, total_spent, last_purchase_at')
+        .eq('reseller_id', reseller.id)
+        .order('updated_at', { ascending: false })
+        .limit(200),
+      admin
+        .from('orders')
+        .select('id, amount, status, created_at, product_id, client_id')
+        .eq('reseller_id', reseller.id)
+        .order('created_at', { ascending: false })
+        .limit(200),
+      admin
+        .from('reseller_commission_logs')
+        .select('id, amount, commission_rate, status, order_id, created_at')
+        .eq('reseller_id', reseller.id)
+        .order('created_at', { ascending: false })
+        .limit(200),
+      admin
+        .from('license_keys')
+        .select('id, status, created_at, client_id')
+        .eq('reseller_id', reseller.id)
+        .order('created_at', { ascending: false })
+        .limit(200),
+    ])
+
+    const totalSales = (ordersRes.data || [])
+      .filter((o: any) => o.status === 'success')
+      .reduce((sum: number, o: any) => sum + Number(o.amount || 0), 0)
+    const totalCommission = (commissionRes.data || [])
+      .reduce((sum: number, c: any) => sum + Number(c.amount || 0), 0)
+
+    return json({
+      data: {
+        ...reseller,
+        company_name: reseller.company_name || profileRes.data?.company_name || profileRes.data?.full_name || 'Unnamed Reseller',
+        profile: profileRes.data || null,
+        stats: {
+          total_sales: toMoney(totalSales),
+          total_commission: toMoney(totalCommission),
+          keys_generated: (keysRes.data || []).length,
+          clients_total: (clientsRes.data || []).length,
+          clients_active: (clientsRes.data || []).filter((c: any) => c.status === 'active').length,
+          orders_total: (ordersRes.data || []).length,
+        },
+        logs: logsRes.data || [],
+        clients: clientsRes.data || [],
+        orders: ordersRes.data || [],
+        commissions: commissionRes.data || [],
+        keys: keysRes.data || [],
+      },
+    })
   }
 
   // GET /resellers/clients
@@ -408,31 +570,114 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
 
   // POST /resellers
   if (method === 'POST') {
+    if (!isAdmin) return err('Forbidden', 403)
+    const commissionPercent = Number(body.commission_percent ?? 10)
+    if (!Number.isFinite(commissionPercent) || commissionPercent < 0 || commissionPercent > 100) {
+      return err('commission_percent must be between 0 and 100', 422, 'VALIDATION_ERROR')
+    }
+
+    const creditLimit = Number(body.credit_limit ?? 0)
+    if (!Number.isFinite(creditLimit) || creditLimit < 0) {
+      return err('credit_limit must be >= 0', 422, 'VALIDATION_ERROR')
+    }
+
+    const status = normalizeResellerStatus(body.status ?? (body.is_active === false ? 'suspended' : 'active'))
+    if (!status) return err('Invalid status', 422, 'VALIDATION_ERROR')
+
+    const kycStatus = normalizeKycStatus(body.kyc_status ?? (body.is_verified ? 'verified' : 'pending'))
+    if (!kycStatus) return err('Invalid kyc_status', 422, 'VALIDATION_ERROR')
+
     const { data, error } = await sb.from('resellers').insert({
       user_id: body.user_id,
       company_name: body.company_name,
-      commission_percent: body.commission_percent || 10,
-      credit_limit: body.credit_limit || 0,
-      is_active: body.is_active ?? true,
-      is_verified: body.is_verified ?? false,
+      commission_percent: commissionPercent,
+      commission_rate: commissionPercent,
+      credit_limit: creditLimit,
+      is_active: status === 'active',
+      status,
+      is_verified: kycStatus === 'verified',
+      kyc_status: kycStatus,
     }).select().single()
     if (error) return err(error.message)
     await logActivity(admin, 'reseller', data.id, 'created', userId, { company_name: body.company_name })
+    await logAuditEvent(admin, userId, 'create', 'resellers', data.id, null, {
+      company_name: data.company_name,
+      commission_percent: data.commission_percent,
+      credit_limit: data.credit_limit,
+      status: data.status,
+      kyc_status: data.kyc_status,
+    })
     return json({ data }, 201)
   }
 
   // PUT /resellers/:id
   if (method === 'PUT' && id) {
+    if (!isAdmin) return err('Forbidden', 403)
+    const { data: existingReseller } = await admin
+      .from('resellers')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle()
+    if (!existingReseller) return err('Reseller not found', 404)
+
     const updates: any = {}
     if (body.company_name !== undefined) updates.company_name = body.company_name
-    if (body.commission_percent !== undefined) updates.commission_percent = body.commission_percent
-    if (body.credit_limit !== undefined) updates.credit_limit = body.credit_limit
-    if (body.is_active !== undefined) updates.is_active = body.is_active
-    if (body.is_verified !== undefined) updates.is_verified = body.is_verified
+    if (body.commission_percent !== undefined) {
+      const commissionPercent = Number(body.commission_percent)
+      if (!Number.isFinite(commissionPercent) || commissionPercent < 0 || commissionPercent > 100) {
+        return err('commission_percent must be between 0 and 100', 422, 'VALIDATION_ERROR')
+      }
+      updates.commission_percent = commissionPercent
+      updates.commission_rate = commissionPercent
+    }
+    if (body.credit_limit !== undefined) {
+      const creditLimit = Number(body.credit_limit)
+      if (!Number.isFinite(creditLimit) || creditLimit < 0) {
+        return err('credit_limit must be >= 0', 422, 'VALIDATION_ERROR')
+      }
+      updates.credit_limit = creditLimit
+    }
+    if (body.status !== undefined) {
+      const status = normalizeResellerStatus(body.status)
+      if (!status) return err('Invalid status', 422, 'VALIDATION_ERROR')
+      updates.status = status
+      updates.is_active = status === 'active'
+    } else if (body.is_active !== undefined) {
+      const active = !!body.is_active
+      updates.is_active = active
+      updates.status = active ? 'active' : 'suspended'
+    }
+    if (body.kyc_status !== undefined) {
+      const kycStatus = normalizeKycStatus(body.kyc_status)
+      if (!kycStatus) return err('Invalid kyc_status', 422, 'VALIDATION_ERROR')
+      updates.kyc_status = kycStatus
+      updates.is_verified = kycStatus === 'verified'
+    } else if (body.is_verified !== undefined) {
+      const verified = !!body.is_verified
+      updates.is_verified = verified
+      updates.kyc_status = verified ? 'verified' : 'pending'
+    }
     if (body.tier_level !== undefined) updates.tier_level = body.tier_level
-    const { error } = await sb.from('resellers').update(updates).eq('id', id)
+    const { data: updatedReseller, error } = await sb.from('resellers').update(updates).eq('id', id).select('*').single()
     if (error) return err(error.message)
     await logActivity(admin, 'reseller', id, 'updated', userId, updates)
+    const auditAction: 'update' | 'suspend' | 'activate' =
+      updates.status === 'suspended' ? 'suspend' : updates.status === 'active' ? 'activate' : 'update'
+    await logAuditEvent(admin, userId, auditAction, 'resellers', id, {
+      status: existingReseller.status,
+      kyc_status: existingReseller.kyc_status,
+      commission_percent: existingReseller.commission_percent,
+      credit_limit: existingReseller.credit_limit,
+      is_active: existingReseller.is_active,
+      is_verified: existingReseller.is_verified,
+    }, {
+      status: updatedReseller?.status,
+      kyc_status: updatedReseller?.kyc_status,
+      commission_percent: updatedReseller?.commission_percent,
+      credit_limit: updatedReseller?.credit_limit,
+      is_active: updatedReseller?.is_active,
+      is_verified: updatedReseller?.is_verified,
+    })
     return json({ success: true })
   }
 
@@ -451,6 +696,14 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
   if (method === 'GET' && id === 'clients') {
     const { data: reseller } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
     if (!reseller?.id) return json({ data: [] })
+    const { data: resellerState } = await admin
+      .from('resellers')
+      .select('status, is_active')
+      .eq('id', reseller.id)
+      .maybeSingle()
+    if (resellerState && (resellerState.status !== 'active' || resellerState.is_active === false)) {
+      return err('Reseller account suspended', 403, 'RESELLER_SUSPENDED')
+    }
     const { data, error } = await sb.from('reseller_clients').select('*')
       .eq('reseller_id', reseller.id).order('updated_at', { ascending: false }).limit(500)
     if (error) return err(error.message)
@@ -463,6 +716,14 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
     if (missing) return err(missing)
     const { data: reseller } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
     if (!reseller?.id) return err('Reseller profile not found', 404)
+    const { data: resellerState } = await admin
+      .from('resellers')
+      .select('status, is_active')
+      .eq('id', reseller.id)
+      .maybeSingle()
+    if (resellerState && (resellerState.status !== 'active' || resellerState.is_active === false)) {
+      return err('Reseller account suspended', 403, 'RESELLER_SUSPENDED')
+    }
 
     const payload = {
       reseller_id: reseller.id,
@@ -491,6 +752,14 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
   if (method === 'GET' && id === 'referrals') {
     const { data: reseller } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
     if (!reseller?.id) return json({ data: [] })
+    const { data: resellerState } = await admin
+      .from('resellers')
+      .select('status, is_active')
+      .eq('id', reseller.id)
+      .maybeSingle()
+    if (resellerState && (resellerState.status !== 'active' || resellerState.is_active === false)) {
+      return err('Reseller account suspended', 403, 'RESELLER_SUSPENDED')
+    }
     const { data, error } = await sb.from('referral_codes').select('*')
       .eq('reseller_id', reseller.id).order('created_at', { ascending: false }).limit(500)
     if (error) return err(error.message)
@@ -501,6 +770,14 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
   if (method === 'POST' && id === 'referrals') {
     const { data: reseller } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
     if (!reseller?.id) return err('Reseller profile not found', 404)
+    const { data: resellerState } = await admin
+      .from('resellers')
+      .select('status, is_active')
+      .eq('id', reseller.id)
+      .maybeSingle()
+    if (resellerState && (resellerState.status !== 'active' || resellerState.is_active === false)) {
+      return err('Reseller account suspended', 403, 'RESELLER_SUSPENDED')
+    }
 
     const code = (body?.code || crypto.randomUUID().slice(0, 8)).toString().toUpperCase()
     const payload = {
@@ -1438,6 +1715,15 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
   if (method === 'POST' && action === 'generate') {
     const quantity = Number(body.quantity || 1)
     const useAtomicFlow = quantity > 1 || !!body.client_name || !!body.idempotency_key || !!body.cost_per_key || !!body.min_balance
+    const { data: resellerState } = await admin
+      .from('resellers')
+      .select('id, status, is_active')
+      .eq('user_id', userId)
+      .maybeSingle()
+    if (resellerState && (resellerState.status !== 'active' || resellerState.is_active === false)) {
+      return err('Reseller account suspended', 403, 'RESELLER_SUSPENDED')
+    }
+
     if (useAtomicFlow) {
       const rpcPayload = {
         p_product_id: body.product_id,
@@ -2209,11 +2495,45 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
 
   // POST /wallet/withdraw
   if (method === 'POST' && action === 'withdraw') {
- main
+    const amount = Number(body.amount || 0)
+    if (!Number.isFinite(amount) || amount <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
+
+    const requestedWalletId = body.wallet_id ? String(body.wallet_id) : null
+    if (requestedWalletId && !isAdmin) return err('Forbidden', 403)
+
+    const walletQuery = requestedWalletId
+      ? admin.from('wallets').select('id, user_id, balance, locked_balance').eq('id', requestedWalletId).maybeSingle()
+      : sb.from('wallets').select('id, user_id, balance, locked_balance').eq('user_id', userId).maybeSingle()
+    const { data: wallet } = await walletQuery
     if (!wallet) return err('Wallet not found', 404)
 
     const available = Number(wallet.balance || 0) - Number(wallet.locked_balance || 0)
-    if (available < amount) return err('Insufficient balance')
+    const { data: reseller } = await admin
+      .from('resellers')
+      .select('id, status, is_active, credit_limit')
+      .eq('user_id', wallet.user_id)
+      .maybeSingle()
+
+    if (reseller) {
+      const resellerStatus = String(reseller.status || '').toLowerCase()
+      const resellerActive = reseller.is_active !== false && resellerStatus !== 'suspended' && resellerStatus !== 'inactive'
+      if (!resellerActive) return err('Reseller account is suspended', 403, 'RESELLER_SUSPENDED')
+
+      const creditLimit = Number(reseller.credit_limit || 0)
+      const maxDebit = available + creditLimit
+      if (amount > maxDebit) {
+        return json({
+          error: 'Credit limit exceeded',
+          code: 'CREDIT_LIMIT_EXCEEDED',
+          available,
+          credit_limit: creditLimit,
+          requested: amount,
+          deficit: toMoney(amount - maxDebit),
+        }, 422)
+      }
+    } else if (available < amount) {
+      return err('Insufficient balance')
+    }
 
     const newBalance = Number(wallet.balance || 0) - amount
     const { error: txErr } = await admin.from('transactions').insert({
@@ -2227,6 +2547,7 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
       source: body.source || 'wallet_withdraw',
       reference_id: body.reference_id || null,
       reference_type: body.reference_type || 'wallet_withdraw',
+      meta: reseller ? { credit_limit: Number(reseller.credit_limit || 0), available_before: available } : null,
     })
     if (txErr) return err(txErr.message)
 

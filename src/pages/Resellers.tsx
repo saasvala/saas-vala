@@ -28,23 +28,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import {
   Plus,
   Search,
   Filter,
   MoreVertical,
+  Eye,
   Users,
   Edit,
-  Trash2,
   Ban,
   Play,
   Shield,
@@ -56,6 +46,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useResellers, type Reseller } from '@/hooks/useResellers';
+import { resellersApi } from '@/lib/api';
 import { PaginationControls } from '@/components/ui/pagination-controls';
 import { Switch } from '@/components/ui/switch';
  import { ResellerActivityPanel } from '@/components/reseller/ResellerActivityPanel';
@@ -66,18 +57,19 @@ import { Textarea } from '@/components/ui/textarea';
 const ITEMS_PER_PAGE = 25;
 
 export default function Resellers() {
-   const { resellers, loading, total, fetchResellers, updateReseller, deleteReseller } = useResellers();
+   const { resellers, loading, total, fetchResellers, updateReseller } = useResellers();
    const { adminApplications, adminLoading, fetchAdminApplications, approveApplication, rejectApplication } = useResellerApplications();
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editReseller, setEditReseller] = useState<Reseller | null>(null);
-  const [deleteId, setDeleteId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [selectedApplication, setSelectedApplication] = useState<ResellerApplication | null>(null);
   const [adminNotes, setAdminNotes] = useState('');
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [selectedReseller, setSelectedReseller] = useState<any | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -93,9 +85,10 @@ export default function Resellers() {
     const profileName = (reseller.profile?.full_name || '').toLowerCase();
     const matchesSearch = !searchQuery || name.includes(searchQuery.toLowerCase()) || profileName.includes(searchQuery.toLowerCase());
     if (!matchesSearch) return false;
-    if (activeTab === 'active') return reseller.is_active;
-    if (activeTab === 'suspended') return !reseller.is_active;
-    if (activeTab === 'verified') return reseller.is_verified;
+    const normalizedStatus = (reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase();
+    if (activeTab === 'active') return normalizedStatus === 'active';
+    if (activeTab === 'suspended') return normalizedStatus === 'suspended' || normalizedStatus === 'inactive';
+    if (activeTab === 'verified') return (reseller.kyc_status || (reseller.is_verified ? 'verified' : 'pending')) === 'verified';
     return true;
   });
 
@@ -103,9 +96,12 @@ export default function Resellers() {
 
   const stats = {
     total: resellers.length,
-    active: resellers.filter(r => r.is_active).length,
-    suspended: resellers.filter(r => !r.is_active).length,
-    verified: resellers.filter(r => r.is_verified).length,
+    active: resellers.filter(r => (r.status || (r.is_active ? 'active' : 'suspended')) === 'active').length,
+    suspended: resellers.filter(r => {
+      const status = (r.status || (r.is_active ? 'active' : 'suspended')).toLowerCase();
+      return status === 'suspended' || status === 'inactive';
+    }).length,
+    verified: resellers.filter(r => (r.kyc_status || (r.is_verified ? 'verified' : 'pending')) === 'verified').length,
   };
 
   const handlePageChange = (page: number) => {
@@ -156,10 +152,14 @@ export default function Resellers() {
     }
   };
 
-  const handleDelete = async () => {
-    if (!deleteId) return;
-    await deleteReseller(deleteId);
-    setDeleteId(null);
+  const openDetailDialog = async (reseller: Reseller) => {
+    setDetailLoading(true);
+    try {
+      const res = await resellersApi.detail(reseller.id);
+      setSelectedReseller(res.data || null);
+    } finally {
+      setDetailLoading(false);
+    }
   };
 
   const handleOpenApplication = (app: ResellerApplication) => {
@@ -402,22 +402,22 @@ export default function Resellers() {
                           <Badge
                             variant="outline"
                             className={cn(
-                              reseller.is_active
+                              ((reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase() === 'active')
                                 ? 'bg-success/20 text-success border-success/30'
                                 : 'bg-destructive/20 text-destructive border-destructive/30'
                             )}
                           >
-                            {reseller.is_active ? 'Active' : 'Suspended'}
+                            {(reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase() === 'active' ? 'Active' : 'Suspended'}
                           </Badge>
                         </TableCell>
                         <TableCell>
-                          {reseller.is_verified ? (
+                          {(reseller.kyc_status || (reseller.is_verified ? 'verified' : 'pending')) === 'verified' ? (
                             <Badge variant="outline" className="bg-cyan/20 text-cyan border-cyan/30">
                               <CheckCircle className="h-3 w-3 mr-1" />
                               Verified
                             </Badge>
                           ) : (
-                            <span className="text-muted-foreground">-</span>
+                            <span className="text-muted-foreground">Pending</span>
                           )}
                         </TableCell>
                         <TableCell>
@@ -437,8 +437,33 @@ export default function Resellers() {
                               <DropdownMenuItem className="gap-2 cursor-pointer" onClick={() => openEditDialog(reseller)}>
                                 <Edit className="h-4 w-4" /> Edit
                               </DropdownMenuItem>
-                              <DropdownMenuItem className="gap-2 cursor-pointer text-destructive" onClick={() => setDeleteId(reseller.id)}>
-                                <Trash2 className="h-4 w-4" /> Delete
+                              <DropdownMenuItem className="gap-2 cursor-pointer" onClick={() => openDetailDialog(reseller)}>
+                                <Eye className="h-4 w-4" /> View
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                className="gap-2 cursor-pointer"
+                                onClick={() => {
+                                  const currentStatus = (reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase();
+                                  const nextActive = currentStatus !== 'active';
+                                  updateReseller(reseller.id, { status: nextActive ? 'active' : 'suspended', is_active: nextActive });
+                                }}
+                              >
+                                {((reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase() === 'active') ? <Ban className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                                {((reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase() === 'active') ? 'Suspend' : 'Activate'}
+                              </DropdownMenuItem>
+                              {(reseller.kyc_status || (reseller.is_verified ? 'verified' : 'pending')) !== 'verified' && (
+                                <DropdownMenuItem
+                                  className="gap-2 cursor-pointer"
+                                  onClick={() => updateReseller(reseller.id, { kyc_status: 'verified', is_verified: true })}
+                                >
+                                  <Shield className="h-4 w-4" /> Verify
+                                </DropdownMenuItem>
+                              )}
+                              <DropdownMenuItem
+                                className="gap-2 cursor-pointer"
+                                onClick={() => window.location.assign(`/reseller-dashboard?reseller_id=${reseller.id}`)}
+                              >
+                                <Users className="h-4 w-4" /> Open Dashboard
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
@@ -484,11 +509,11 @@ export default function Resellers() {
                 onChange={(e) => setFormData({ ...formData, company_name: e.target.value })}
               />
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Commission (%)</Label>
-                <Input
-                  type="number"
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Commission (%)</Label>
+                  <Input
+                    type="number"
                   min="0"
                   max="100"
                   value={formData.commission_percent}
@@ -515,17 +540,37 @@ export default function Resellers() {
                 onCheckedChange={(checked) => setFormData({ ...formData, is_active: checked })}
               />
             </div>
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>Verified</Label>
-                <p className="text-sm text-muted-foreground">Mark as verified reseller</p>
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>Verified</Label>
+                  <p className="text-sm text-muted-foreground">Mark as verified reseller</p>
+                </div>
+                <Switch
+                  checked={formData.is_verified}
+                  onCheckedChange={(checked) => setFormData({ ...formData, is_verified: checked })}
+                />
               </div>
-              <Switch
-                checked={formData.is_verified}
-                onCheckedChange={(checked) => setFormData({ ...formData, is_verified: checked })}
-              />
+              {editReseller && (
+                <>
+                  <div className="space-y-2">
+                    <Label>Status</Label>
+                    <Input
+                      value={(editReseller.status || (formData.is_active ? 'active' : 'suspended')).toLowerCase()}
+                      readOnly
+                      className="bg-muted/40"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>KYC Status</Label>
+                    <Input
+                      value={(editReseller.kyc_status || (formData.is_verified ? 'verified' : 'pending')).toLowerCase()}
+                      readOnly
+                      className="bg-muted/40"
+                    />
+                  </div>
+                </>
+              )}
             </div>
-          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
             <Button onClick={handleSubmit} disabled={submitting}>
@@ -536,23 +581,53 @@ export default function Resellers() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirmation */}
-      <AlertDialog open={!!deleteId} onOpenChange={() => setDeleteId(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Reseller?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This action cannot be undone. This will permanently delete the reseller account.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground">
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* View Detail */}
+      <Dialog open={!!selectedReseller || detailLoading} onOpenChange={(open) => !open && setSelectedReseller(null)}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>Reseller Detail</DialogTitle>
+            <DialogDescription>Full stats, logs and clients.</DialogDescription>
+          </DialogHeader>
+          {detailLoading ? (
+            <div className="py-8 flex items-center justify-center">
+              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            </div>
+          ) : selectedReseller ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="rounded-md border border-border p-3"><p className="text-xs text-muted-foreground">Sales</p><p className="font-semibold">₹{Number(selectedReseller.stats?.total_sales || 0).toLocaleString()}</p></div>
+                <div className="rounded-md border border-border p-3"><p className="text-xs text-muted-foreground">Commission</p><p className="font-semibold">₹{Number(selectedReseller.stats?.total_commission || 0).toLocaleString()}</p></div>
+                <div className="rounded-md border border-border p-3"><p className="text-xs text-muted-foreground">Clients</p><p className="font-semibold">{Number(selectedReseller.stats?.clients_total || 0)}</p></div>
+                <div className="rounded-md border border-border p-3"><p className="text-xs text-muted-foreground">Keys</p><p className="font-semibold">{Number(selectedReseller.stats?.keys_generated || 0)}</p></div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="rounded-md border border-border p-3">
+                  <p className="font-medium mb-2">Clients</p>
+                  <div className="max-h-44 overflow-y-auto space-y-2">
+                    {(selectedReseller.clients || []).map((c: any) => (
+                      <div key={c.id} className="text-sm border-b border-border/60 pb-1">
+                        <p>{c.client_name || c.client_email}</p>
+                        <p className="text-xs text-muted-foreground">{c.client_email} • ₹{Number(c.total_spent || 0).toLocaleString()}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="rounded-md border border-border p-3">
+                  <p className="font-medium mb-2">Activity Logs</p>
+                  <div className="max-h-44 overflow-y-auto space-y-2">
+                    {(selectedReseller.logs || []).map((l: any) => (
+                      <div key={l.id} className="text-sm border-b border-border/60 pb-1">
+                        <p>{l.action}</p>
+                        <p className="text-xs text-muted-foreground">{new Date(l.created_at).toLocaleString()}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       {/* Application Review */}
       <Dialog open={!!selectedApplication} onOpenChange={(open) => !open && setSelectedApplication(null)}>

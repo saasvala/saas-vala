@@ -10,11 +10,10 @@
    AlertDialogHeader,
    AlertDialogTitle,
  } from '@/components/ui/alert-dialog';
- import { Shield, Ban, Play, CheckCircle, XCircle, Loader2 } from 'lucide-react';
- import type { Reseller } from '@/hooks/useResellers';
- import type { Json } from '@/integrations/supabase/types';
- import { supabase } from '@/integrations/supabase/client';
- import { toast } from 'sonner';
+import { Shield, Ban, Play, CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import type { Reseller } from '@/hooks/useResellers';
+import { toast } from 'sonner';
+import { resellersApi } from '@/lib/api';
  
  interface ResellerQuickActionsProps {
    reseller: Reseller;
@@ -25,36 +24,13 @@
    const [confirmAction, setConfirmAction] = useState<'approve' | 'suspend' | 'activate' | null>(null);
    const [loading, setLoading] = useState(false);
  
-   const logActivity = async (action: string, details: Json) => {
-     try {
-       await supabase.from('activity_logs').insert([{
-         action,
-         entity_type: 'reseller',
-         entity_id: reseller.id,
-         details,
-       }]);
-     } catch (error) {
-       console.error('Failed to log activity:', error);
-     }
-   };
- 
-   const handleApprove = async () => {
-     setLoading(true);
-     try {
-       const { error } = await supabase
-         .from('resellers')
-         .update({ is_verified: true, is_active: true })
-         .eq('id', reseller.id);
- 
-       if (error) throw error;
-       
-       await logActivity('approve', {
-         company_name: reseller.company_name,
-         notes: 'Reseller approved and verified',
-       });
-       
-       toast.success('Reseller approved successfully');
-       onAction();
+  const handleApprove = async () => {
+    setLoading(true);
+    try {
+      await resellersApi.update(reseller.id, { is_verified: true, is_active: true, status: 'active', kyc_status: 'verified' });
+        
+      toast.success('Reseller approved successfully');
+      onAction();
      } catch {
        toast.error('Failed to approve reseller');
      } finally {
@@ -63,23 +39,13 @@
      }
    };
  
-   const handleSuspend = async () => {
-     setLoading(true);
-     try {
-       const { error } = await supabase
-         .from('resellers')
-         .update({ is_active: false })
-         .eq('id', reseller.id);
- 
-       if (error) throw error;
-       
-       await logActivity('suspend', {
-         company_name: reseller.company_name,
-         notes: 'Reseller account suspended',
-       });
-       
-       toast.success('Reseller suspended');
-       onAction();
+  const handleSuspend = async () => {
+    setLoading(true);
+    try {
+      await resellersApi.update(reseller.id, { is_active: false, status: 'suspended' });
+        
+        toast.success('Reseller suspended');
+        onAction();
      } catch {
        toast.error('Failed to suspend reseller');
      } finally {
@@ -88,23 +54,13 @@
      }
    };
  
-   const handleActivate = async () => {
-     setLoading(true);
-     try {
-       const { error } = await supabase
-         .from('resellers')
-         .update({ is_active: true })
-         .eq('id', reseller.id);
- 
-       if (error) throw error;
-       
-       await logActivity('activate', {
-         company_name: reseller.company_name,
-         notes: 'Reseller account reactivated',
-       });
-       
-       toast.success('Reseller activated');
-       onAction();
+  const handleActivate = async () => {
+    setLoading(true);
+    try {
+      await resellersApi.update(reseller.id, { is_active: true, status: 'active' });
+        
+        toast.success('Reseller activated');
+        onAction();
      } catch {
        toast.error('Failed to activate reseller');
      } finally {

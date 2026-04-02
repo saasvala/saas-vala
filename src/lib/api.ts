@@ -59,6 +59,7 @@ export const productsApi = {
 export const resellersApi = {
   list: (params?: { page?: number; limit?: number; search?: string }) =>
     apiCall('GET', 'resellers', params),
+  detail: (id: string) => apiCall('GET', `resellers/${id}/detail`),
   create: (data: any) => apiCall('POST', 'resellers', data),
   update: (id: string, data: any) => apiCall('PUT', `resellers/${id}`, data),
   sales: (id: string) => apiCall('GET', `resellers/${id}/sales`),
