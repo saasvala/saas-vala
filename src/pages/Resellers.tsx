@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Table,
   TableBody,
@@ -51,21 +51,24 @@ import { useResellers, type Reseller } from '@/hooks/useResellers';
 import { resellersApi } from '@/lib/api';
 import { PaginationControls } from '@/components/ui/pagination-controls';
 import { Switch } from '@/components/ui/switch';
+import { Checkbox } from '@/components/ui/checkbox';
  import { ResellerActivityPanel } from '@/components/reseller/ResellerActivityPanel';
  import { ResellerQuickActions } from '@/components/reseller/ResellerQuickActions';
 import { useResellerApplications, type ResellerApplication } from '@/hooks/useResellerApplications';
 import { Textarea } from '@/components/ui/textarea';
+import { toast } from 'sonner';
 
 const ITEMS_PER_PAGE = 25;
-const getResellerStatus = (reseller: Reseller) =>
-  (reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase();
-const getResellerKycStatus = (reseller: Reseller) =>
-  (reseller.kyc_status || (reseller.is_verified ? 'verified' : 'pending')).toLowerCase();
 
 export default function Resellers() {
 
    const { resellers, loading, total, fetchResellers, updateReseller } = useResellers();
    const { adminApplications, adminLoading, fetchAdminApplications, approveApplication, rejectApplication } = useResellerApplications();
+  const [userId, setUserId] = useState('');
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailReseller, setDetailReseller] = useState<any>(null);
+  const [exporting, setExporting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
@@ -75,8 +78,6 @@ export default function Resellers() {
   const [selectedApplication, setSelectedApplication] = useState<ResellerApplication | null>(null);
   const [adminNotes, setAdminNotes] = useState('');
   const [reviewLoading, setReviewLoading] = useState(false);
-  const [selectedReseller, setSelectedReseller] = useState<any | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -181,16 +182,23 @@ export default function Resellers() {
   const handleOpenApplication = (app: ResellerApplication) => {
     setSelectedApplication(app);
     setAdminNotes(app.notes || '');
+    setReviewTab('application');
+    setSelectedFeatures(Array.isArray(app.features_checklist) ? app.features_checklist : []);
   };
 
   const handleApproveApplication = async () => {
     if (!selectedApplication) return;
     setReviewLoading(true);
     try {
-      await approveApplication(selectedApplication.id, { notes: adminNotes || undefined });
+      await approveApplication(selectedApplication.id, {
+        notes: adminNotes || undefined,
+        selected_features: selectedFeatures,
+        terms_version: selectedApplication.terms_version || 'v1',
+      });
       await fetchResellers(currentPage, ITEMS_PER_PAGE, searchQuery);
       setSelectedApplication(null);
       setAdminNotes('');
+      setSelectedFeatures([]);
     } finally {
       setReviewLoading(false);
     }
@@ -203,9 +211,20 @@ export default function Resellers() {
       await rejectApplication(selectedApplication.id, adminNotes.trim());
       setSelectedApplication(null);
       setAdminNotes('');
+      setSelectedFeatures([]);
     } finally {
       setReviewLoading(false);
     }
+  };
+
+  const toggleFeature = (featureKey: string, checked: boolean) => {
+    setSelectedFeatures((prev) => {
+      if (checked) {
+        if (prev.includes(featureKey)) return prev;
+        return [...prev, featureKey];
+      }
+      return prev.filter((key) => key !== featureKey);
+    });
   };
 
   const pendingApplications = adminApplications.filter((app) => app.status === 'pending');
@@ -635,30 +654,87 @@ export default function Resellers() {
 
 
       {/* Application Review */}
-      <Dialog open={!!selectedApplication} onOpenChange={(open) => !open && setSelectedApplication(null)}>
-        <DialogContent className="max-w-lg">
+      <Dialog
+        open={!!selectedApplication}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedApplication(null);
+            setSelectedFeatures([]);
+            setReviewTab('application');
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle>Review Reseller Application</DialogTitle>
             <DialogDescription>Approve or reject this reseller request.</DialogDescription>
           </DialogHeader>
           {selectedApplication && (
-            <div className="space-y-4">
-              <div className="rounded-lg border border-border p-3">
-                <p className="font-medium text-foreground">{selectedApplication.business_name}</p>
-                <p className="text-sm text-muted-foreground">{selectedApplication.contact}</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Submitted: {new Date(selectedApplication.created_at).toLocaleString()}
+            <Tabs value={reviewTab} onValueChange={setReviewTab} className="w-full">
+              <TabsList className="grid w-full grid-cols-3">
+                <TabsTrigger value="application">Application</TabsTrigger>
+                <TabsTrigger value="reseller-gaps">Final Reseller Gaps</TabsTrigger>
+                <TabsTrigger value="ultra-layer">Final Ultra Layer</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="application" className="space-y-4 pt-3">
+                <div className="rounded-lg border border-border p-3">
+                  <p className="font-medium text-foreground">{selectedApplication.business_name}</p>
+                  <p className="text-sm text-muted-foreground">{selectedApplication.contact}</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Submitted: {new Date(selectedApplication.created_at).toLocaleString()}
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label>Notes / Reject reason</Label>
+                  <Textarea
+                    value={adminNotes}
+                    onChange={(e) => setAdminNotes(e.target.value)}
+                    placeholder="Optional on approve, required on reject"
+                  />
+                </div>
+              </TabsContent>
+
+              <TabsContent value="reseller-gaps" className="space-y-3 pt-3">
+                <p className="text-sm text-muted-foreground">
+                  Select FINAL RESELLER GAPS to enable for this reseller.
                 </p>
-              </div>
-              <div className="space-y-2">
-                <Label>Notes / Reject reason</Label>
-                <Textarea
-                  value={adminNotes}
-                  onChange={(e) => setAdminNotes(e.target.value)}
-                  placeholder="Optional on approve, required on reject"
-                />
-              </div>
-            </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {FINAL_RESELLER_GAP_FEATURES.map((feature) => (
+                    <label
+                      key={feature.key}
+                      className="flex items-center gap-3 rounded-lg border border-border p-3 cursor-pointer"
+                    >
+                      <Checkbox
+                        checked={selectedFeatures.includes(feature.key)}
+                        onCheckedChange={(checked) => toggleFeature(feature.key, !!checked)}
+                      />
+                      <span className="text-sm text-foreground">{feature.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </TabsContent>
+
+              <TabsContent value="ultra-layer" className="space-y-3 pt-3">
+                <p className="text-sm text-muted-foreground">
+                  Select FINAL ULTRA LAYER capabilities to enable for this reseller.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {FINAL_ULTRA_LAYER_FEATURES.map((feature) => (
+                    <label
+                      key={feature.key}
+                      className="flex items-center gap-3 rounded-lg border border-border p-3 cursor-pointer"
+                    >
+                      <Checkbox
+                        checked={selectedFeatures.includes(feature.key)}
+                        onCheckedChange={(checked) => toggleFeature(feature.key, !!checked)}
+                      />
+                      <span className="text-sm text-foreground">{feature.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </TabsContent>
+            </Tabs>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setSelectedApplication(null)}>
