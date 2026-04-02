@@ -60,7 +60,11 @@ BEGIN
   IF NEW.kyc_status IS DISTINCT FROM OLD.kyc_status THEN
     NEW.is_verified := (NEW.kyc_status = 'verified');
   ELSIF NEW.is_verified IS DISTINCT FROM OLD.is_verified THEN
-    NEW.kyc_status := CASE WHEN COALESCE(NEW.is_verified, false) THEN 'verified' ELSE 'pending' END;
+    NEW.kyc_status := CASE
+      WHEN COALESCE(NEW.is_verified, false) THEN 'verified'
+      WHEN COALESCE(OLD.kyc_status, 'pending') = 'rejected' THEN 'rejected'
+      ELSE 'pending'
+    END;
   END IF;
   RETURN NEW;
 END;
@@ -187,7 +191,7 @@ BEGIN
     v_action,
     'resellers',
     NEW.id,
-    to_jsonb(OLD),
+    CASE WHEN TG_OP = 'INSERT' THEN NULL ELSE to_jsonb(OLD) END,
     jsonb_set(to_jsonb(NEW), '{event}', to_jsonb(v_event), true)
   );
 
@@ -257,16 +261,35 @@ CREATE TRIGGER trg_audit_reseller_sale_events
   EXECUTE FUNCTION public.audit_reseller_sale_events();
 
 -- 5) Backfill current totals once
+WITH order_totals AS (
+  SELECT reseller_id, ROUND(COALESCE(SUM(amount), 0)::numeric, 2) AS total_sales
+  FROM public.orders
+  WHERE reseller_id IS NOT NULL
+    AND status = 'success'
+  GROUP BY reseller_id
+),
+commission_totals AS (
+  SELECT reseller_id, ROUND(COALESCE(SUM(amount), 0)::numeric, 2) AS total_commission
+  FROM public.reseller_commission_logs
+  WHERE reseller_id IS NOT NULL
+    AND status IN ('credited', 'withdrawn')
+  GROUP BY reseller_id
+),
+calculated AS (
+  SELECT
+    r.id AS reseller_id,
+    COALESCE(o.total_sales, 0) AS total_sales,
+    COALESCE(c.total_commission, 0) AS total_commission
+  FROM public.resellers r
+  LEFT JOIN order_totals o ON o.reseller_id = r.id
+  LEFT JOIN commission_totals c ON c.reseller_id = r.id
+)
 UPDATE public.resellers r
-SET total_sales = COALESCE((
-      SELECT ROUND(COALESCE(SUM(o.amount), 0)::numeric, 2)
-      FROM public.orders o
-      WHERE o.reseller_id = r.id
-        AND o.status = 'success'
-    ), 0),
-    total_commission = COALESCE((
-      SELECT ROUND(COALESCE(SUM(c.amount), 0)::numeric, 2)
-      FROM public.reseller_commission_logs c
-      WHERE c.reseller_id = r.id
-        AND c.status IN ('credited', 'withdrawn')
-    ), 0);
+SET total_sales = calc.total_sales,
+    total_commission = calc.total_commission
+FROM calculated calc
+WHERE r.id = calc.reseller_id
+  AND (
+    COALESCE(r.total_sales, 0) IS DISTINCT FROM calc.total_sales
+    OR COALESCE(r.total_commission, 0) IS DISTINCT FROM calc.total_commission
+  );

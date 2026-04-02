@@ -196,6 +196,11 @@ async function getResellerAccessState(admin: any, userId: string): Promise<Resel
   return (data as ResellerAccessState) || null
 }
 
+function getResellerStatusFromState(state: ResellerAccessState): 'active' | 'suspended' {
+  if (!state) return 'suspended'
+  return normalizeResellerStatus(state.status) || (state.is_active === false ? 'suspended' : 'active')
+}
+
 function isApkVersionsTableMissing(message?: string) {
   return !!message && /relation\s+"?apk_versions"?\s+does not exist/i.test(message)
 }
@@ -1588,7 +1593,7 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
   if (method === 'POST' && action === 'generate') {
     const resellerState = await getResellerAccessState(admin, userId)
     if (resellerState) {
-      const status = normalizeResellerStatus(resellerState.status) || (resellerState.is_active === false ? 'suspended' : 'active')
+      const status = getResellerStatusFromState(resellerState)
       if (status !== 'active') return err('Reseller account is suspended', 403, 'RESELLER_SUSPENDED')
     }
 
@@ -2321,8 +2326,8 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
   if (method === 'POST' && action === 'add') {
     const requesterResellerState = await getResellerAccessState(admin, userId)
     if (requesterResellerState) {
-      const status = normalizeResellerStatus(requesterResellerState.status) || (requesterResellerState.is_active === false ? 'suspended' : 'active')
-      if (status !== 'active' && !isAdmin) return err('Reseller account is suspended', 403, 'RESELLER_SUSPENDED')
+      const status = getResellerStatusFromState(requesterResellerState)
+      if (status !== 'active') return err('Reseller account is suspended', 403, 'RESELLER_SUSPENDED')
     }
 
     const amount = Number(body.amount || 0)
@@ -2373,8 +2378,8 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
   if (method === 'POST' && action === 'withdraw') {
     const requesterResellerState = await getResellerAccessState(admin, userId)
     if (requesterResellerState) {
-      const status = normalizeResellerStatus(requesterResellerState.status) || (requesterResellerState.is_active === false ? 'suspended' : 'active')
-      if (status !== 'active' && !isAdmin) return err('Reseller account is suspended', 403, 'RESELLER_SUSPENDED')
+      const status = getResellerStatusFromState(requesterResellerState)
+      if (status !== 'active') return err('Reseller account is suspended', 403, 'RESELLER_SUSPENDED')
     }
 
     const amount = Number(body.amount || 0)
@@ -2389,22 +2394,22 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
     if (!wallet) return err('Wallet not found', 404)
 
     const available = Number(wallet.balance || 0) - Number(wallet.locked_balance || 0)
-    let allowedDeficit = 0
+    let creditLimit = 0
     const { data: reseller } = await admin
       .from('resellers')
       .select('credit_limit, status, is_active')
       .eq('user_id', wallet.user_id)
       .maybeSingle()
 
-    if (reseller && (normalizeResellerStatus(reseller.status) || (reseller.is_active === false ? 'suspended' : 'active')) !== 'active') {
+    if (reseller && getResellerStatusFromState(reseller as any) !== 'active') {
       return err('Reseller is suspended', 403, 'RESELLER_SUSPENDED')
     }
 
     if (reseller) {
-      allowedDeficit = Number(reseller.credit_limit || 0)
+      creditLimit = Number(reseller.credit_limit || 0)
     }
 
-    if (available + allowedDeficit < amount) {
+    if (available + creditLimit < amount) {
       return err('Credit limit exceeded', 422, 'CREDIT_LIMIT_EXCEEDED')
     }
 
@@ -2455,7 +2460,7 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
   if (method === 'POST' && action === 'lock') {
     const requesterResellerState = await getResellerAccessState(admin, userId)
     if (requesterResellerState) {
-      const status = normalizeResellerStatus(requesterResellerState.status) || (requesterResellerState.is_active === false ? 'suspended' : 'active')
+      const status = getResellerStatusFromState(requesterResellerState)
       if (status !== 'active') return err('Reseller account is suspended', 403, 'RESELLER_SUSPENDED')
     }
 
@@ -2485,7 +2490,7 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
   if (method === 'POST' && action === 'unlock') {
     const requesterResellerState = await getResellerAccessState(admin, userId)
     if (requesterResellerState) {
-      const status = normalizeResellerStatus(requesterResellerState.status) || (requesterResellerState.is_active === false ? 'suspended' : 'active')
+      const status = getResellerStatusFromState(requesterResellerState)
       if (status !== 'active') return err('Reseller account is suspended', 403, 'RESELLER_SUSPENDED')
     }
 
@@ -2514,7 +2519,7 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
   if (method === 'POST' && action === 'refund') {
     const requesterResellerState = await getResellerAccessState(admin, userId)
     if (requesterResellerState) {
-      const status = normalizeResellerStatus(requesterResellerState.status) || (requesterResellerState.is_active === false ? 'suspended' : 'active')
+      const status = getResellerStatusFromState(requesterResellerState)
       if (status !== 'active') return err('Reseller account is suspended', 403, 'RESELLER_SUSPENDED')
     }
 

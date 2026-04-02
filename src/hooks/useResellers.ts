@@ -89,12 +89,6 @@ export function useResellers() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'resellers' }, () => {
         fetchResellers();
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
-        fetchResellers();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'reseller_commission_logs' }, () => {
-        fetchResellers();
-      })
       .subscribe();
     return () => {
       supabase.removeChannel(channel);

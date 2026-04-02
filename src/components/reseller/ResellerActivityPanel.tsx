@@ -91,14 +91,13 @@ interface ActivityLog {
         const mapped = (data || [])
           .map((row: any) => ({
             id: row.id,
-            action: String(row?.new_data?.event || row.action || 'update'),
+            action: String(row?.new_data?.event || row.action || 'unknown'),
             table_name: row.table_name,
             record_id: row.record_id,
             details: (row?.new_data || null) as Record<string, unknown> | null,
             created_at: row.created_at,
             user_id: row.user_id,
-          }))
-          .filter((row) => ['reseller_joined', 'approved', 'suspended', 'sales_made'].includes(row.action.toLowerCase()));
+          }));
         setActivities(mapped as ActivityLog[]);
       } catch (error) {
         console.error('Failed to fetch activities:', error);

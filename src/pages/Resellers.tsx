@@ -152,8 +152,6 @@ export default function Resellers() {
     }
   };
 
-  const handleDelete = async () => undefined;
-
   const openDetailDialog = async (reseller: Reseller) => {
     setDetailOpen(true);
     setDetailLoading(true);
@@ -475,9 +473,6 @@ export default function Resellers() {
                                   <Shield className="h-4 w-4" /> Verify
                                 </DropdownMenuItem>
                               )}
-                              <DropdownMenuItem className="gap-2 cursor-pointer" onClick={handleDelete}>
-                                No delete
-                              </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </TableCell>
