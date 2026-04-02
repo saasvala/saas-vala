@@ -8,9 +8,9 @@ export interface Reseller {
   id: string;
   user_id: string;
   company_name: string | null;
+  status?: 'active' | 'suspended' | string | null;
+  kyc_status?: 'pending' | 'verified' | 'rejected' | string | null;
   tier?: string | null;
-  status?: string | null;
-  kyc_status?: string | null;
   commission_percent: number;
   credit_limit: number;
   total_sales: number;
@@ -24,6 +24,7 @@ export interface Reseller {
   updated_at: string;
   profile?: {
     full_name: string | null;
+    company_name?: string | null;
     email: string | null;
     phone: string | null;
   };
@@ -80,11 +81,19 @@ export function useResellers() {
   };
 
   const verifyReseller = async (id: string) => {
-    await updateReseller(id, { is_verified: true, kyc_status: 'verified' });
   };
 
   useEffect(() => {
     fetchResellers();
+    const channel = supabase
+      .channel('resellers-admin-table')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'resellers' }, () => {
+        fetchResellers();
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   useEffect(() => {

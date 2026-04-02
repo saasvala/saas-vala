@@ -3075,16 +3075,53 @@ export type Database = {
         }
         Relationships: []
       }
+      reseller_limits: {
+        Row: {
+          created_at: string
+          max_clients: number
+          max_keys: number
+          reseller_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          max_clients?: number
+          max_keys?: number
+          reseller_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          max_clients?: number
+          max_keys?: number
+          reseller_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reseller_limits_reseller_id_fkey"
+            columns: ["reseller_id"]
+            isOneToOne: true
+            referencedRelation: "resellers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       resellers: {
         Row: {
           commission_percent: number | null
           company_name: string | null
           created_at: string | null
           credit_limit: number | null
+          credit_used: number
           id: string
           is_active: boolean | null
           is_verified: boolean | null
+          kyc_status: string
           meta: Json | null
+          status: string
+          tier: string
+          tier_level: string
           total_commission: number | null
           total_sales: number | null
           updated_at: string | null
@@ -3095,10 +3132,15 @@ export type Database = {
           company_name?: string | null
           created_at?: string | null
           credit_limit?: number | null
+          credit_used?: number
           id?: string
           is_active?: boolean | null
           is_verified?: boolean | null
+          kyc_status?: string
           meta?: Json | null
+          status?: string
+          tier?: string
+          tier_level?: string
           total_commission?: number | null
           total_sales?: number | null
           updated_at?: string | null
@@ -3109,10 +3151,15 @@ export type Database = {
           company_name?: string | null
           created_at?: string | null
           credit_limit?: number | null
+          credit_used?: number
           id?: string
           is_active?: boolean | null
           is_verified?: boolean | null
+          kyc_status?: string
           meta?: Json | null
+          status?: string
+          tier?: string
+          tier_level?: string
           total_commission?: number | null
           total_sales?: number | null
           updated_at?: string | null

@@ -59,12 +59,24 @@ export const productsApi = {
 export const resellersApi = {
   list: (params?: { page?: number; limit?: number; search?: string }) =>
     apiCall('GET', 'resellers', params),
-  detail: (id: string) => apiCall('GET', `resellers/${id}/detail`),
+
   create: (data: any) => apiCall('POST', 'resellers', data),
   update: (id: string, data: any) => apiCall('PUT', `resellers/${id}`, data),
   sales: (id: string) => apiCall('GET', `resellers/${id}/sales`),
   clients: () => apiCall('GET', 'resellers/clients'),
+  exportData: (type: 'resellers' | 'sales' | 'commissions') =>
+    apiCall('GET', 'admin/reseller-export', { type }),
+};
 
+export const resellerOnboardingApi = {
+  myApplications: () => apiCall('GET', 'reseller/applications'),
+  apply: (data: any) => apiCall('POST', 'reseller/apply', data),
+  adminListApplications: (params?: { page?: number; limit?: number; status?: string; search?: string }) =>
+    apiCall('GET', 'admin/reseller-applications', params),
+  adminApprove: (applicationId: string, options?: { notes?: string; tier?: string; commission_percent?: number }) =>
+    apiCall('POST', 'admin/reseller-approve', { application_id: applicationId, ...options }),
+  adminReject: (applicationId: string, reason: string) =>
+    apiCall('POST', 'admin/reseller-reject', { application_id: applicationId, reason }),
 };
 
 // ===================== MARKETPLACE =====================

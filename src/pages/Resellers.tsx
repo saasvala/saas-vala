@@ -44,6 +44,7 @@ import {
   Percent,
   CheckCircle,
   Download,
+  Eye,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useResellers, type Reseller } from '@/hooks/useResellers';
@@ -62,7 +63,7 @@ const getResellerKycStatus = (reseller: Reseller) =>
   (reseller.kyc_status || (reseller.is_verified ? 'verified' : 'pending')).toLowerCase();
 
 export default function Resellers() {
-  const navigate = useNavigate();
+
    const { resellers, loading, total, fetchResellers, updateReseller } = useResellers();
    const { adminApplications, adminLoading, fetchAdminApplications, approveApplication, rejectApplication } = useResellerApplications();
   const [searchQuery, setSearchQuery] = useState('');
@@ -86,15 +87,15 @@ export default function Resellers() {
     is_verified: false,
   });
 
+  const resellerStatus = (reseller: Reseller) => String(reseller.status || (reseller.is_active ? 'active' : 'suspended')).toLowerCase();
+  const resellerKycStatus = (reseller: Reseller) => String(reseller.kyc_status || (reseller.is_verified ? 'verified' : 'pending')).toLowerCase();
+
   const filteredResellers = resellers.filter((reseller) => {
     const name = (reseller.company_name || '').toLowerCase();
     const profileName = (reseller.profile?.full_name || '').toLowerCase();
     const matchesSearch = !searchQuery || name.includes(searchQuery.toLowerCase()) || profileName.includes(searchQuery.toLowerCase());
     if (!matchesSearch) return false;
-    const normalizedStatus = getResellerStatus(reseller);
-    if (activeTab === 'active') return normalizedStatus === 'active';
-    if (activeTab === 'suspended') return normalizedStatus === 'suspended' || normalizedStatus === 'inactive';
-    if (activeTab === 'verified') return getResellerKycStatus(reseller) === 'verified';
+
     return true;
   });
 
@@ -102,12 +103,7 @@ export default function Resellers() {
 
   const stats = {
     total: resellers.length,
-    active: resellers.filter(r => getResellerStatus(r) === 'active').length,
-    suspended: resellers.filter(r => {
-      const status = getResellerStatus(r);
-      return status === 'suspended' || status === 'inactive';
-    }).length,
-    verified: resellers.filter(r => getResellerKycStatus(r) === 'verified').length,
+
   };
 
   const handlePageChange = (page: number) => {
@@ -123,6 +119,7 @@ export default function Resellers() {
 
   const openCreateDialog = () => {
     setEditReseller(null);
+    setUserId('');
     setFormData({
       company_name: '',
       commission_percent: 10,
@@ -146,12 +143,31 @@ export default function Resellers() {
   };
 
   const handleSubmit = async () => {
+    const commission = Number(formData.commission_percent);
+    const creditLimit = Number(formData.credit_limit);
+    if (!Number.isFinite(commission) || commission < 0 || commission > 100) {
+      toast.error('Commission must be between 0 and 100');
+      return;
+    }
+    if (!Number.isFinite(creditLimit) || creditLimit < 0) {
+      toast.error('Credit limit must be 0 or higher');
+      return;
+    }
     setSubmitting(true);
     try {
       if (editReseller) {
         await updateReseller(editReseller.id, formData);
+      } else {
+        if (!userId.trim()) {
+          toast.error('User ID is required to create reseller');
+          return;
+        }
+        await resellersApi.create({
+          user_id: userId.trim(),
+          ...formData,
+        });
+        await fetchResellers(currentPage, ITEMS_PER_PAGE, searchQuery);
       }
-      // Note: Creating new reseller requires user_id from an existing user
       setDialogOpen(false);
     } finally {
       setSubmitting(false);
@@ -159,13 +175,7 @@ export default function Resellers() {
   };
 
   const openDetailDialog = async (reseller: Reseller) => {
-    setDetailLoading(true);
-    try {
-      const res = await resellersApi.detail(reseller.id);
-      setSelectedReseller(res.data || null);
-    } finally {
-      setDetailLoading(false);
-    }
+
   };
 
   const handleOpenApplication = (app: ResellerApplication) => {
@@ -200,6 +210,28 @@ export default function Resellers() {
 
   const pendingApplications = adminApplications.filter((app) => app.status === 'pending');
 
+  const downloadCsv = (filename: string, csv: string) => {
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 100);
+  };
+
+  const handleExport = async (type: 'resellers' | 'sales' | 'commissions') => {
+    setExporting(true);
+    try {
+      const res = await resellersApi.exportData(type);
+      const csv = String(res?.csv || '');
+      const filename = String(res?.filename || `reseller-${type}.csv`);
+      if (!csv) return;
+      downloadCsv(filename, csv);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   useEffect(() => {
     fetchAdminApplications({ page: 1, limit: 100, status: 'pending' });
   }, [fetchAdminApplications]);
@@ -226,10 +258,25 @@ export default function Resellers() {
               <Users className="h-4 w-4" />
               Reseller Dashboard
             </Button>
-            <Button variant="outline" className="gap-2 border-border">
-              <Download className="h-4 w-4" />
-              Export
-            </Button>
+             <DropdownMenu>
+               <DropdownMenuTrigger asChild>
+                 <Button variant="outline" className="gap-2 border-border" disabled={exporting}>
+                   <Download className="h-4 w-4" />
+                   Export
+                 </Button>
+               </DropdownMenuTrigger>
+               <DropdownMenuContent align="end" className="bg-popover border-border">
+                 <DropdownMenuItem className="cursor-pointer" onClick={() => handleExport('resellers')}>
+                   Resellers CSV
+                 </DropdownMenuItem>
+                 <DropdownMenuItem className="cursor-pointer" onClick={() => handleExport('sales')}>
+                   Sales CSV
+                 </DropdownMenuItem>
+                 <DropdownMenuItem className="cursor-pointer" onClick={() => handleExport('commissions')}>
+                   Commissions CSV
+                 </DropdownMenuItem>
+               </DropdownMenuContent>
+             </DropdownMenu>
               <Button onClick={openCreateDialog} className="bg-orange-gradient hover:opacity-90 text-white gap-2">
                 <Plus className="h-4 w-4" />
                 Add Reseller
@@ -382,7 +429,7 @@ export default function Resellers() {
                               <Users className="h-5 w-5 text-primary" />
                             </div>
                             <div>
-                              <span className="font-medium text-foreground block">{reseller.company_name || reseller.profile?.full_name || 'Unnamed'}</span>
+                              <span className="font-medium text-foreground block">{reseller.company_name || reseller.profile?.company_name || reseller.profile?.full_name || 'Unnamed'}</span>
                               {reseller.profile?.full_name && reseller.company_name !== reseller.profile.full_name && (
                                 <span className="text-xs text-muted-foreground">{reseller.profile.full_name}</span>
                               )}
@@ -408,22 +455,18 @@ export default function Resellers() {
                           <Badge
                             variant="outline"
                             className={cn(
-                              (getResellerStatus(reseller) === 'active')
+
                                 ? 'bg-success/20 text-success border-success/30'
                                 : 'bg-destructive/20 text-destructive border-destructive/30'
                             )}
                           >
-                            {getResellerStatus(reseller) === 'active' ? 'Active' : 'Suspended'}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          {getResellerKycStatus(reseller) === 'verified' ? (
+
                             <Badge variant="outline" className="bg-cyan/20 text-cyan border-cyan/30">
                               <CheckCircle className="h-3 w-3 mr-1" />
                               Verified
                             </Badge>
                           ) : (
-                            <span className="text-muted-foreground">Pending</span>
+
                           )}
                         </TableCell>
                         <TableCell>
@@ -445,32 +488,24 @@ export default function Resellers() {
                               </DropdownMenuItem>
                               <DropdownMenuItem className="gap-2 cursor-pointer" onClick={() => openDetailDialog(reseller)}>
                                 <Eye className="h-4 w-4" /> View
+
                               </DropdownMenuItem>
-                              <DropdownMenuItem
-                                className="gap-2 cursor-pointer"
-                                onClick={() => {
-                                  const currentStatus = getResellerStatus(reseller);
-                                  const nextActive = currentStatus !== 'active';
-                                  updateReseller(reseller.id, { status: nextActive ? 'active' : 'suspended', is_active: nextActive });
-                                }}
-                              >
-                                {(getResellerStatus(reseller) === 'active') ? <Ban className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-                                {(getResellerStatus(reseller) === 'active') ? 'Suspend' : 'Activate'}
+                              <DropdownMenuItem className="gap-2 cursor-pointer" onClick={() => toggleSuspend(reseller)}>
+                                {resellerStatus(reseller) === 'active' ? (
+                                  <>
+                                    <Ban className="h-4 w-4" /> Suspend
+                                  </>
+                                ) : (
+                                  <>
+                                    <Play className="h-4 w-4" /> Activate
+                                  </>
+                                )}
                               </DropdownMenuItem>
-                              {getResellerKycStatus(reseller) !== 'verified' && (
-                                <DropdownMenuItem
-                                  className="gap-2 cursor-pointer"
-                                  onClick={() => updateReseller(reseller.id, { kyc_status: 'verified', is_verified: true })}
-                                >
+                              {resellerKycStatus(reseller) !== 'verified' && (
+                                <DropdownMenuItem className="gap-2 cursor-pointer" onClick={() => markVerified(reseller)}>
                                   <Shield className="h-4 w-4" /> Verify
                                 </DropdownMenuItem>
                               )}
-                              <DropdownMenuItem
-                                className="gap-2 cursor-pointer"
-                                onClick={() => navigate(`/reseller-dashboard?reseller_id=${reseller.id}`)}
-                              >
-                                <Users className="h-4 w-4" /> Open Dashboard
-                              </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </TableCell>
@@ -508,6 +543,16 @@ export default function Resellers() {
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
+              {!editReseller && (
+                <>
+                  <Label>User ID</Label>
+                  <Input
+                    placeholder="Existing auth user UUID"
+                    value={userId}
+                    onChange={(e) => setUserId(e.target.value)}
+                  />
+                </>
+              )}
               <Label>Company Name</Label>
               <Input
                 placeholder="Acme Corp"
@@ -587,53 +632,7 @@ export default function Resellers() {
         </DialogContent>
       </Dialog>
 
-      {/* View Detail */}
-      <Dialog open={!!selectedReseller || detailLoading} onOpenChange={(open) => !open && setSelectedReseller(null)}>
-        <DialogContent className="max-w-4xl">
-          <DialogHeader>
-            <DialogTitle>Reseller Detail</DialogTitle>
-            <DialogDescription>Full stats, logs and clients.</DialogDescription>
-          </DialogHeader>
-          {detailLoading ? (
-            <div className="py-8 flex items-center justify-center">
-              <Loader2 className="h-6 w-6 animate-spin text-primary" />
-            </div>
-          ) : selectedReseller ? (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div className="rounded-md border border-border p-3"><p className="text-xs text-muted-foreground">Sales</p><p className="font-semibold">₹{Number(selectedReseller.stats?.total_sales || 0).toLocaleString()}</p></div>
-                <div className="rounded-md border border-border p-3"><p className="text-xs text-muted-foreground">Commission</p><p className="font-semibold">₹{Number(selectedReseller.stats?.total_commission || 0).toLocaleString()}</p></div>
-                <div className="rounded-md border border-border p-3"><p className="text-xs text-muted-foreground">Clients</p><p className="font-semibold">{Number(selectedReseller.stats?.clients_total || 0)}</p></div>
-                <div className="rounded-md border border-border p-3"><p className="text-xs text-muted-foreground">Keys</p><p className="font-semibold">{Number(selectedReseller.stats?.keys_generated || 0)}</p></div>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="rounded-md border border-border p-3">
-                  <p className="font-medium mb-2">Clients</p>
-                  <div className="max-h-44 overflow-y-auto space-y-2">
-                    {(selectedReseller.clients || []).map((c: any) => (
-                      <div key={c.id} className="text-sm border-b border-border/60 pb-1">
-                        <p>{c.client_name || c.client_email}</p>
-                        <p className="text-xs text-muted-foreground">{c.client_email} • ₹{Number(c.total_spent || 0).toLocaleString()}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div className="rounded-md border border-border p-3">
-                  <p className="font-medium mb-2">Activity Logs</p>
-                  <div className="max-h-44 overflow-y-auto space-y-2">
-                    {(selectedReseller.logs || []).map((l: any) => (
-                      <div key={l.id} className="text-sm border-b border-border/60 pb-1">
-                        <p>{l.action}</p>
-                        <p className="text-xs text-muted-foreground">{new Date(l.created_at).toLocaleString()}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : null}
-        </DialogContent>
-      </Dialog>
+
 
       {/* Application Review */}
       <Dialog open={!!selectedApplication} onOpenChange={(open) => !open && setSelectedApplication(null)}>
