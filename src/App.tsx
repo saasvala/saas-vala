@@ -92,6 +92,67 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function AuthGuard({ children }: { children: React.ReactNode }) {
+  return <ProtectedRoute>{children}</ProtectedRoute>;
+}
+
+function SubscriptionGuard({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+  const { id, productId } = useParams();
+  const [checking, setChecking] = useState(true);
+  const [allowed, setAllowed] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    const run = async () => {
+      if (!user?.id) {
+        if (mounted) {
+          setAllowed(false);
+          setChecking(false);
+        }
+        return;
+      }
+
+      const routeProductId = productId || id;
+      let query = supabase
+        .from('subscriptions')
+        .select('status,current_period_end,product_id')
+        .eq('user_id', user.id);
+
+      if (routeProductId) {
+        query = query.or(`product_id.eq.${routeProductId},product_id.is.null`);
+      }
+
+      const { data } = await query.limit(50);
+      const hasActive = (data || []).some((row) => {
+        const status = String(row.status || '').toLowerCase();
+        const notExpired = !row.current_period_end || new Date(row.current_period_end) > new Date();
+        return (status === 'active' || status === 'trialing') && notExpired;
+      });
+
+      if (mounted) {
+        setAllowed(hasActive);
+        setChecking(false);
+      }
+    };
+
+    run();
+    return () => {
+      mounted = false;
+    };
+  }, [user?.id, productId, id]);
+
+  if (loading || checking) return <PageLoader />;
+  if (!user) return <Navigate to="/auth" replace />;
+  if (!allowed) return <Navigate to="/subscription" replace />;
+  return <>{children}</>;
+}
+
+function RoleGuard({ children, role }: { children: React.ReactNode; role: 'super_admin' | 'reseller' }) {
+  if (role === 'super_admin') return <AdminRoute>{children}</AdminRoute>;
+  return <ResellerRoute>{children}</ResellerRoute>;
+}
+
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const { isSuperAdmin, loading } = useAuth();
   if (loading) return <PageLoader />;
@@ -145,6 +206,44 @@ function ReferralRedirect() {
   return <Navigate to={ref ? `/auth?ref=${ref}` : '/auth'} replace />;
 }
 
+const SAFE_ROUTE_PARAM = /^[a-zA-Z0-9_-]+$/;
+
+function hasInvalidRouteParam(params: Array<string | undefined>) {
+  return params.some((param) => !!param && !SAFE_ROUTE_PARAM.test(param));
+}
+
+function CategoryRouteGuarded() {
+  const { macro, sub, micro } = useParams();
+  if (hasInvalidRouteParam([macro, sub, micro])) {
+    return <Navigate to="/" replace />;
+  }
+  return <CategoryFlow />;
+}
+
+function ProductRouteGuarded() {
+  const { id, productId } = useParams();
+  const resolved = id || productId;
+  if (!resolved || hasInvalidRouteParam([resolved])) {
+    return <Navigate to="/" replace />;
+  }
+  return <ProductDetail />;
+}
+
+function AppRouteGuarded() {
+  const { id, productId } = useParams();
+  const resolved = id || productId;
+  if (!resolved || hasInvalidRouteParam([resolved])) {
+    return <Navigate to="/" replace />;
+  }
+  return (
+    <AuthGuard>
+      <SubscriptionGuard>
+        <AppAccess />
+      </SubscriptionGuard>
+    </AuthGuard>
+  );
+}
+
 function AppRoutes() {
   return (
     <Suspense fallback={<PageLoader />}>
@@ -153,6 +252,7 @@ function AppRoutes() {
         <Route path="/ref/:code" element={<ReferralRedirect />} />
         <Route path="/" element={<Marketplace />} />
         <Route path="/marketplace" element={<Marketplace />} />
+        <Route path="/search" element={<Marketplace />} />
 
         {/* Public lazy routes */}
         <Route path="/edu-pwa" element={<EduPwa />} />
@@ -184,51 +284,56 @@ function AppRoutes() {
         <Route path="/analytics-pwa" element={<AnalyticsPwa />} />
         <Route path="/cart" element={<Cart />} />
         <Route path="/offline-app" element={<OfflineAppTemplate />} />
-        <Route path="/category/:macro" element={<CategoryFlow />} />
-        <Route path="/category/:macro/:sub" element={<CategoryFlow />} />
-        <Route path="/category/:macro/:sub/:micro" element={<CategoryFlow />} />
-        <Route path="/product/:id" element={<ProductDetail />} />
+        <Route path="/category/:macro" element={<CategoryRouteGuarded />} />
+        <Route path="/category/:macro/:sub" element={<CategoryRouteGuarded />} />
+        <Route path="/category/:macro/:sub/:micro" element={<CategoryRouteGuarded />} />
+        <Route path="/product/:id" element={<ProductRouteGuarded />} />
+        <Route path="/product/:productId" element={<ProductRouteGuarded />} />
 
         {/* Protected routes */}
-        <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-        <Route path="/dashboard/apps" element={<ProtectedRoute><Navigate to="/products" replace /></ProtectedRoute>} />
-        <Route path="/dashboard/orders" element={<ProtectedRoute><Navigate to="/keys" replace /></ProtectedRoute>} />
-        <Route path="/dashboard/subscription" element={<ProtectedRoute><Navigate to="/subscription" replace /></ProtectedRoute>} />
-        <Route path="/checkout" element={<ProtectedRoute><Checkout /></ProtectedRoute>} />
-        <Route path="/success" element={<ProtectedRoute><Success /></ProtectedRoute>} />
-        <Route path="/subscription" element={<ProtectedRoute><Subscription /></ProtectedRoute>} />
-        <Route path="/app/:id" element={<ProtectedRoute><AppAccess /></ProtectedRoute>} />
-        <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
-        <Route path="/keys" element={<ProtectedRoute><Keys /></ProtectedRoute>} />
-        <Route path="/servers" element={<ProtectedRoute><Servers /></ProtectedRoute>} />
-        <Route path="/role-detail" element={<ProtectedRoute><RoleDetail /></ProtectedRoute>} />
-        <Route path="/transport-role-detail" element={<ProtectedRoute><TransportRoleDetail /></ProtectedRoute>} />
-        <Route path="/manufacturing-role-detail" element={<ProtectedRoute><ManufacturingRoleDetail /></ProtectedRoute>} />
-        <Route path="/education" element={<ProtectedRoute><EducationCategory /></ProtectedRoute>} />
-        <Route path="/vala-builder" element={<ProtectedRoute><ValaBuilder /></ProtectedRoute>} />
-        <Route path="/ai-chat" element={<ProtectedRoute><AiChat /></ProtectedRoute>} />
-        <Route path="/saas-ai-dashboard" element={<ProtectedRoute><SaasAiDashboard /></ProtectedRoute>} />
-        <Route path="/ai-apis" element={<ProtectedRoute><AiApis /></ProtectedRoute>} />
-        <Route path="/wallet" element={<ProtectedRoute><Wallet /></ProtectedRoute>} />
-        <Route path="/seo-leads" element={<ProtectedRoute><SeoLeads /></ProtectedRoute>} />
-        <Route path="/reseller-dashboard" element={<ProtectedRoute><ResellerRoute><ResellerDashboard /></ResellerRoute></ProtectedRoute>} />
-        <Route path="/reseller/dashboard" element={<ProtectedRoute><ResellerRoute><Navigate to="/reseller-dashboard" replace /></ResellerRoute></ProtectedRoute>} />
-        <Route path="/reseller/users" element={<ProtectedRoute><ResellerRoute><Navigate to="/reseller-dashboard?tab=users" replace /></ResellerRoute></ProtectedRoute>} />
-        <Route path="/reseller/earnings" element={<ProtectedRoute><ResellerRoute><Navigate to="/reseller-dashboard?tab=commissions" replace /></ResellerRoute></ProtectedRoute>} />
+        <Route path="/dashboard" element={<AuthGuard><Dashboard /></AuthGuard>} />
+        <Route path="/dashboard/*" element={<AuthGuard><Navigate to="/dashboard" replace /></AuthGuard>} />
+        <Route path="/dashboard/apps" element={<AuthGuard><Navigate to="/products" replace /></AuthGuard>} />
+        <Route path="/dashboard/orders" element={<AuthGuard><Navigate to="/keys" replace /></AuthGuard>} />
+        <Route path="/dashboard/subscription" element={<AuthGuard><Navigate to="/subscription" replace /></AuthGuard>} />
+        <Route path="/checkout" element={<AuthGuard><Checkout /></AuthGuard>} />
+        <Route path="/success" element={<AuthGuard><Success /></AuthGuard>} />
+        <Route path="/subscription" element={<AuthGuard><Subscription /></AuthGuard>} />
+        <Route path="/app/:id" element={<AppRouteGuarded />} />
+        <Route path="/app/:productId" element={<AppRouteGuarded />} />
+        <Route path="/products" element={<AuthGuard><Products /></AuthGuard>} />
+        <Route path="/keys" element={<AuthGuard><Keys /></AuthGuard>} />
+        <Route path="/servers" element={<AuthGuard><Servers /></AuthGuard>} />
+        <Route path="/role-detail" element={<AuthGuard><RoleDetail /></AuthGuard>} />
+        <Route path="/transport-role-detail" element={<AuthGuard><TransportRoleDetail /></AuthGuard>} />
+        <Route path="/manufacturing-role-detail" element={<AuthGuard><ManufacturingRoleDetail /></AuthGuard>} />
+        <Route path="/education" element={<AuthGuard><EducationCategory /></AuthGuard>} />
+        <Route path="/vala-builder" element={<AuthGuard><ValaBuilder /></AuthGuard>} />
+        <Route path="/ai-chat" element={<AuthGuard><AiChat /></AuthGuard>} />
+        <Route path="/saas-ai-dashboard" element={<AuthGuard><SaasAiDashboard /></AuthGuard>} />
+        <Route path="/ai-apis" element={<AuthGuard><AiApis /></AuthGuard>} />
+        <Route path="/wallet" element={<AuthGuard><Wallet /></AuthGuard>} />
+        <Route path="/seo-leads" element={<AuthGuard><SeoLeads /></AuthGuard>} />
+        <Route path="/reseller-dashboard" element={<AuthGuard><RoleGuard role="reseller"><ResellerDashboard /></RoleGuard></AuthGuard>} />
+        <Route path="/reseller/dashboard" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/reseller/users" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard?tab=users" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/reseller/earnings" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard?tab=commissions" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/reseller/*" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard" replace /></RoleGuard></AuthGuard>} />
 
         {/* Admin routes */}
-        <Route path="/admin" element={<ProtectedRoute><AdminRoute><Navigate to="/dashboard" replace /></AdminRoute></ProtectedRoute>} />
-        <Route path="/reseller-manager" element={<ProtectedRoute><AdminRoute><Resellers /></AdminRoute></ProtectedRoute>} />
-        <Route path="/resellers" element={<ProtectedRoute><AdminRoute><Resellers /></AdminRoute></ProtectedRoute>} />
-        <Route path="/settings" element={<ProtectedRoute><AdminRoute><Settings /></AdminRoute></ProtectedRoute>} />
-        <Route path="/audit-logs" element={<ProtectedRoute><AdminRoute><AuditLogs /></AdminRoute></ProtectedRoute>} />
-        <Route path="/system-health" element={<ProtectedRoute><AdminRoute><SystemHealth /></AdminRoute></ProtectedRoute>} />
-        <Route path="/automation" element={<ProtectedRoute><AdminRoute><Automation /></AdminRoute></ProtectedRoute>} />
-        <Route path="/apk-pipeline" element={<ProtectedRoute><AdminRoute><ApkPipeline /></AdminRoute></ProtectedRoute>} />
-        <Route path="/admin/add-product" element={<ProtectedRoute><AdminRoute><AddProduct /></AdminRoute></ProtectedRoute>} />
-        <Route path="/admin/marketplace" element={<ProtectedRoute><AdminRoute><MarketplaceAdmin /></AdminRoute></ProtectedRoute>} />
-
-        <Route path="*" element={<NotFound />} />
+        <Route path="/admin" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/dashboard" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/*" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/dashboard" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/reseller-manager" element={<AuthGuard><RoleGuard role="super_admin"><Resellers /></RoleGuard></AuthGuard>} />
+        <Route path="/resellers" element={<AuthGuard><RoleGuard role="super_admin"><Resellers /></RoleGuard></AuthGuard>} />
+        <Route path="/settings" element={<AuthGuard><RoleGuard role="super_admin"><Settings /></RoleGuard></AuthGuard>} />
+        <Route path="/audit-logs" element={<AuthGuard><RoleGuard role="super_admin"><AuditLogs /></RoleGuard></AuthGuard>} />
+        <Route path="/system-health" element={<AuthGuard><RoleGuard role="super_admin"><SystemHealth /></RoleGuard></AuthGuard>} />
+        <Route path="/automation" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/add-product" element={<AuthGuard><RoleGuard role="super_admin"><AddProduct /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/marketplace" element={<AuthGuard><RoleGuard role="super_admin"><MarketplaceAdmin /></RoleGuard></AuthGuard>} />
+        <Route path="/404" element={<NotFound />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Suspense>
   );
