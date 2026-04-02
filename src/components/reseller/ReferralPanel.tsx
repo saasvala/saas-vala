@@ -2,9 +2,10 @@
  import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
  import { Button } from '@/components/ui/button';
  import { Input } from '@/components/ui/input';
- import { Badge } from '@/components/ui/badge';
- import { useAuth } from '@/hooks/useAuth';
- import { toast } from 'sonner';
+import { Badge } from '@/components/ui/badge';
+import { useAuth } from '@/hooks/useAuth';
+import { useResellerDashboardData } from '@/hooks/useResellerDashboardData';
+import { toast } from 'sonner';
  import {
    Share2,
    Copy,
@@ -17,18 +18,14 @@
    Send,
  } from 'lucide-react';
  
- export function ReferralPanel() {
-   const { user } = useAuth();
-   const referralCode = user?.id?.slice(0, 8).toUpperCase() || 'XXXXX';
-   const referralLink = `https://saasvala.com/ref/${referralCode}`;
+export function ReferralPanel() {
+  const { user } = useAuth();
+  const { referrals } = useResellerDashboardData();
+  const [fallbackCode] = useState(user?.id?.slice(0, 8).toUpperCase() || 'XXXXX');
+  const referralCode = referrals.find((r) => r.status === 'active')?.code || referrals[0]?.code || fallbackCode;
+  const referralLink = `https://saasvala.com/ref/${referralCode}`;
  
-   const [referrals] = useState([
-     { name: 'Rahul Mehta', date: '2024-01-15', status: 'active', earned: 25 },
-     { name: 'Sneha Gupta', date: '2024-01-10', status: 'pending', earned: 0 },
-     { name: 'Arun Kumar', date: '2024-01-05', status: 'active', earned: 50 },
-   ]);
- 
-   const totalEarned = referrals.reduce((sum, r) => sum + r.earned, 0);
+   const totalEarned = referrals.reduce((sum, r) => sum + Number(r.commission_earned || 0), 0);
    const totalReferrals = referrals.length;
    const activeReferrals = referrals.filter(r => r.status === 'active').length;
  
@@ -43,7 +40,7 @@
    };
  
    const shareOn = (platform: string) => {
-     const text = `Join SaaS VALA and get premium software at best prices! Use my referral code: ${referralCode}`;
+    const text = `Join SaaS VALA and get premium software at best prices! Use my referral code: ${referralCode}`;
      let url = '';
      
      switch (platform) {
@@ -181,13 +178,15 @@
          </CardHeader>
          <CardContent>
            <div className="space-y-3">
-             {referrals.map((referral, index) => (
-               <div key={index} className="flex items-center justify-between p-3 rounded-lg bg-muted/50 border border-border">
-                 <div>
-                   <p className="font-medium text-foreground">{referral.name}</p>
-                   <p className="text-sm text-muted-foreground">Joined: {referral.date}</p>
-                 </div>
-                 <div className="flex items-center gap-3">
+              {referrals.map((referral) => (
+                <div key={referral.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/50 border border-border">
+                  <div>
+                    <p className="font-medium text-foreground font-mono">{referral.code}</p>
+                    <p className="text-sm text-muted-foreground">
+                      Joined: {referral.signup_at ? new Date(referral.signup_at).toLocaleDateString() : '—'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
                    <Badge
                      variant="outline"
                      className={referral.status === 'active' 
@@ -197,15 +196,20 @@
                    >
                      {referral.status}
                    </Badge>
-                   {referral.earned > 0 && (
-                     <span className="font-semibold text-green-500">+${referral.earned}</span>
-                   )}
-                 </div>
-               </div>
-             ))}
-           </div>
-         </CardContent>
-       </Card>
+                    {referral.commission_earned > 0 && (
+                      <span className="font-semibold text-green-500">+${referral.commission_earned}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {referrals.length === 0 && (
+                <div className="text-center py-8 text-muted-foreground">
+                  No referral activity yet.
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
      </div>
    );
  }

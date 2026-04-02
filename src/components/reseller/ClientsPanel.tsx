@@ -1,9 +1,6 @@
 import { useState } from 'react';
 import { MaskedField } from '@/components/ui/masked-field';
-import { Skeleton } from '@/components/ui/skeleton';
- import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
- import { Input } from '@/components/ui/input';
- import { Badge } from '@/components/ui/badge';
+
  import {
    Table,
    TableBody,
@@ -26,14 +23,7 @@ export function ClientsPanel() {
   const [searchQuery, setSearchQuery] = useState('');
   const { clients, stats, loading } = useResellerClients();
  
-  const filteredClients = clients.filter(client =>
-    client.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    client.email?.toLowerCase().includes(searchQuery.toLowerCase())
-  );
- 
-  const totalClients = stats.total_clients;
-  const activeClients = stats.active_clients;
-  const totalKeys = stats.total_keys;
+
  
    return (
      <div className="space-y-6">
@@ -119,43 +109,7 @@ export function ClientsPanel() {
                  </TableRow>
                </TableHeader>
                <TableBody>
-                  {loading ? Array.from({ length: 4 }).map((_, idx) => (
-                    <TableRow key={`loading-${idx}`}>
-                      <TableCell><Skeleton className="h-4 w-36" /></TableCell>
-                      <TableCell><Skeleton className="h-4 w-48" /></TableCell>
-                      <TableCell className="text-center"><Skeleton className="h-5 w-10 mx-auto" /></TableCell>
-                      <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-                      <TableCell><Skeleton className="h-5 w-16" /></TableCell>
-                    </TableRow>
-                  )) : filteredClients.map((client) => (
-                    <TableRow key={client.id} className="hover:bg-muted/30">
-                     <TableCell>
-                       <div className="font-medium text-foreground">{client.name}</div>
-                     </TableCell>
-                     <TableCell>
-                       <div className="flex flex-col gap-1">
-                           <div className="flex items-center gap-1 text-sm">
-                             <Mail className="h-3 w-3 text-muted-foreground" />
-                              <MaskedField value={client.email || '-'} type="email" />
-                            </div>
-                            <div className="flex items-center gap-1 text-sm">
-                              <Phone className="h-3 w-3 text-muted-foreground" />
-                              <MaskedField value={client.phone || '-'} type="phone" />
-                            </div>
-                        </div>
-                      </TableCell>
-                     <TableCell className="text-center">
-                       <Badge variant="outline" className="font-mono">
-                         {client.keys}
-                       </Badge>
-                     </TableCell>
-                     <TableCell>
-                       <div className="flex items-center gap-1 text-sm text-muted-foreground">
-                         <Calendar className="h-3 w-3" />
-                          {client.last_purchase ? new Date(client.last_purchase).toLocaleDateString() : '-'}
-                        </div>
-                      </TableCell>
-                     <TableCell>
+
                        <Badge
                          variant="outline"
                          className={client.status === 'active' 
@@ -172,6 +126,7 @@ export function ClientsPanel() {
              </Table>
            </div>
  
+
             {!loading && filteredClients.length === 0 && (
               <div className="text-center py-8 text-muted-foreground">
                 No clients found matching your search.

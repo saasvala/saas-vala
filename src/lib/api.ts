@@ -63,6 +63,7 @@ export const resellersApi = {
   update: (id: string, data: any) => apiCall('PUT', `resellers/${id}`, data),
   sales: (id: string) => apiCall('GET', `resellers/${id}/sales`),
   clients: () => apiCall('GET', 'resellers/clients'),
+
 };
 
 // ===================== MARKETPLACE =====================

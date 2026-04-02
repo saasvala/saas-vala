@@ -2,17 +2,17 @@
  import { NavLink, useLocation } from 'react-router-dom';
  import { cn } from '@/lib/utils';
  import { useAuth } from '@/hooks/useAuth';
- import {
-   LayoutDashboard,
-   Key,
-   Users,
-   Wallet,
-   Share2,
-   Lock,
-   ChevronLeft,
-   ChevronRight,
-   LogOut,
- } from 'lucide-react';
+import {
+  LayoutDashboard,
+  BarChart3,
+  Percent,
+  Users,
+  Wallet,
+  ArrowDownToLine,
+  ChevronLeft,
+  ChevronRight,
+  LogOut,
+} from 'lucide-react';
  import { Button } from '@/components/ui/button';
  import saasValaLogo from '@/assets/saas-vala-logo.jpg';
  import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -23,14 +23,14 @@
    href: string;
  }
  
- const resellerNavItems: NavItem[] = [
-   { title: 'Dashboard', icon: LayoutDashboard, href: '/reseller-dashboard' },
-   { title: 'Generate Keys', icon: Key, href: '/reseller-dashboard?tab=keys' },
-   { title: 'My Clients', icon: Users, href: '/reseller-dashboard?tab=clients' },
-   { title: 'Add Balance', icon: Wallet, href: '/reseller-dashboard?tab=wallet' },
-   { title: 'Refer & Earn', icon: Share2, href: '/reseller-dashboard?tab=referral' },
-   { title: 'Change Password', icon: Lock, href: '/reseller-dashboard?tab=password' },
- ];
+const resellerNavItems: NavItem[] = [
+  { title: 'Dashboard', icon: LayoutDashboard, href: '/reseller-dashboard' },
+  { title: 'Sales', icon: BarChart3, href: '/reseller-dashboard?tab=sales' },
+  { title: 'Commissions', icon: Percent, href: '/reseller-dashboard?tab=commissions' },
+  { title: 'Users', icon: Users, href: '/reseller-dashboard?tab=users' },
+  { title: 'Wallet', icon: Wallet, href: '/reseller-dashboard?tab=wallet' },
+  { title: 'Withdrawals', icon: ArrowDownToLine, href: '/reseller-dashboard?tab=withdrawals' },
+];
  
  export function ResellerSidebar() {
    const [collapsed, setCollapsed] = useState(false);
