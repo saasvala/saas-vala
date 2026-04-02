@@ -30,10 +30,23 @@ function ChangePasswordForm() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [saving, setSaving] = useState(false);
+  const [invalidatingSessions, setInvalidatingSessions] = useState(false);
 
   const handleChangePassword = async () => {
-    if (newPassword.length < 6) {
-      toast.error('Password must be at least 6 characters');
+    if (newPassword.length < 8) {
+      toast.error('Password must be at least 8 characters');
+      return;
+    }
+    if (!/[A-Z]/.test(newPassword)) {
+      toast.error('Password must include at least one uppercase letter');
+      return;
+    }
+    if (!/[a-z]/.test(newPassword)) {
+      toast.error('Password must include at least one lowercase letter');
+      return;
+    }
+    if (!/[0-9]/.test(newPassword)) {
+      toast.error('Password must include at least one number');
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -41,14 +54,29 @@ function ChangePasswordForm() {
       return;
     }
     setSaving(true);
-    const { error } = await supabase.auth.updateUser({ password: newPassword });
-    setSaving(false);
-    if (error) {
-      toast.error(error.message);
-    } else {
-      toast.success('Password updated successfully');
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword,
+        data: {
+          password_changed_at: new Date().toISOString(),
+        },
+      });
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+      setInvalidatingSessions(true);
+      const { error: signOutError } = await supabase.auth.signOut({ scope: 'global' });
+      if (signOutError) {
+        toast.error(signOutError.message || 'Password changed, but failed to invalidate sessions');
+        return;
+      }
+      toast.success('Password updated. All sessions were terminated. Please log in again.');
       setNewPassword('');
       setConfirmPassword('');
+    } finally {
+      setInvalidatingSessions(false);
+      setSaving(false);
     }
   };
 
@@ -63,8 +91,8 @@ function ChangePasswordForm() {
         <Input id="confirm-new-password" type="password" placeholder="••••••••" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="bg-muted/50 border-border" />
       </div>
       <Button onClick={handleChangePassword} disabled={saving || !newPassword} className="gap-2">
-        {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />}
-        Update Password
+        {saving || invalidatingSessions ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />}
+        {invalidatingSessions ? 'Invalidating Sessions...' : 'Update Password'}
       </Button>
     </div>
   );

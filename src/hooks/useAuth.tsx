@@ -13,7 +13,7 @@ interface AuthContextType {
   /** True while auth + role checks are in progress (used for route guards). */
   loading: boolean;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
-  signUp: (email: string, password: string, fullName: string, requestedRole?: string) => Promise<{ error: Error | null }>;
+  signUp: (email: string, password: string, fullName: string, requestedRole?: string, refCode?: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   isSuperAdmin: boolean;
   isReseller: boolean;
@@ -176,7 +176,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: error as Error | null };
   };
 
-  const signUp = async (email: string, password: string, fullName: string, requestedRole?: string) => {
+  const signUp = async (email: string, password: string, fullName: string, requestedRole?: string, refCode?: string) => {
     const redirectUrl = `${window.location.origin}/`;
     
     const { error } = await supabase.auth.signUp({
@@ -187,6 +187,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         data: {
           full_name: fullName,
           requested_role: requestedRole || 'user',
+          ref_code: refCode ? refCode.trim().toUpperCase() : undefined,
         },
       },
     });

@@ -57,6 +57,7 @@ export default function Auth() {
    const [signupPassword, setSignupPassword] = useState('');
     const [signupConfirmPassword, setSignupConfirmPassword] = useState('');
   const [signupRole, setSignupRole] = useState<'user' | 'reseller'>(applyReseller ? 'reseller' : 'user');
+  const [signupReferralCode, setSignupReferralCode] = useState('');
   const [signupErrors, setSignupErrors] = useState<Record<string, string>>({});
   const [applyBusinessName, setApplyBusinessName] = useState('');
   const [applyContact, setApplyContact] = useState('');
@@ -155,7 +156,14 @@ export default function Auth() {
      }
  
       setIsSubmitting(true);
-      const { error } = await signUp(signupEmail, signupPassword, signupFullName, signupRole === 'reseller' ? 'reseller' : undefined);
+       const normalizedRefCode = signupReferralCode.trim().toUpperCase();
+       const { error } = await signUp(
+         signupEmail,
+         signupPassword,
+         signupFullName,
+         signupRole === 'reseller' ? 'reseller' : undefined,
+         normalizedRefCode || undefined
+       );
      setIsSubmitting(false);
  
      if (error) {
@@ -433,7 +441,7 @@ export default function Auth() {
                     className="space-y-5"
                   >
  
-                   {/* Email */}
+                    {/* Email */}
                    <div className="space-y-2">
                      <Label htmlFor="login-email" className="text-foreground text-sm">Email</Label>
                      <div className="relative">
@@ -556,6 +564,22 @@ export default function Auth() {
                             <div className="text-[9px] text-cyan-400/70">Fill Email</div>
                           </div>
                         </motion.button>
+                      </div>
+                    </div>
+
+                    {/* Referral Code */}
+                    <div className="space-y-2">
+                      <Label htmlFor="signup-ref-code" className="text-foreground text-sm">Referral Code (Optional)</Label>
+                      <div className="relative">
+                        <Input
+                          id="signup-ref-code"
+                          type="text"
+                          placeholder="ENTER CODE"
+                          value={signupReferralCode}
+                          onChange={(e) => setSignupReferralCode(e.target.value.toUpperCase())}
+                          className="h-12 bg-muted/30 border-border/50 focus:border-primary uppercase"
+                          maxLength={32}
+                        />
                       </div>
                     </div>
 
