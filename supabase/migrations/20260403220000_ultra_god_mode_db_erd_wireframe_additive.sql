@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS public.system_erd_relation_registry (
 CREATE TABLE IF NOT EXISTS public.system_wireframe_flow_registry (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   flow_key TEXT NOT NULL,
-  stage_order INTEGER NOT NULL CHECK (stage_order > 0),
+  stage_order INTEGER NOT NULL CHECK (stage_order >= 0),
   stage_name TEXT NOT NULL,
   stage_description TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -324,7 +324,7 @@ VALUES
   ('subscriptions', 'product_id', 'uuid', false, true, true, 'products', 'Subscribed product'),
   ('license_keys', 'key_id', 'uuid', true, true, false, NULL, 'Primary key'),
   ('license_keys', 'product_id', 'uuid', false, true, true, 'products', 'Licensed product'),
-  ('license_keys', 'user_id_reseller_id', 'uuid', false, false, true, 'users', 'Consumer or reseller owner'),
+  ('license_keys', 'owner_id', 'uuid', false, false, true, 'users', 'Consumer or reseller owner'),
   ('resellers', 'reseller_id', 'uuid', true, true, false, NULL, 'Primary key'),
   ('resellers', 'user_id', 'uuid', false, true, true, 'users', 'User mapping'),
   ('reseller_keys', 'id', 'uuid', true, true, false, NULL, 'Primary key'),
