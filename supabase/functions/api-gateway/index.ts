@@ -109,6 +109,9 @@ const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SEC
 const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
 const DEFAULT_GITHUB_ORG = Deno.env.get('GITHUB_DEFAULT_ORG') || 'saasvala'
 const STANDARD_APP_ROLES = ['admin', 'user'] as const
+const WALLET_SYNC_ENDPOINTS = ['wallet/add', 'wallet/withdraw', 'wallet/refund', 'wallet/lock', 'wallet/unlock'] as const
+const LEDGER_DEBIT_ENTRY_TYPES = new Set(['debit', 'lock'])
+const LEDGER_CREDIT_ENTRY_TYPES = new Set(['credit', 'unlock', 'refund'])
 const DB_INDEX_HINT_PATTERNS = (Deno.env.get('DB_INDEX_HINT_PATTERNS') || 'email,status').split(',').map((v) => v.trim()).filter(Boolean)
 const DEFAULT_COMMISSION_RATE = 10
 const NOTIFY_ALLOWED_TRIGGERS = ['payment_success', 'payment_fail', 'apk_ready', 'reseller_sale', 'billing_due'] as const
@@ -1061,8 +1064,8 @@ async function syncLedgerEntrySafe(admin: any, walletId: string, referenceType: 
       .maybeSingle()
     if (existing.data?.entry_id) return
 
-    const debit = ['debit', 'lock'].includes(entryType) ? amount : 0
-    const credit = ['credit', 'unlock', 'refund'].includes(entryType) ? amount : 0
+    const debit = LEDGER_DEBIT_ENTRY_TYPES.has(entryType) ? amount : 0
+    const credit = LEDGER_CREDIT_ENTRY_TYPES.has(entryType) ? amount : 0
     await admin.from('ledger_entries').insert({
       wallet_id: walletId,
       debit,
@@ -1078,7 +1081,6 @@ async function syncLedgerEntrySafe(admin: any, walletId: string, referenceType: 
 }
 
 async function runWalletLedgerSyncSafe(admin: any, userId: string, endpointKey: string, body: any) {
-  const WALLET_SYNC_ENDPOINTS = ['wallet/add', 'wallet/withdraw', 'wallet/refund', 'wallet/lock', 'wallet/unlock']
   if (!WALLET_SYNC_ENDPOINTS.includes(endpointKey)) return
   try {
     const requestedWalletId = body?.wallet_id ? String(body.wallet_id).trim() : null

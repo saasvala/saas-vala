@@ -213,7 +213,7 @@ CREATE TABLE IF NOT EXISTS public.server_actions (
 CREATE TABLE IF NOT EXISTS public.ssl_certs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   domain TEXT NOT NULL UNIQUE,
-  expiry TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ,
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'expired', 'revoked')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
