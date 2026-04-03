@@ -21,18 +21,31 @@ interface ActionButton {
   onClick: () => void;
 }
 
+const ACTIONS = {
+  ADD_MODEL: 'add-model',
+  TEST_AI: 'test-ai',
+  FORCE_SYNC: 'force-sync',
+  VIEW_LOGS: 'view-logs',
+  AUTO_BUG_FIX: 'auto-bug-fix',
+  SECURITY_SCAN: 'security-scan',
+  PERFORMANCE_FIX: 'performance-fix',
+  AUTO_DEPLOY: 'auto-deploy',
+} as const;
+
+type QuickAction = (typeof ACTIONS)[keyof typeof ACTIONS];
+
 export function AiQuickActions() {
   const navigate = useNavigate();
 
-  const actionCosts: Record<string, number> = {
-    'add-model': 0,
-    'test-ai': 0.01,
-    'force-sync': 0.005,
-    'view-logs': 0,
-    'auto-bug-fix': 0.1,
-    'security-scan': 0.05,
-    'performance-fix': 0.08,
-    'auto-deploy': 0.2,
+  const actionCosts: Record<QuickAction, number> = {
+    [ACTIONS.ADD_MODEL]: 0,
+    [ACTIONS.TEST_AI]: 0.01,
+    [ACTIONS.FORCE_SYNC]: 0.005,
+    [ACTIONS.VIEW_LOGS]: 0,
+    [ACTIONS.AUTO_BUG_FIX]: 0.1,
+    [ACTIONS.SECURITY_SCAN]: 0.05,
+    [ACTIONS.PERFORMANCE_FIX]: 0.08,
+    [ACTIONS.AUTO_DEPLOY]: 0.2,
   };
 
   const ensureWalletBalance = async (cost: number) => {
@@ -44,14 +57,15 @@ export function AiQuickActions() {
     }
   };
 
-  const runAction = async (action: string) => {
+  const runAction = async (action: QuickAction) => {
     const cost = actionCosts[action] ?? 0;
     await ensureWalletBalance(cost);
 
     switch (action) {
-      case 'add-model': {
+      case ACTIONS.ADD_MODEL: {
+        const timestampSlug = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
         const payload = {
-          name: `Auto Model ${new Date().toISOString().slice(0, 16)}`,
+          name: `Auto Model ${timestampSlug}`,
           provider: 'custom_api',
           model_id: `custom-auto-${Date.now()}`,
           description: 'Auto-created from SaaS AI control panel',
@@ -61,36 +75,36 @@ export function AiQuickActions() {
         await aiApi.modelsCreate(payload);
         return { title: 'AI model added', desc: 'New model saved in centralized AI hub.' };
       }
-      case 'test-ai': {
+      case ACTIONS.TEST_AI: {
         const list = await aiApi.models();
         const models = Array.isArray(list?.data) ? list.data : [];
         const firstActive = models.find((m: any) => m?.model_id) || { model_id: 'openai/gpt-5-mini' };
         await aiApi.modelsTest({ model: firstActive.model_id });
         return { title: 'AI test successful', desc: `Live test completed for ${firstActive.model_id}.` };
       }
-      case 'force-sync': {
+      case ACTIONS.FORCE_SYNC: {
         const res = await aiApi.forceSync({ source: 'quick_actions' });
         return { title: 'Force sync complete', desc: res?.message || 'Models and routing state synchronized.' };
       }
-      case 'view-logs': {
+      case ACTIONS.VIEW_LOGS: {
         const logsRes = await aiApi.logs({ limit: 20 });
         const count = Array.isArray(logsRes?.data) ? logsRes.data.length : 0;
         navigate('/audit-logs');
         return { title: 'Logs opened', desc: `Loaded ${count} AI log entries and opened logs panel.` };
       }
-      case 'auto-bug-fix': {
+      case ACTIONS.AUTO_BUG_FIX: {
         const res = await aiApi.autoFix({ source: 'quick_actions', include_security: true, include_performance: true });
         return { title: 'Auto bug fix started', desc: res?.message || 'Scan and fix pipeline triggered.' };
       }
-      case 'security-scan': {
+      case ACTIONS.SECURITY_SCAN: {
         const res = await aiApi.securityScan({ source: 'quick_actions' });
         return { title: 'Security scan complete', desc: res?.message || 'Key and usage security checks executed.' };
       }
-      case 'performance-fix': {
+      case ACTIONS.PERFORMANCE_FIX: {
         const res = await aiApi.performanceOptimize({ source: 'quick_actions' });
         return { title: 'Performance optimization complete', desc: res?.message || 'Routing and model performance optimized.' };
       }
-      case 'auto-deploy': {
+      case ACTIONS.AUTO_DEPLOY: {
         const res = await aiApi.deploy({ source: 'quick_actions' });
         return { title: 'Auto deploy started', desc: res?.message || 'Auto deploy pipeline triggered.' };
       }
@@ -99,7 +113,7 @@ export function AiQuickActions() {
     }
   };
 
-  const handleAction = async (action: string) => {
+  const handleAction = async (action: QuickAction) => {
     try {
       const result = await runAction(action);
       toast.success(result.title, { description: result.desc });
@@ -114,25 +128,25 @@ export function AiQuickActions() {
       label: 'Add AI Model',
       icon: Plus,
       variant: 'default',
-      onClick: () => void handleAction('add-model')
+      onClick: () => handleAction(ACTIONS.ADD_MODEL)
     },
     {
       label: 'Test AI (Live)',
       icon: Play,
       variant: 'secondary',
-      onClick: () => void handleAction('test-ai')
+      onClick: () => handleAction(ACTIONS.TEST_AI)
     },
     {
       label: 'Force Sync',
       icon: RefreshCw,
       variant: 'outline',
-      onClick: () => void handleAction('force-sync')
+      onClick: () => handleAction(ACTIONS.FORCE_SYNC)
     },
     {
       label: 'View Logs',
       icon: FileText,
       variant: 'outline',
-      onClick: () => void handleAction('view-logs')
+      onClick: () => handleAction(ACTIONS.VIEW_LOGS)
     }
   ];
 
@@ -141,25 +155,25 @@ export function AiQuickActions() {
       label: 'Auto Bug Fix',
       icon: Bug,
       variant: 'outline',
-      onClick: () => void handleAction('auto-bug-fix')
+      onClick: () => handleAction(ACTIONS.AUTO_BUG_FIX)
     },
     {
       label: 'Security Scan',
       icon: Shield,
       variant: 'outline',
-      onClick: () => void handleAction('security-scan')
+      onClick: () => handleAction(ACTIONS.SECURITY_SCAN)
     },
     {
       label: 'Performance Fix',
       icon: Zap,
       variant: 'outline',
-      onClick: () => void handleAction('performance-fix')
+      onClick: () => handleAction(ACTIONS.PERFORMANCE_FIX)
     },
     {
       label: 'Auto Deploy',
       icon: Rocket,
       variant: 'outline',
-      onClick: () => void handleAction('auto-deploy')
+      onClick: () => handleAction(ACTIONS.AUTO_DEPLOY)
     }
   ];
 

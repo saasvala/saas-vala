@@ -657,7 +657,8 @@ function chooseProviderOrder(args: {
   if (args.highQualityNeeded) primary = 'claude'
   else if (args.cheapRequired) primary = 'gemini'
   else if (args.fastResponse) primary = 'openai'
-  const normalizedRequestedProvider = providerAliases[String(args.requestedProvider || '').toLowerCase()] || String(args.requestedProvider || '').toLowerCase()
+  const requestedProviderNormalizedRaw = String(args.requestedProvider || '').toLowerCase()
+  const normalizedRequestedProvider = providerAliases[requestedProviderNormalizedRaw] || requestedProviderNormalizedRaw
   if (normalizedRequestedProvider && base.includes(normalizedRequestedProvider)) primary = normalizedRequestedProvider
   if (args.requestedModel.toLowerCase().includes('claude')) primary = 'claude'
   if (args.requestedModel.toLowerCase().includes('gemini')) primary = 'gemini'
@@ -3074,8 +3075,9 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
     let query = sb.from('ai_logs').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(100)
     const status = sanitizeTextInput(body?.status || '')
     const model = sanitizeTextInput(body?.model || '')
+    const safeModel = model.replace(/[%_\\]/g, '')
     if (status) query = query.eq('status', status)
-    if (model) query = query.ilike('model', `%${model}%`)
+    if (safeModel) query = query.ilike('model', `%${safeModel}%`)
     const { data, error } = await query
     if (error) return err(error.message)
     return json({ success: true, data })
@@ -3197,10 +3199,10 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
       grouped.set(model, prev)
     }
     const recommendations = Array.from(grouped.entries()).map(([model, stats]) => {
-      const avgCostPerReq = stats.requests > 0 ? stats.cost / stats.requests : 0
-      const avgTokensPerReq = stats.requests > 0 ? stats.tokens / stats.requests : 0
-      const profile = avgTokensPerReq < 800 ? 'cheap-model' : avgTokensPerReq > 2500 ? 'high-capacity-model' : 'balanced-model'
-      return { model, avg_cost_per_request: Number(avgCostPerReq.toFixed(6)), avg_tokens_per_request: Number(avgTokensPerReq.toFixed(1)), profile }
+      const avgCostPerRequest = stats.requests > 0 ? stats.cost / stats.requests : 0
+      const avgTokensPerRequest = stats.requests > 0 ? stats.tokens / stats.requests : 0
+      const profile = avgTokensPerRequest < 800 ? 'cheap-model' : avgTokensPerRequest > 2500 ? 'high-capacity-model' : 'balanced-model'
+      return { model, avg_cost_per_request: Number(avgCostPerRequest.toFixed(6)), avg_tokens_per_request: Number(avgTokensPerRequest.toFixed(1)), profile }
     }).sort((a, b) => a.avg_cost_per_request - b.avg_cost_per_request)
 
     await logActivity(admin, 'ai_system', 'performance', 'performance_optimize', userId, {
