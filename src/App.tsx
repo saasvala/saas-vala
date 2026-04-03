@@ -427,7 +427,7 @@ function AppRoutes() {
         <Route path="/marketplace/product/:id" element={<ProductRouteGuarded />} />
         <Route path="/logout" element={<Logout />} />
         <Route path="/404" element={<NotFound />} />
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="*" element={<Navigate to="/marketplace" replace />} />
       </Routes>
     </Suspense>
   );

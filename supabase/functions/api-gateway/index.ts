@@ -6416,7 +6416,8 @@ Deno.serve(async (req) => {
   try {
     const url = new URL(req.url)
     const fullPath = url.pathname.replace(/^\/api-gateway\/?/, '').replace(/\/$/, '')
-    const parts = fullPath.split('/').filter(Boolean)
+    const normalizedPath = fullPath.replace(/^api\/v1\/?/, '')
+    const parts = normalizedPath.split('/').filter(Boolean)
     const module = parts[0]
     const subParts = parts.slice(1)
 
