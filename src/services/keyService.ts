@@ -6,5 +6,5 @@ export const keyService = {
   list: () => apiClient.get('keys'),
   create: (payload: unknown) => apiClient.post('keys', withValidation(keyCreateSchema, payload)),
   assign: (payload: unknown) => apiClient.post('keys/assign', withValidation(keyAssignSchema, payload)),
-  updateStatus: (payload: unknown) => apiClient.patch ? apiClient.patch('keys/status', withValidation(keyStatusSchema, payload)) : apiClient.put('keys/status', withValidation(keyStatusSchema, payload)),
+  updateStatus: (payload: unknown) => apiClient.put('keys/status', withValidation(keyStatusSchema, payload)),
 };
