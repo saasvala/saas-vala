@@ -533,7 +533,7 @@ export type SessionDevice = {
 export const sessionApi = {
   listDevices: async (): Promise<SessionDevice[]> => {
     const { data, error } = await supabase
-      .from('user_sessions_secure')
+      .from('user_sessions')
       .select('id, device_name, browser, os, device_type, last_active_at, created_at, is_current')
       .order('is_current', { ascending: false })
       .order('last_active_at', { ascending: false });
@@ -545,7 +545,7 @@ export const sessionApi = {
     return (data ?? [])
       .filter((row) => Boolean(row.id))
       .map((row) => {
-        const parts = [row.device_name, row.browser, row.os].filter(Boolean);
+        const parts = [row.device_name, row.device_type, row.browser, row.os].filter(Boolean);
         return {
           id: row.id as string,
           name: parts.length > 0 ? parts.join(' • ') : row.device_type || 'Unknown device',
@@ -555,11 +555,22 @@ export const sessionApi = {
       });
   },
   revokeDevice: async (deviceId: string) => {
+    const { data: deviceRow, error: readError } = await supabase
+      .from('user_sessions')
+      .select('is_current')
+      .eq('id', deviceId)
+      .maybeSingle();
+    if (readError) {
+      throw new ApiError(readError.message, 500, 'DB_ERROR', readError);
+    }
+    if (deviceRow?.is_current) {
+      throw new ApiError('Cannot revoke current device session', 400, 'INVALID_SESSION_ACTION');
+    }
+
     const { error } = await supabase
       .from('user_sessions')
       .delete()
-      .eq('id', deviceId)
-      .eq('is_current', false);
+      .eq('id', deviceId);
     if (error) {
       throw new ApiError(error.message, 500, 'DB_ERROR', error);
     }
