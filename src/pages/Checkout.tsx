@@ -20,7 +20,10 @@ export default function Checkout() {
   const { purchaseApk, processing } = useApkPurchase();
   const { trackPromoConversion } = useMarketplaceActions();
   const [submitting, setSubmitting] = useState(false);
-
+  const [restoring, setRestoring] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<'wallet' | 'upi' | 'card' | 'crypto'>('wallet');
+  const payInFlightRef = useRef(false);
+  const pendingRestoreAttemptedRef = useRef(false);
 
   const selected = useMemo(() => {
     const productId = searchParams.get('product_id');
@@ -31,6 +34,13 @@ export default function Checkout() {
     if (items[0]) return items[0];
     return products[0] || null;
   }, [items, products, searchParams]);
+
+  const hasInvalidProductParam = useMemo(() => {
+    const productId = (searchParams.get('product_id') || '').trim();
+    if (!productId) return false;
+    if (products.length === 0) return false;
+    return !products.some((p) => String(p.id) === String(productId));
+  }, [products, searchParams]);
 
   const onPay = async () => {
     if (payInFlightRef.current) return;
@@ -44,8 +54,21 @@ export default function Checkout() {
     }
     payInFlightRef.current = true;
     setSubmitting(true);
-
+    try {
+      const result = await purchaseApk(selected, { paymentMethod: paymentMethod as any });
+      if (!result.success) {
+        toast.error(result.error || 'Payment failed');
+        return;
       }
+
+      const promoRef = localStorage.getItem('sv_last_promo_ref') || '';
+      if (promoRef) {
+        await trackPromoConversion(promoRef, Number(payable || 0)).catch(() => undefined);
+      }
+      localStorage.removeItem('sv_last_promo_ref');
+      clearCart();
+      navigate(`/success?product=${encodeURIComponent(selected.id)}&order=${encodeURIComponent(result.transactionId || '')}`);
+      toast.success('Payment completed successfully');
     } finally {
       payInFlightRef.current = false;
       setSubmitting(false);
@@ -53,6 +76,8 @@ export default function Checkout() {
   };
 
   const restorePendingPayment = async () => {
+    if (restoring) return;
+    setRestoring(true);
     try {
       const raw = sessionStorage.getItem('sv_pending_payment');
       if (!raw) {
@@ -69,6 +94,8 @@ export default function Checkout() {
       toast.success('Payment restore initiated');
     } catch {
       toast.error('Failed to restore payment');
+    } finally {
+      setRestoring(false);
     }
   };
 
@@ -141,8 +168,8 @@ export default function Checkout() {
             <CreditCard className="h-4 w-4 mr-2" />
             {processing || submitting ? 'Processing...' : `Pay $${payable} via ${paymentMethod.toUpperCase()}`}
           </Button>
-          <Button variant="outline" className="w-full" onClick={restorePendingPayment}>
-            Retry Pending Payment
+          <Button variant="outline" className="w-full" onClick={restorePendingPayment} disabled={restoring}>
+            {restoring ? 'Restoring...' : 'Retry Pending Payment'}
           </Button>
         </section>
       </main>

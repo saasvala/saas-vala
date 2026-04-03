@@ -52,6 +52,39 @@ const API_CACHE_TTL_MS = 30_000;
 const responseCache = new Map<string, { data: unknown; ts: number }>();
 let consecutiveFailures = 0;
 let degradedUntil = 0;
+let escalationRaised = false;
+const API_ESCALATION_THRESHOLD = 5;
+
+async function notifyCriticalApiEscalation(details: { failures: number; path: string; status: number; code?: string }) {
+  try {
+    const { data: userData } = await supabase.auth.getUser();
+    const user = userData?.user;
+    const title = 'Critical API failure spike detected';
+    const message = `Repeated API failures detected (${details.failures}). Endpoint: ${details.path}`;
+    await supabase.from('notifications').insert({
+      user_id: user?.id || null,
+      title,
+      message,
+      type: 'error',
+      action_url: '/system-health',
+    });
+    await supabase.from('activity_logs').insert({
+      entity_type: 'api_health',
+      entity_id: `api-escalation-${Date.now()}`,
+      action: 'critical_error_escalated',
+      performed_by: user?.id || null,
+      details: {
+        failures: details.failures,
+        path: details.path,
+        status: details.status,
+        code: details.code || null,
+        notify_admin: true,
+      },
+    });
+  } catch {
+    // ignore escalation logging failures
+  }
+}
 
 async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promise<Response> {
   let lastError: unknown = null;
@@ -120,12 +153,24 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
       }
     }
     consecutiveFailures += 1;
-    if (consecutiveFailures >= 5) degradedUntil = Date.now() + 30_000;
+    if (consecutiveFailures >= API_ESCALATION_THRESHOLD) {
+      degradedUntil = Date.now() + 30_000;
+      if (!escalationRaised) {
+        escalationRaised = true;
+        void notifyCriticalApiEscalation({
+          failures: consecutiveFailures,
+          path: pathWithoutLeadingSlash,
+          status: res.status,
+          code,
+        });
+      }
+    }
     throw new ApiError(message, res.status, code, data);
   }
 
   consecutiveFailures = 0;
   degradedUntil = 0;
+  escalationRaised = false;
   if (method === 'GET') {
     responseCache.set(cacheKey, { data, ts: Date.now() });
   } else {
