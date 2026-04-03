@@ -103,6 +103,7 @@ const PRODUCT_LIST_CACHE_TTL_MS = 60 * 1000
 const SERVER_STATUS_CACHE_TTL_MS = 30 * 1000
 const DASHBOARD_STATS_CACHE_TTL_MS = 30 * 1000
 const SEO_ANALYTICS_CACHE_TTL_MS = 60 * 1000
+const PRODUCT_LIST_TRANSLATION_LIMIT = 60
 const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SECONDS') || '60')
 const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
 const DEFAULT_GITHUB_ORG = Deno.env.get('GITHUB_DEFAULT_ORG') || 'saasvala'
@@ -2632,7 +2633,7 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
       let localizedTitle = defaultName
       let localizedDescription = defaultDescription
 
-      if (index < 60) {
+      if (index < PRODUCT_LIST_TRANSLATION_LIMIT) {
         try {
           localizedTitle = await translateTextWithCache(admin, defaultName, language, 'en', userId)
           localizedDescription = await translateTextWithCache(admin, defaultDescription, language, 'en', userId)
