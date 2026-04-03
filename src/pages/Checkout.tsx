@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, CreditCard } from 'lucide-react';
@@ -8,19 +8,27 @@ import { useMarketplaceProducts } from '@/hooks/useMarketplaceProducts';
 import { useApkPurchase } from '@/hooks/useApkPurchase';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
+import { useMarketplaceActions } from '@/hooks/useMarketplaceActions';
 
 export default function Checkout() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { user } = useAuth();
   const { items, total, clearCart } = useCart();
   const { products } = useMarketplaceProducts();
   const { purchaseApk, processing } = useApkPurchase();
+  const { trackPromoConversion } = useMarketplaceActions();
   const [submitting, setSubmitting] = useState(false);
 
   const selected = useMemo(() => {
+    const productId = searchParams.get('product_id');
+    if (productId) {
+      const byQuery = products.find((p) => String(p.id) === String(productId));
+      if (byQuery) return byQuery;
+    }
     if (items[0]) return items[0];
     return products[0] || null;
-  }, [items, products]);
+  }, [items, products, searchParams]);
 
   const onPay = async () => {
     if (!user) {
@@ -42,6 +50,12 @@ export default function Checkout() {
     });
     setSubmitting(false);
     if (result.success) {
+      const promoRef = (() => {
+        try { return localStorage.getItem('sv_last_promo_ref') || ''; } catch { return ''; }
+      })();
+      if (promoRef) {
+        void trackPromoConversion(promoRef, selected.price || 0).catch(() => undefined);
+      }
       clearCart();
       const next = new URLSearchParams();
       if (result.transactionId) next.set('tx', result.transactionId);

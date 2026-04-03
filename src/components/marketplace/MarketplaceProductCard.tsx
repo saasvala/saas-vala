@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -13,6 +13,7 @@ import { useCart } from '@/hooks/useCart';
 import type { MarketplaceProduct } from '@/hooks/useMarketplaceProducts';
 import { apkApi } from '@/lib/api';
 import { useNavigate } from 'react-router-dom';
+import { useMarketplaceActions } from '@/hooks/useMarketplaceActions';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -46,7 +47,16 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
   const [downloadChecking, setDownloadChecking] = useState(false);
   const { user } = useAuth();
   const { isInCart, toggleItem } = useCart();
+  const {
+    isFavorited: isFavoritedServer,
+    toggleFavorite: toggleFavoriteServer,
+    addToCart: addToCartServer,
+    addRating,
+    addComment,
+    createPromo,
+  } = useMarketplaceActions();
   const inCart = isInCart(product.id);
+  const favoriteActive = useMemo(() => favorited || isFavoritedServer(product.id), [favorited, isFavoritedServer, product.id]);
 
   const isPipeline = !product.isAvailable || product.status === 'draft' || product.status === 'upcoming';
   const iconColor = catColors[product.category] || '#f97316';
@@ -75,16 +85,56 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
   const isIframeable = (url: string | null) => url ? !url.includes('github.com') : false;
   const hasDemoAvailable = getDemoUrl() !== null;
 
-  const handleFavorite = useCallback(() => {
+  const handleFavorite = useCallback(async () => {
     if (!user) { toast.error('Sign in to add to favorites'); return; }
-    setFavorited(p => !p);
-    toast.success(favorited ? 'Removed from favorites' : `❤️ Added to favorites!`);
-  }, [user, favorited]);
+    try {
+      const active = await toggleFavoriteServer(product.id, product.title);
+      setFavorited(active);
+      toast.success(active ? '❤️ Added to favorites!' : 'Removed from favorites');
+    } catch {
+      toast.error('Favorite update failed');
+    }
+  }, [user, toggleFavoriteServer, product.id, product.title]);
 
-  const handleAddToCart = useCallback(() => {
+  const handleAddToCart = useCallback(async () => {
     toggleItem({ id: product.id, title: product.title, subtitle: product.subtitle || '', image: product.image || '', price, category: product.category });
+    if (!inCart && user) {
+      try { await addToCartServer(product.id, 1); } catch {}
+    }
     toast.success(inCart ? 'Removed from cart' : `🛒 Added to cart!`);
-  }, [product, inCart, toggleItem, price]);
+  }, [product, inCart, toggleItem, price, user, addToCartServer]);
+
+  const handleRate = useCallback(async () => {
+    if (!user) { toast.error('Sign in to rate'); return; }
+    try {
+      await addRating(product.id, 5, product.title);
+      toast.success('⭐ Rating saved');
+    } catch {
+      toast.error('Rating failed');
+    }
+  }, [user, addRating, product.id, product.title]);
+
+  const handleComment = useCallback(async () => {
+    if (!user) { toast.error('Sign in to comment'); return; }
+    try {
+      await addComment(product.id, 'Great product!');
+      toast.success('💬 Comment added');
+    } catch {
+      toast.error('Comment failed');
+    }
+  }, [user, addComment, product.id]);
+
+  const handlePromo = useCallback(async () => {
+    if (!user) { toast.error('Sign in to create promo link'); return; }
+    try {
+      const res: any = await createPromo(product.id);
+      const url = String(res?.data?.url || `/product/${encodeURIComponent(product.id)}`);
+      await navigator.clipboard.writeText(`${window.location.origin}${url}`);
+      toast.success('Promo URL copied');
+    } catch {
+      toast.error('Promo link failed');
+    }
+  }, [user, createPromo, product.id]);
 
   const handleNotifyMe = useCallback(() => {
     if (!user) { toast.error('Sign in to get notified'); return; }
@@ -269,8 +319,8 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
               <Button size="sm" className={cn('flex-1 h-8 text-[10px] font-bold rounded-lg', notified ? 'bg-emerald-600' : 'bg-amber-500 text-black hover:bg-amber-400')} onClick={handleNotifyMe}>
                 <Bell style={{ width: 12, height: 12 }} className="mr-1" />{notified ? 'NOTIFIED' : 'NOTIFY ME'}
               </Button>
-              <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={handleFavorite}>
-                <Heart style={{ width: 14, height: 14 }} className={favorited ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
+              <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => { void handleFavorite(); }}>
+                <Heart style={{ width: 14, height: 14 }} className={favoriteActive ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
               </Button>
             </div>
           ) : (
@@ -279,10 +329,10 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
                 <Button size="sm" variant="outline" className="flex-1 h-8 text-[10px] font-bold rounded-lg border-white/10 text-foreground/70 hover:border-white/20" onClick={(e) => { e.stopPropagation(); handleDemo(); }}>
                   <Play style={{ width: 11, height: 11 }} className="mr-1" />{hasDemoAvailable ? 'DEMO' : 'VIEW'}
                 </Button>
-                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); handleFavorite(); }}>
-                  <Heart style={{ width: 14, height: 14 }} className={favorited ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
+                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); void handleFavorite(); }}>
+                  <Heart style={{ width: 14, height: 14 }} className={favoriteActive ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
                 </Button>
-                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); handleAddToCart(); }}>
+                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); void handleAddToCart(); }}>
                   <ShoppingCart style={{ width: 14, height: 14 }} className={inCart ? 'text-primary' : 'text-muted-foreground'} />
                 </Button>
               </div>
@@ -291,6 +341,17 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
               </Button>
             </>
           )}
+          <div className="flex gap-1.5">
+            <Button size="sm" variant="outline" className="h-7 text-[10px] font-bold rounded-lg border-white/10 text-muted-foreground flex-1" onClick={(e) => { e.stopPropagation(); void handleRate(); }}>
+              <Star style={{ width: 11, height: 11 }} className="mr-1" /> RATE
+            </Button>
+            <Button size="sm" variant="outline" className="h-7 text-[10px] font-bold rounded-lg border-white/10 text-muted-foreground flex-1" onClick={(e) => { e.stopPropagation(); void handleComment(); }}>
+              💬 COMMENT
+            </Button>
+            <Button size="sm" variant="outline" className="h-7 text-[10px] font-bold rounded-lg border-white/10 text-muted-foreground flex-1" onClick={(e) => { e.stopPropagation(); void handlePromo(); }}>
+              🔗 PROMO
+            </Button>
+          </div>
           <div className="flex gap-1.5">
             {apkEnabled && (
               <Button size="sm" variant="outline" className="flex-1 h-7 text-[10px] font-bold rounded-lg text-white border-0" style={{ background: 'linear-gradient(90deg,#7C3AED,#6D28D9)' }} onClick={handleDownloadApk} disabled={downloadChecking || isPipeline}>

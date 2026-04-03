@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -9,6 +9,7 @@ import { useCart } from '@/hooks/useCart';
 import { useAuth } from '@/hooks/useAuth';
 import { apkApi } from '@/lib/api';
 import { toast } from 'sonner';
+import { useMarketplaceActions } from '@/hooks/useMarketplaceActions';
 
 function hasScreenshots(value: unknown): value is { screenshots?: unknown[] } {
   return typeof value === 'object' && value !== null && 'screenshots' in value;
@@ -20,8 +21,16 @@ export default function ProductDetail() {
   const { products, loading } = useMarketplaceProducts();
   const { toggleItem, isInCart } = useCart();
   const { user } = useAuth();
+  const { trackPromoClick } = useMarketplaceActions();
 
   const product = useMemo(() => products.find((item) => item.id === id), [products, id]);
+  const refCode = useMemo(() => new URLSearchParams(window.location.search).get('ref') || '', []);
+
+  useEffect(() => {
+    if (!refCode) return;
+    void trackPromoClick(refCode).catch(() => undefined);
+    try { localStorage.setItem('sv_last_promo_ref', refCode); } catch {}
+  }, [refCode, trackPromoClick]);
 
   if (loading) {
     return (
@@ -62,7 +71,7 @@ export default function ProductDetail() {
       navigate('/auth');
       return;
     }
-    navigate(`/marketplace?buy=${encodeURIComponent(product.id)}`);
+    navigate(`/checkout?product_id=${encodeURIComponent(product.id)}`);
   };
 
   const handleDownload = async () => {

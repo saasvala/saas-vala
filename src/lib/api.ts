@@ -179,6 +179,22 @@ export const marketplaceApi = {
   markPaid: (paymentId: string) => apiCall('POST', 'marketplace/payment/mark-paid', { payment_id: paymentId }),
   retryPayment: (paymentId: string) => apiCall('POST', 'marketplace/payment/retry', { payment_id: paymentId }),
   refundPayment: (paymentId: string) => apiCall('POST', 'marketplace/payment/refund', { payment_id: paymentId }),
+  favoriteToggle: (productId: string, productName?: string) =>
+    apiCall('POST', 'marketplace/favorite/toggle', { product_id: productId, product_name: productName }),
+  favoriteList: () => apiCall('GET', 'marketplace/favorite/list'),
+  cartAdd: (productId: string, qty = 1) => apiCall('POST', 'marketplace/cart/add', { product_id: productId, qty }),
+  cartList: () => apiCall('GET', 'marketplace/cart/list'),
+  ratingAdd: (data: { product_id: string; rating: number; product_title?: string; review?: string }) =>
+    apiCall('POST', 'marketplace/rating/add', data),
+  ratingList: (productId: string) => apiCall('GET', 'marketplace/rating/list', { product_id: productId }),
+  commentAdd: (data: { product_id: string; message: string }) => apiCall('POST', 'marketplace/comment/add', data),
+  commentList: (productId: string) => apiCall('GET', 'marketplace/comment/list', { product_id: productId }),
+  promoCreate: (productId: string) => apiCall('POST', 'marketplace/promo/create', { product_id: productId }),
+  promoList: () => apiCall('GET', 'marketplace/promo/list'),
+  promoTrackClick: (code: string) => apiCall('POST', 'marketplace/promo/track-click', { code }),
+  promoTrackConversion: (code: string, amount: number) =>
+    apiCall('POST', 'marketplace/promo/track-conversion', { code, amount }),
+  promoResolve: (code: string) => apiCall('GET', 'marketplace/promo/resolve', { code }),
 };
 
 export const bannerApi = {
