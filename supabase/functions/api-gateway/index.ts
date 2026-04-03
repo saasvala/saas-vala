@@ -7063,35 +7063,273 @@ async function handleSeoLeads(method: string, pathParts: string[], body: any, us
   return err('Not found', 404)
 }
 
-async function handleSystemHealth(method: string, pathParts: string[], body: any, userId: string, sb: any) {
-  if (!(method === 'POST' && pathParts[0] === 'run-check')) return err('Not found', 404)
+function mapDbHealthStatus(status: 'healthy' | 'warning' | 'error') {
+  if (status === 'healthy') return 'healthy'
+  if (status === 'warning') return 'degraded'
+  return 'down'
+}
 
+function normalizeHealthError(error: unknown) {
+  const maybe = error as { message?: string } | null
+  return sanitizeTextInput(maybe?.message || 'Unknown health check error', 300)
+}
+
+async function runModuleHealthCheck(
+  moduleName: string,
+  check: () => Promise<{ status: 'healthy' | 'warning' | 'error'; message: string; details?: Record<string, unknown> }>
+) {
+  const startedAt = Date.now()
+  try {
+    const result = await check()
+    const responseTime = Math.max(1, Date.now() - startedAt)
+    return {
+      module: moduleName,
+      status: result.status,
+      response_time: responseTime,
+      message: sanitizeTextInput(result.message, 300),
+      details: result.details || {},
+      checked_at: nowIso(),
+    }
+  } catch (error) {
+    const responseTime = Math.max(1, Date.now() - startedAt)
+    return {
+      module: moduleName,
+      status: 'error' as const,
+      response_time: responseTime,
+      message: normalizeHealthError(error),
+      details: {},
+      checked_at: nowIso(),
+    }
+  }
+}
+
+async function safeInsertSystemHealthLogs(admin: any, records: any[]) {
+  if (!records.length) return
+  const { error } = await admin.from('system_health_logs').insert(records)
+  if (error && !isTableMissingError(error)) {
+    console.error('system_health_logs insert failed:', error)
+  }
+}
+
+async function safeInsertSystemHealth(admin: any, records: any[]) {
+  if (!records.length) return
+  const { error } = await admin.from('system_health').insert(records)
+  if (error && !isTableMissingError(error)) {
+    console.error('system_health insert failed:', error)
+  }
+}
+
+async function safeNotifyHealthFailure(admin: any, userId: string, failing: any[]) {
+  for (const failure of failing) {
+    try {
+      await admin.rpc('log_audit_event', {
+        p_event_category: 'SYSTEM',
+        p_event_type: 'system_health_error',
+        p_action: 'update',
+        p_actor_id: userId,
+        p_target_table: 'system_health',
+        p_target_id: String(failure.module),
+        p_metadata: {
+          module: failure.module,
+          status: failure.status,
+          response_time: failure.response_time,
+          message: failure.message,
+          checked_at: failure.checked_at,
+        },
+        p_ingest_source: 'api-gateway',
+        p_is_system: false,
+        p_occurred_at: nowIso(),
+      })
+    } catch (error) {
+      console.error('audit log write failed for system health:', error)
+    }
+  }
+
+  try {
+    await admin.from('async_jobs').insert({
+      job_type: 'admin_notification',
+      status: 'queued',
+      payload: {
+        source: 'system_health',
+        actor_id: userId,
+        failures: failing.map((row) => ({
+          module: row.module,
+          status: row.status,
+          message: row.message,
+          response_time: row.response_time,
+          checked_at: row.checked_at,
+        })),
+      },
+    })
+  } catch {
+    // no-op
+  }
+}
+
+async function collectSystemHealthSnapshot(sb: any, req: Request, userId: string) {
+  const admin = adminClient()
+  const gatewayBase = `${new URL(req.url).origin}/functions/v1/api-gateway/api/v1`
+
+  const checks = await Promise.all([
+    runModuleHealthCheck('database', async () => {
+      const { error } = await sb.from('profiles').select('id').limit(1)
+      if (error) return { status: 'error' as const, message: error.message }
+      return { status: 'healthy' as const, message: 'SELECT 1 equivalent query succeeded' }
+    }),
+    runModuleHealthCheck('auth', async () => {
+      const { data, error } = await admin.auth.getUser(userId)
+      if (error) return { status: 'error' as const, message: error.message }
+      if (!data?.user) return { status: 'warning' as const, message: 'Auth service reachable but user record not returned' }
+      return { status: 'healthy' as const, message: 'Auth user lookup succeeded' }
+    }),
+    runModuleHealthCheck('api', async () => {
+      const response = await fetch(`${gatewayBase}/api/status`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: Deno.env.get('SUPABASE_ANON_KEY') || '',
+        },
+      })
+      if (!response.ok) return { status: 'error' as const, message: `API status ping failed with ${response.status}` }
+      return { status: 'healthy' as const, message: 'API status endpoint returned 200' }
+    }),
+    runModuleHealthCheck('wallet', async () => {
+      const { data: wallet, error: walletErr } = await sb.from('wallets').select('id,balance').limit(1).maybeSingle()
+      if (walletErr) return { status: 'error' as const, message: walletErr.message }
+      if (!wallet?.id) return { status: 'warning' as const, message: 'Wallet table reachable but no wallets available' }
+      const { error: txErr } = await sb.from('transactions').select('id,wallet_id').eq('wallet_id', wallet.id).limit(1)
+      if (txErr) return { status: 'error' as const, message: txErr.message }
+      return {
+        status: 'healthy' as const,
+        message: 'Wallet read/write path is reachable (wallet + transaction read checks passed)',
+        details: { wallet_id: wallet.id, balance: Number(wallet.balance || 0) },
+      }
+    }),
+    runModuleHealthCheck('server', async () => {
+      const { data, error } = await sb.from('servers').select('id,status,ip_address,uptime_percent').limit(100)
+      if (error) return { status: 'error' as const, message: error.message }
+      const rows = data || []
+      if (!rows.length) return { status: 'warning' as const, message: 'No servers configured' }
+      const missingIp = rows.filter((row: any) => !row.ip_address).length
+      const lowUptime = rows.filter((row: any) => Number(row.uptime_percent || 0) > 0 && Number(row.uptime_percent || 0) < 90).length
+      const unhealthy = rows.filter((row: any) => !['running', 'live', 'active'].includes(String(row.status || '').toLowerCase())).length
+      if (unhealthy > 0 || lowUptime > 0) {
+        return {
+          status: 'warning' as const,
+          message: `Server warning: ${unhealthy} non-running, ${lowUptime} low-uptime, ${missingIp} missing IP`,
+          details: { total: rows.length, unhealthy, low_uptime: lowUptime, missing_ip: missingIp },
+        }
+      }
+      return { status: 'healthy' as const, message: `All ${rows.length} servers healthy` }
+    }),
+    runModuleHealthCheck('ai', async () => {
+      const { error: modelErr } = await sb.from('ai_models').select('id').limit(1)
+      if (modelErr && !isTableMissingError(modelErr)) return { status: 'error' as const, message: modelErr.message }
+      const { error: usageErr } = await sb.from('ai_usage').select('id').limit(1)
+      if (usageErr && !isTableMissingError(usageErr)) return { status: 'error' as const, message: usageErr.message }
+      if (modelErr || usageErr) {
+        return { status: 'warning' as const, message: 'AI check partially available (one AI table missing)' }
+      }
+      return { status: 'healthy' as const, message: 'AI model/usage checks succeeded' }
+    }),
+    runModuleHealthCheck('storage', async () => {
+      const { data: buckets, error: listError } = await admin.storage.listBuckets()
+      if (listError) return { status: 'error' as const, message: listError.message }
+      const firstBucket = (buckets || [])[0]
+      if (!firstBucket?.name) return { status: 'warning' as const, message: 'Storage reachable but no buckets exist' }
+      const testPath = `system-health/check-${crypto.randomUUID()}.txt`
+      const payload = new TextEncoder().encode(`health-check:${nowIso()}`)
+      const { error: uploadError } = await admin.storage.from(firstBucket.name).upload(testPath, payload, {
+        contentType: 'text/plain',
+        upsert: true,
+      })
+      if (uploadError) return { status: 'error' as const, message: uploadError.message }
+      const { error: removeError } = await admin.storage.from(firstBucket.name).remove([testPath])
+      if (removeError) {
+        return {
+          status: 'warning' as const,
+          message: `Storage upload ok but cleanup failed: ${removeError.message}`,
+          details: { bucket: firstBucket.name, path: testPath },
+        }
+      }
+      return { status: 'healthy' as const, message: `Storage upload/delete check succeeded (${firstBucket.name})` }
+    }),
+    runModuleHealthCheck('payment', async () => {
+      const { data: gateways, error: gatewayError } = await sb
+        .from('marketplace_payment_gateways')
+        .select('id,is_enabled,gateway_code')
+        .eq('is_enabled', true)
+        .limit(1)
+      if (gatewayError && !isTableMissingError(gatewayError)) return { status: 'error' as const, message: gatewayError.message }
+
+      const { error: webhookError } = await sb.from('payment_attempt_log').select('id,created_at').limit(1)
+      if (webhookError && !isTableMissingError(webhookError)) return { status: 'error' as const, message: webhookError.message }
+
+      if (gatewayError || webhookError) {
+        return { status: 'warning' as const, message: 'Payment check partially available (table missing)' }
+      }
+      if (!(gateways || []).length) {
+        return { status: 'warning' as const, message: 'Payment gateway table reachable but no enabled gateway found' }
+      }
+      return { status: 'healthy' as const, message: 'Payment gateway + webhook log checks succeeded' }
+    }),
+  ])
+
+  const checkedAt = nowIso()
+  const statuses = Object.fromEntries(checks.map((item) => [item.module, item.status]))
+  const responseTimes = Object.fromEntries(checks.map((item) => [item.module, item.response_time]))
+  const details = Object.fromEntries(checks.map((item) => [item.module, {
+    message: item.message,
+    status: item.status,
+    response_time: item.response_time,
+    checked_at: item.checked_at,
+    ...(item.details || {}),
+  }]))
+
+  const healthyCount = checks.filter((row) => row.status === 'healthy').length
+  const healthScore = Math.round((healthyCount / checks.length) * 100)
+
+  await safeInsertSystemHealth(admin, checks.map((row) => ({
+    module_name: row.module,
+    status: mapDbHealthStatus(row.status),
+    response_time: row.response_time,
+    last_checked: row.checked_at,
+  })))
+  await safeInsertSystemHealthLogs(admin, checks.map((row) => ({
+    module: row.module,
+    status: row.status,
+    response_time: row.response_time,
+    checked_at: row.checked_at,
+  })))
+
+  const failingModules = checks.filter((row) => row.status === 'error')
+  if (failingModules.length > 0) {
+    await safeNotifyHealthFailure(admin, userId, failingModules)
+  }
+
+  return {
+    ...statuses,
+    checked_at: checkedAt,
+    last_checked: checkedAt,
+    response_times: responseTimes,
+    details,
+    health_score: healthScore,
+  }
+}
+
+async function handleSystemHealth(method: string, pathParts: string[], body: any, userId: string, sb: any, req: Request) {
   const isAdmin = await isSuperAdminUser(userId)
   if (!isAdmin) return err('Forbidden', 403, 'FORBIDDEN')
 
-  const moduleName = sanitizeTextInput(body?.module, 128) || 'api-gateway'
-  const now = nowIso()
-  const admin = adminClient()
+  const isGetHealth = method === 'GET' && (pathParts[0] === 'health' || pathParts.length === 0)
+  const isRunCheck =
+    method === 'POST' &&
+    (pathParts[0] === 'run-check' || (pathParts[0] === 'health' && pathParts[1] === 'run-check'))
 
-  const { data, error } = await admin
-    .from('system_health')
-    .insert({
-      module: moduleName,
-      status: 'healthy',
-      last_check: now,
-      details: { triggered_by: userId },
-    })
-    .select()
-    .maybeSingle()
+  if (!isGetHealth && !isRunCheck) return err('Not found', 404)
 
-  if (error) {
-    if (isTableMissingError(error)) {
-      return ok({ module: moduleName, status: 'healthy', last_check: now, stored: false })
-    }
-    return err(error.message)
-  }
-
-  return ok(data || { module: moduleName, status: 'healthy', last_check: now })
+  const data = await collectSystemHealthSnapshot(sb, req, userId)
+  return ok(data)
 }
 
 // ===================== 15. SUBSCRIPTIONS =====================
@@ -7435,6 +7673,9 @@ Deno.serve(async (req) => {
     if (module === 'currency') {
       return await handleCurrency(req.method, subParts, body)
     }
+    if (module === 'api' && req.method === 'GET' && subParts[0] === 'status') {
+      return ok({ status: 'ok', timestamp: nowIso() })
+    }
 
     // External payment webhook endpoint without JWT
     if (module === 'marketplace' && req.method === 'POST' && subParts[0] === 'payment' && subParts[1] === 'webhook') {
@@ -7575,6 +7816,12 @@ Deno.serve(async (req) => {
       case 'subscriptions':
       case 'subscription':
         routeResponse = await handleSubscriptions(req.method, subParts, body, userId, sb)
+        break
+      case 'system-health':
+        routeResponse = await handleSystemHealth(req.method, subParts, body, userId, sb, req)
+        break
+      case 'system':
+        routeResponse = await handleSystemHealth(req.method, subParts, body, userId, sb, req)
         break
       case 'leads':
       case 'lead':
