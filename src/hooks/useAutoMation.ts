@@ -8,6 +8,7 @@ const HIGH_AMOUNT_THRESHOLD = 10000;
 const BILLING_ALERT_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
 const OTP_EXPIRY_MS = 15 * 60 * 1000;
 const HOURLY_BILLING_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+const BILLING_DUPLICATE_DETECTION_WINDOW_MS = 10 * 60 * 1000;
 
 interface ClientRequest {
   id: string;
@@ -102,6 +103,37 @@ export function useAutomation() {
   };
 
   const isHighAmount = (amount: number) => amount >= HIGH_AMOUNT_THRESHOLD;
+
+  const isApiSuccess = (response: unknown) => {
+    const payload = response as {
+      success?: boolean;
+      ok?: boolean;
+      status?: string;
+      data?: { success?: boolean };
+    } | null;
+    if (!payload || typeof payload !== 'object') return false;
+    const status = typeof payload.status === 'string' ? payload.status.toLowerCase() : '';
+    return payload.success === true || payload.data?.success === true || payload.ok === true || status === 'success';
+  };
+
+  const responseHasInvoice = (response: any) =>
+    !!(
+      response?.invoice_id ||
+      response?.invoice?.id ||
+      response?.data?.invoice_id ||
+      response?.data?.invoice?.id ||
+      response?.data?.item?.invoice_id
+    );
+
+  const resolveAlertUserId = (alert: any) =>
+    alert?.userId || alert?.user_id || alert?.client_id || alert?.clientId || null;
+
+  const normalizeAlertType = (type: unknown) => {
+    const raw = String(type || '').toLowerCase();
+    if (raw === 'upcoming_due' || raw === 'expired_payment') return raw;
+    if (raw.includes('expired') || raw.includes('overdue')) return 'expired_payment';
+    return 'upcoming_due';
+  };
 
   const [clientRequests, setClientRequests] = useState<ClientRequest[]>([]);
   const [softwareQueue, setSoftwareQueue] = useState<SoftwareQueue[]>([]);
@@ -409,23 +441,31 @@ export function useAutomation() {
         alerts = deriveBillingAlerts((billingData || []) as BillingTracker[]);
       }
 
-      if (alerts.length) {
-        const upcoming = alerts.filter((a) => a?.type === 'upcoming_due').length;
-        const expired = alerts.filter((a) => a?.type === 'expired_payment').length;
+      const normalizedAlerts = alerts
+        .map((a: any) => ({
+          ...a,
+          type: normalizeAlertType(a?.type),
+          userId: resolveAlertUserId(a),
+        }))
+        .filter((a: any) => !!a?.message || !!a?.type);
+
+      if (normalizedAlerts.length) {
+        const upcoming = normalizedAlerts.filter((a) => a?.type === 'upcoming_due').length;
+        const expired = normalizedAlerts.filter((a) => a?.type === 'expired_payment').length;
         if (expired > 0) {
           toast.error(`Billing Alerts: ${expired} expired, ${upcoming} upcoming`);
         } else {
-          toast.warning(`Billing Alerts: ${alerts.length} item(s) need attention`);
+          toast.warning(`Billing Alerts: ${normalizedAlerts.length} item(s) need attention`);
         }
 
-        const userIds = alerts.map((a: any) => a.userId).filter(Boolean) as string[];
+        const userIds = normalizedAlerts.map((a: any) => a.userId).filter(Boolean) as string[];
         await notifyUsers(userIds, 'Billing Alert', 'A billing alert needs your attention.', '/wallet');
       } else {
         toast.success('Billing Checked: no alerts');
       }
 
       await refreshData();
-      return alerts;
+      return normalizedAlerts;
     } catch (error) {
       console.error('handleBillingCheck error:', error);
       toast.error('Server Error');
@@ -447,58 +487,99 @@ export function useAutomation() {
   }) => {
     try {
       const dueDate = item.due_date ? parseToIsoString(item.due_date) : dueDateFromCycle(item.billing_cycle);
+      const recentIso = new Date(Date.now() - BILLING_DUPLICATE_DETECTION_WINDOW_MS).toISOString();
 
-      const { data: createdBilling, error } = await supabase
+      let billingLookup = supabase
         .from('billing_items')
-        .insert({
-          user_id: item.user_id ?? null,
-          service_name: item.service_name,
-          amount: item.amount,
-          billing_cycle: item.billing_cycle || 'monthly',
-          status: 'pending',
-          due_date: dueDate,
-        })
-        .select('id,user_id,service_name,amount,billing_cycle,status,due_date')
-        .single();
+        .select('id,user_id,service_name,amount,billing_cycle,status,due_date,created_at')
+        .eq('service_name', item.service_name)
+        .eq('amount', item.amount)
+        .gte('created_at', recentIso)
+        .order('created_at', { ascending: false })
+        .limit(1);
+      billingLookup = item.user_id ? billingLookup.eq('user_id', item.user_id) : billingLookup.is('user_id', null);
+      const { data: existingBilling } = await billingLookup.maybeSingle();
 
-      if (error) throw error;
+      let createdBilling = existingBilling;
+      if (!createdBilling) {
+        const { data, error } = await supabase
+          .from('billing_items')
+          .insert({
+            user_id: item.user_id ?? null,
+            service_name: item.service_name,
+            amount: item.amount,
+            billing_cycle: item.billing_cycle || 'monthly',
+            status: 'pending',
+            due_date: dueDate,
+          })
+          .select('id,user_id,service_name,amount,billing_cycle,status,due_date,created_at')
+          .single();
+        if (error) throw error;
+        createdBilling = data;
+      }
 
-      const invoiceNumber = generateInvoiceNumber();
-      const { data: createdInvoice, error: invoiceError } = await supabase
+      let invoiceLookup = supabase
         .from('invoices')
-        .insert({
-          invoice_number: invoiceNumber,
-          user_id: item.user_id || '',
-          customer_name: item.service_name,
-          customer_email: getClientEmail(item.user_id),
-          items: [
-            {
-              title: item.service_name,
-              amount: item.amount,
-              type: item.type || (item.billing_cycle === 'one-time' ? 'one-time' : 'subscription'),
-              notes: item.notes || null,
-            },
-          ],
-          subtotal: item.amount,
-          tax_percent: 0,
-          tax_amount: 0,
-          discount_percent: 0,
-          discount_amount: 0,
-          total_amount: item.amount,
-          currency: 'INR',
-          status: 'sent',
-          due_date: dueDate,
-          notes: item.notes || null,
-          terms: 'Auto-generated by billing automation',
-          otp_verified: !isHighAmount(item.amount),
-        })
         .select('id,user_id,total_amount')
-        .single();
+        .eq('customer_name', item.service_name)
+        .eq('total_amount', item.amount)
+        .gte('created_at', recentIso)
+        .order('created_at', { ascending: false })
+        .limit(1);
+      // Invoices use nullable user_id; use `.is(null)` for anonymous/system-created rows.
+      invoiceLookup = item.user_id ? invoiceLookup.eq('user_id', item.user_id) : invoiceLookup.is('user_id', null);
+      const { data: existingInvoice } = await invoiceLookup.maybeSingle();
 
-      if (invoiceError) throw invoiceError;
+      let createdInvoice = existingInvoice;
+      let invoiceNumber = '';
+      if (existingInvoice?.id) {
+        const { data: existingInvoiceNumber } = await supabase
+          .from('invoices')
+          .select('invoice_number')
+          .eq('id', existingInvoice.id)
+          .maybeSingle();
+        if (existingInvoiceNumber?.invoice_number) {
+          invoiceNumber = existingInvoiceNumber.invoice_number;
+        }
+      }
+      if (!createdInvoice) {
+        invoiceNumber = generateInvoiceNumber();
+        const { data, error: invoiceError } = await supabase
+          .from('invoices')
+          .insert({
+            invoice_number: invoiceNumber,
+            user_id: item.user_id || '',
+            customer_name: item.service_name,
+            customer_email: getClientEmail(item.user_id),
+            items: [
+              {
+                title: item.service_name,
+                amount: item.amount,
+                type: item.type || (item.billing_cycle === 'one-time' ? 'one-time' : 'subscription'),
+                notes: item.notes || null,
+              },
+            ],
+            subtotal: item.amount,
+            tax_percent: 0,
+            tax_amount: 0,
+            discount_percent: 0,
+            discount_amount: 0,
+            total_amount: item.amount,
+            currency: 'INR',
+            status: 'sent',
+            due_date: dueDate,
+            notes: item.notes || null,
+            terms: 'Auto-generated by billing automation',
+            otp_verified: !isHighAmount(item.amount),
+          })
+          .select('id,user_id,total_amount')
+          .single();
+        if (invoiceError) throw invoiceError;
+        createdInvoice = data;
+      }
 
       const shouldRequireOtp = isHighAmount(item.amount);
-      if (shouldRequireOtp) {
+      if (shouldRequireOtp && createdInvoice?.id) {
         const otpRaw = String(getSecureRandomInt(100000, 999999));
         const otpHash = await hashOtp(otpRaw);
         const expiresAt = new Date(Date.now() + OTP_EXPIRY_MS).toISOString();
@@ -525,8 +606,8 @@ export function useAutomation() {
       }
 
       await billingApi.send({
-        billing_id: createdBilling.id,
-        invoice_id: createdInvoice.id,
+        billing_id: createdBilling?.id,
+        invoice_id: createdInvoice?.id,
         client_id: item.user_id || '',
       }).catch((sendError) => {
         console.warn('billing send api failed', sendError);
@@ -536,7 +617,7 @@ export function useAutomation() {
         await notifyUsers(
           [item.user_id],
           'New Invoice Generated',
-          `Invoice ${invoiceNumber} is ready for payment.`,
+          invoiceNumber ? `Invoice ${invoiceNumber} is ready for payment.` : 'Your invoice is ready for payment.',
           '/wallet'
         );
       }
@@ -572,19 +653,22 @@ export function useAutomation() {
       };
 
       let apiSucceeded = false;
+      let apiCreatedInvoice = false;
       try {
         const response = await billingApi.create(apiPayload);
-        apiSucceeded = !!response?.success;
+        apiSucceeded = isApiSuccess(response);
+        apiCreatedInvoice = responseHasInvoice(response);
       } catch (primaryApiError) {
         console.warn('billing create api unavailable, falling back', primaryApiError);
       }
 
       if (!apiSucceeded) {
         const fallback = await autoPilotApi.addBilling(item).catch(() => null);
-        apiSucceeded = !!fallback?.success;
+        apiSucceeded = isApiSuccess(fallback);
+        apiCreatedInvoice = responseHasInvoice(fallback);
       }
 
-      if (apiSucceeded) {
+      if (apiSucceeded && apiCreatedInvoice) {
         toast.success('Billing Added');
         await refreshData();
         return true;
