@@ -197,7 +197,7 @@ function generateLicenseKey() {
 function maskLicenseKey(value: string) {
   const raw = String(value || '')
   if (!raw) return ''
-  return raw.replace(/[A-Z0-9]/g, '•')
+  return raw.replace(/[^\s]/g, '•')
 }
 
 async function generateHashedLicenseKey(userId: string) {
@@ -2440,11 +2440,11 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
 
   // GET /keys and GET /keys/search
   if (method === 'GET' && (!action || action === 'search')) {
-    const search = sanitizeTextInput(body?.search || body?.q || '', 200)
-    const status = sanitizeTextInput(body?.status || '', 40)
-    const keyType = sanitizeTextInput(body?.type || body?.key_type || '', 40)
-    const owner = sanitizeTextInput(body?.user || body?.owner || body?.owner_email || '', 120)
-    const resellerId = sanitizeTextInput(body?.reseller || body?.reseller_id || '', 80)
+    const search = sanitizeSearchTerm(sanitizeTextInput(body?.search || body?.q || '', 200))
+    const status = sanitizeSearchTerm(sanitizeTextInput(body?.status || '', 40))
+    const keyType = sanitizeSearchTerm(sanitizeTextInput(body?.type || body?.key_type || '', 40))
+    const owner = sanitizeSearchTerm(sanitizeTextInput(body?.user || body?.owner || body?.owner_email || '', 120))
+    const resellerId = sanitizeSearchTerm(sanitizeTextInput(body?.reseller || body?.reseller_id || '', 80))
 
     let query = applyKeyScope(
       admin.from('license_keys').select('*').order('created_at', { ascending: false }),
@@ -2456,7 +2456,7 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
     if (isAdmin && resellerId) query = query.eq('reseller_id', resellerId)
     if (search) {
       query = query.or(
-        `license_key.ilike.%${search}%,owner_name.ilike.%${search}%,owner_email.ilike.%${search}%,notes.ilike.%${search}%`,
+        `owner_name.ilike.%${search}%,owner_email.ilike.%${search}%,notes.ilike.%${search}%`,
       )
     }
 
@@ -2531,14 +2531,15 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
       if (usageLimit > 0 && rpcData?.idempotency_key) {
         const { data: createdRows } = await admin
           .from('license_keys')
-          .select('id, meta')
+          .select('id')
           .eq('created_by', userId)
           .eq('idempotency_key', rpcData.idempotency_key)
-        for (const row of (createdRows || [])) {
-          const meta = row?.meta && typeof row.meta === 'object' ? row.meta : {}
-          await admin.from('license_keys').update({
-            meta: { ...meta, usage_limit: usageLimit, used_count: Number(meta?.used_count || 0) },
-          }).eq('id', row.id)
+        const ids = (createdRows || []).map((row: any) => row.id).filter(Boolean)
+        if (ids.length > 0) {
+          await admin
+            .from('license_keys')
+            .update({ meta: { usage_limit: usageLimit, used_count: 0 } })
+            .in('id', ids)
         }
       }
 
@@ -2589,8 +2590,6 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
       idempotency_key: body.idempotency_key || null,
       meta: {
         ...keyMeta,
-        key_id: null,
-        key_value: null,
         type: body.key_type || 'yearly',
         user_id: userId,
         usage_limit: usageLimit,
@@ -2598,9 +2597,6 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
       },
     }).select().single()
     if (error) return err(error.message)
-    await admin.from('license_keys').update({
-      meta: { ...(data?.meta || {}), key_id: data.id, key_value: maskLicenseKey(licenseKey) },
-    }).eq('id', data.id)
     await logActivity(admin, 'license_key', data.id, 'generated', userId, { key: maskLicenseKey(licenseKey) })
     return json({
       data: {
