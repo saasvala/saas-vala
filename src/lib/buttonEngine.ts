@@ -27,6 +27,7 @@ let soundPlaying = false;
 
 const DEFAULT_DEBOUNCE_MS = 150;
 const DEFAULT_THROTTLE_MS = 150;
+const MAX_RETRY_BACKOFF_MS = 4000;
 
 function isLikelyNetworkError(error: unknown): boolean {
   const message = String((error as { message?: Primitive })?.message || '').toLowerCase();
@@ -100,7 +101,9 @@ export async function executeButtonAction<T>({
   lastTriggeredAt.set(actionKey, now);
   inFlightActions.add(lockKey);
   onLoadingChange?.(true);
-  console.log('BTN_CLICK', { button: actionKey, route: config.route ?? null, api: config.api ?? null, traceId });
+  if (typeof import.meta !== 'undefined' && (import.meta as { env?: { DEV?: boolean } }).env?.DEV) {
+    console.log('BTN_CLICK', { button: actionKey, route: config.route ?? null, api: config.api ?? null, traceId });
+  }
 
   let attempt = 0;
   try {
@@ -121,7 +124,7 @@ export async function executeButtonAction<T>({
           }));
           throw error;
         }
-        const delay = retryBackoffMs * (2 ** attempt);
+        const delay = Math.min(MAX_RETRY_BACKOFF_MS, retryBackoffMs * (2 ** attempt));
         await new Promise((resolve) => setTimeout(resolve, delay));
         attempt += 1;
       }
@@ -135,16 +138,18 @@ export async function executeButtonAction<T>({
 
 export function createPressHandlers(handlerId: string, onPress: () => void) {
   return {
-    onTouchStart: () => {
+    onTouchStart: (event?: { stopPropagation?: () => void }) => {
       const now = Date.now();
       lastTouchByAction.set(handlerId, now);
       onPress();
+      event?.stopPropagation?.();
     },
-    onClick: () => {
+    onClick: (event?: { stopPropagation?: () => void }) => {
       const now = Date.now();
       const lastTouch = lastTouchByAction.get(handlerId) ?? 0;
       if (now - lastTouch < 500) return;
       onPress();
+      event?.stopPropagation?.();
     },
   };
 }

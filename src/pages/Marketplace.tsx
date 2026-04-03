@@ -42,6 +42,7 @@ interface Product {
   status: 'upcoming' | 'live' | 'bestseller' | 'draft'; price: number;
 }
 interface SearchResultRow { id: string }
+interface ProductSearchResponse { data?: SearchResultRow[] }
 
 const bankDetails = {
   accountName: 'SOFTWARE VALA', bankName: 'INDIAN BANK',
@@ -206,7 +207,7 @@ export default function Marketplace() {
             toast.error(fraud.message);
             return;
           }
-          navigate(`${resolveSafeRoute('/checkout', '/')}` + `?product_id=${encodeURIComponent(product.id)}`);
+          navigate(`${resolveSafeRoute('/checkout', '/')}?product_id=${encodeURIComponent(product.id)}`);
         },
         validateResponse: false,
       });
@@ -308,7 +309,7 @@ export default function Marketplace() {
       }
       try {
         setSearchLoading(true);
-        const res = await executeButtonAction<any>({
+        const res = await executeButtonAction<ProductSearchResponse>({
           config: { action: 'SEARCH_SUBMIT', route: '/search', api: '/product/search', debounceMs: 150, throttleMs: 200, idempotent: false, retries: 1, retryBackoffMs: 1000 },
           run: async () => marketplaceApi.productSearch(searchQuery.trim(), filters),
         });
@@ -317,7 +318,7 @@ export default function Marketplace() {
           toast.error('Search failed');
           return;
         }
-        setSearchResults(Array.isArray((res as any)?.data) ? (res as any).data : []);
+        setSearchResults(Array.isArray(res?.data) ? res.data : []);
       } catch (_e) {
         setSearchResults([]);
       } finally {

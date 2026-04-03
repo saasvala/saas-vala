@@ -102,8 +102,7 @@ export function MarketplaceHeader() {
             />
             {searchQuery && (
               <button
-                onClick={() => { setSearchQuery(''); window.dispatchEvent(new CustomEvent('marketplace-search', { detail: '' })); }}
-                onTouchStart={() => { setSearchQuery(''); window.dispatchEvent(new CustomEvent('marketplace-search', { detail: '' })); }}
+                {...createPressHandlers('header-clear-search', () => { setSearchQuery(''); window.dispatchEvent(new CustomEvent('marketplace-search', { detail: '' })); })}
                 className={getButtonInteractionClassName("absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground")}
               >
                 <X className="h-3.5 w-3.5" />
