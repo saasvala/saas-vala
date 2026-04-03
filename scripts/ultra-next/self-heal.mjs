@@ -4,6 +4,17 @@ import { getEnv, logReport } from './common.mjs';
 const supabaseUrl = getEnv('VITE_SUPABASE_URL');
 const serviceRoleKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
 const apiBase = getEnv('API_TEST_BASE_URL', supabaseUrl ? `${supabaseUrl}/functions/v1/api-gateway` : '');
+const retryBudget = Number(getEnv('SELF_HEAL_RETRY_BUDGET', '3')) || 3;
+
+// Deterministic health trigger mapping:
+// - action: primary automated remediation
+// - script: script expected to execute the action
+// - fallback: queue/manual path when remediation fails
+const HEALTH_TRIGGER_FIX_MAP = {
+  api_probe_failure: { action: 'retry_api', script: 'self-heal.mjs', fallback: 'queue_manual_review' },
+  queue_lag_high: { action: 'queue_drain_check', script: 'self-heal.mjs', fallback: 'queue_manual_review' },
+  payment_success_latency_high: { action: 'payment_path_probe', script: 'self-heal.mjs', fallback: 'queue_manual_review' },
+};
 
 function db() {
   if (!supabaseUrl || !serviceRoleKey) return null;
@@ -41,8 +52,12 @@ async function run() {
     .limit(20);
 
   const recoveries = [];
+  const circuit = { open: false, reason: null, failures: 0 };
 
   for (const entry of unresolved || []) {
+    if (circuit.open) break;
+    const triggerType = String(entry.error_type || 'api_probe_failure');
+    const mapped = HEALTH_TRIGGER_FIX_MAP[triggerType] || HEALTH_TRIGGER_FIX_MAP.api_probe_failure;
     const endpoint = entry.error_type === 'api_probe_failure' && entry.context && typeof entry.context === 'object'
       ? String(entry.context.endpoint || 'products')
       : 'products';
@@ -58,6 +73,11 @@ async function run() {
       recoveries.push({ id: entry.id, action: 'retry_api', endpoint, retry, resolved: true });
       continue;
     }
+    circuit.failures += 1;
+    if (circuit.failures >= retryBudget) {
+      circuit.open = true;
+      circuit.reason = 'retry_budget_exhausted';
+    }
 
     await client.from('system_monitor_queue').insert({
       monitor_type: 'self_heal_fallback',
@@ -67,21 +87,42 @@ async function run() {
       risk_level: 'high',
       status: 'pending',
       source_module: 'self-heal',
-      action_payload: { endpoint, retry },
+      action_payload: {
+        endpoint,
+        retry,
+        trigger_type: triggerType,
+        fix_mapping: mapped,
+        retry_budget,
+        circuit_breaker: circuit,
+      },
       ai_confidence: 80,
     });
 
-    recoveries.push({ id: entry.id, action: 'fallback_route', endpoint, retry, resolved: false });
+    recoveries.push({
+      id: entry.id,
+      action: mapped.fallback,
+      endpoint,
+      retry,
+      resolved: false,
+      trigger_type: triggerType,
+      fix_mapping: mapped,
+      circuit_breaker: circuit,
+    });
   }
 
   await client.from('activity_logs').insert({
     entity_type: 'self_heal',
     entity_id: `self-heal-${Date.now()}`,
     action: 'self_heal_run',
-    details: { recoveries },
+    details: { recoveries, health_trigger_fix_map: HEALTH_TRIGGER_FIX_MAP, retry_budget: retryBudget, circuit_breaker: circuit },
   });
 
-  logReport('self_heal', { processed: (unresolved || []).length, recoveries });
+  logReport('self_heal', {
+    processed: (unresolved || []).length,
+    recoveries,
+    retry_budget: retryBudget,
+    circuit_breaker: circuit,
+  });
 
   const unresolvedCount = recoveries.filter((item) => !item.resolved).length;
   if (unresolvedCount > 0) process.exitCode = 1;

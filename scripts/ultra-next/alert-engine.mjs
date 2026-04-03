@@ -33,6 +33,11 @@ async function evaluateOnce() {
     fetchMetric(client, 'error_rate'),
     fetchMetric(client, 'latency_ms_avg'),
   ]);
+  const [queueLagRow, paymentSuccessLatencyRow, reconciliationDriftRow] = await Promise.all([
+    fetchMetric(client, 'queue_lag'),
+    fetchMetric(client, 'payment_success_latency_ms'),
+    fetchMetric(client, 'reconciliation_drift'),
+  ]);
 
   const unresolvedApiFailures = await client
     .from('error_logs')
@@ -46,6 +51,9 @@ async function evaluateOnce() {
   const now = nowIso();
   const latestErrorRate = Number(errorRateRow?.metric_value || 0);
   const latestLatency = Number(latencyRow?.metric_value || 0);
+  const latestQueueLag = Number(queueLagRow?.metric_value || 0);
+  const latestPaymentSuccessLatency = Number(paymentSuccessLatencyRow?.metric_value || 0);
+  const latestReconciliationDrift = Number(reconciliationDriftRow?.metric_value || 0);
 
   if (latestErrorRate > threshold) {
     rows.push({
@@ -84,6 +92,42 @@ async function evaluateOnce() {
     });
   }
 
+  if (latestQueueLag > toNumber(getEnv('ALERT_QUEUE_LAG_THRESHOLD', '50'), 50)) {
+    rows.push({
+      alert_type: 'queue_lag_high',
+      severity: latestQueueLag > 100 ? 'critical' : 'high',
+      status: 'open',
+      message: `Queue lag ${latestQueueLag} exceeds threshold`,
+      context: { latestQueueLag },
+      first_seen_at: now,
+      last_seen_at: now,
+    });
+  }
+
+  if (latestPaymentSuccessLatency > toNumber(getEnv('ALERT_PAYMENT_SUCCESS_LATENCY_MS', '2000'), 2000)) {
+    rows.push({
+      alert_type: 'payment_success_latency_high',
+      severity: latestPaymentSuccessLatency > 5000 ? 'critical' : 'high',
+      status: 'open',
+      message: `Payment success latency ${latestPaymentSuccessLatency}ms exceeds threshold`,
+      context: { latestPaymentSuccessLatency },
+      first_seen_at: now,
+      last_seen_at: now,
+    });
+  }
+
+  if (latestReconciliationDrift > toNumber(getEnv('ALERT_RECONCILIATION_DRIFT_THRESHOLD', '0'), 0)) {
+    rows.push({
+      alert_type: 'reconciliation_drift_detected',
+      severity: latestReconciliationDrift > 10 ? 'critical' : 'high',
+      status: 'open',
+      message: `Reconciliation drift detected: ${latestReconciliationDrift}`,
+      context: { latestReconciliationDrift },
+      first_seen_at: now,
+      last_seen_at: now,
+    });
+  }
+
   if (rows.length > 0) {
     await client.from('system_alerts').insert(rows);
 
@@ -102,7 +146,15 @@ async function evaluateOnce() {
     );
   }
 
-  logReport('alert_engine', { generated_alerts: rows.length, errorRate: latestErrorRate, latestLatency, failedApiCount });
+  logReport('alert_engine', {
+    generated_alerts: rows.length,
+    errorRate: latestErrorRate,
+    latestLatency,
+    failedApiCount,
+    latestQueueLag,
+    latestPaymentSuccessLatency,
+    latestReconciliationDrift,
+  });
 
   return { ok: rows.length === 0, generated: rows.length };
 }
