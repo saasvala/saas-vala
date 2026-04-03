@@ -31,6 +31,7 @@ import {
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { useWallet } from '@/hooks/useWallet';
+import { autoApi, adsApi, audienceApi, videoApi, socialApi, seoApi, aiApi } from '@/lib/api';
 
 interface AiService {
   id: string;
@@ -186,6 +187,32 @@ export function AiServicesMarketplace() {
   const [payAllMode, setPayAllMode] = useState(false);
   const { wallet, deductBalance } = useWallet();
 
+  const triggerServiceExecution = async (service: AiService) => {
+    switch (service.id) {
+      case 'vala-ai':
+        return aiApi.gateway({
+          auto_pilot: true,
+          module: 'vala-ai',
+          input: 'Run unified gateway validation request',
+          messages: [{ role: 'user', content: 'Run unified gateway validation request' }],
+        });
+      case 'auto-seo':
+        return seoApi.analytics();
+      case 'auto-google-ads':
+        return adsApi.optimize({ goal: 'conversions', audience: 'business owners', budget: 'auto' });
+      case 'auto-video':
+        return videoApi.create({ product: 'AI service product', tone: 'professional' });
+      case 'auto-country-targeting':
+        return audienceApi.discover({ business: 'SaaS', market: 'india-africa' });
+      case 'auto-posting':
+        return socialApi.publish({ platforms: ['linkedin', 'x', 'facebook'], intent: 'auto-post' });
+      case 'auto-audience':
+        return audienceApi.discover({ business: 'SaaS', market: 'global' });
+      default:
+        return autoApi.run({ action: 'handle_client_request', data: { requestType: service.id, requestDetails: service.name } });
+    }
+  };
+
   const calculatePrice = (service: AiService) => {
     if (selectedPlan === '6months') {
       const discounted = service.price * (1 - service.discount6Month / 100);
@@ -249,6 +276,7 @@ export function AiServicesMarketplace() {
           'ai-services-bundle',
           'ai_service'
         );
+        await Promise.all(activeServices.map((service) => triggerServiceExecution(service)));
 
         toast.success(`✅ Paid $${totalAmount.toFixed(2)} for ${activeServices.length} AI services!`, {
           description: 'All services renewed from wallet.'
@@ -273,6 +301,7 @@ export function AiServicesMarketplace() {
           payingService.id,
           'ai_service'
         );
+        await triggerServiceExecution(payingService);
 
         // Activate the service
         setServiceList(prev => prev.map(s =>
@@ -293,11 +322,27 @@ export function AiServicesMarketplace() {
     }
   };
 
-  const handleToggleAuto = (serviceId: string) => {
-    setServiceList(prev => prev.map(s => 
-      s.id === serviceId ? { ...s, autoEnabled: !s.autoEnabled } : s
-    ));
-    toast.success('Auto-mode updated');
+  const handleToggleAuto = async (serviceId: string) => {
+    const service = serviceList.find((s) => s.id === serviceId);
+    if (!service) return;
+    const nextEnabled = !service.autoEnabled;
+    try {
+      await autoApi.run({
+        action: 'handle_client_request',
+        data: {
+          requestId: serviceId,
+          requestType: 'service_toggle',
+          requestDetails: `${serviceId}:${nextEnabled ? 'enable_auto' : 'disable_auto'}`,
+          clientName: 'ai-services-marketplace',
+        },
+      });
+      setServiceList(prev => prev.map(s =>
+        s.id === serviceId ? { ...s, autoEnabled: nextEnabled } : s
+      ));
+      toast.success('Auto-mode updated');
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to update auto-mode');
+    }
   };
 
   const totalMonthly = serviceList

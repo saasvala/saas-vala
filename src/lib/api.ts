@@ -211,9 +211,15 @@ export const githubApi = {
 // ===================== AI =====================
 export const aiApi = {
   run: (data: any) => apiCall('POST', 'ai/run', data),
+  gateway: (data: any) => apiCall('POST', 'ai/gateway', data),
   debug: (data: any) => apiCall('POST', 'ai/debug', data),
   voice: (data: any) => apiCall('POST', 'ai/voice', data),
   models: () => apiCall('GET', 'ai/models'),
+  modelsList: () => apiCall('GET', 'models/list'),
+  modelsUpdate: (data: any) => apiCall('POST', 'models/update', data),
+  modelsCreate: (data: any) => apiCall('POST', 'models/create', data),
+  modelsDelete: (data: any) => apiCall('POST', 'models/delete', data),
+  modelsTest: (data: any) => apiCall('POST', 'models/test', data),
   usage: () => apiCall('GET', 'ai/usage'),
 };
 
@@ -228,6 +234,9 @@ export const apiKeysApi = {
   create: (data: any) => apiCall('POST', 'api-keys/create', data),
   list: () => apiCall('GET', 'api-keys'),
   usage: () => apiCall('GET', 'api-usage'),
+  createManaged: (data: any) => apiCall('POST', 'keys/create', data),
+  revokeManaged: (data: any) => apiCall('POST', 'keys/revoke', data),
+  managedUsage: (params?: { key_id?: string }) => apiCall('GET', 'keys/usage', params),
 };
 
 // ===================== AUTO-PILOT =====================
@@ -301,4 +310,24 @@ export const leadsApi = {
 
 export const seoApi = {
   analytics: () => apiCall('GET', 'seo/analytics'),
+};
+
+export const adsApi = {
+  optimize: (data: any) => apiCall('POST', 'ads/optimize', data),
+  usage: () => apiCall('GET', 'ads/usage'),
+};
+
+export const audienceApi = {
+  discover: (data: any) => apiCall('POST', 'audience/discover', data),
+  usage: () => apiCall('GET', 'audience/usage'),
+};
+
+export const videoApi = {
+  create: (data: any) => apiCall('POST', 'video/create', data),
+  usage: () => apiCall('GET', 'video/usage'),
+};
+
+export const socialApi = {
+  publish: (data: any) => apiCall('POST', 'social/publish', data),
+  usage: () => apiCall('GET', 'social/usage'),
 };
