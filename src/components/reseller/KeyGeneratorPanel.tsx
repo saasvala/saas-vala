@@ -118,7 +118,7 @@ export function KeyGeneratorPanel() {
       const idempotencyKey = pendingIdempotencyKey || crypto.randomUUID();
       if (!pendingIdempotencyKey) setPendingIdempotencyKey(idempotencyKey);
 
-      const result = await keysApi.generate({
+      const result = await keysApi.generateReseller({
         product_id: productData.id,
         client_name: clientName.trim(),
         client_email: clientEmail.trim(),
