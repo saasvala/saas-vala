@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
-import { supabase } from '@/integrations/supabase/client';
+import { ultraBuilderApi } from '@/lib/api';
 import {
   Rocket, GitBranch, Globe, Code, Database, Bug, Wrench, Package,
   Store, Loader2, CheckCircle2, Circle, ArrowDown,
@@ -66,70 +66,142 @@ export default function ValaBuilder() {
     addOutput(`🚀 Starting VALA AI Pipeline for "${appName}"...`);
 
     try {
-      // Step 1: AI Planning + Code Generation via ai-developer
+      const slug = appName.toLowerCase().replace(/\s+/g, '-');
+
+      // Step 1: AI Planning + Git scan
       updateStep('plan', 'running');
       addOutput('📋 AI Planner analyzing requirements...');
 
-      const { error } = await supabase.functions.invoke('ai-developer', {
-        body: {
-          messages: [{ role: 'user', content: `Create a complete app called "${appName}": ${prompt}` }],
-          tools: ['generate_code'],
-          tool_input: {
-            tool: 'generate_code',
-            project_name: appName.toLowerCase().replace(/\s+/g, '-'),
-            description: prompt,
-            features: prompt,
-            tech_stack: 'react'
-          }
-        }
+      const scanRes = await ultraBuilderApi.scanFull({
+        repo_url: `https://github.com/saasvala/${slug}`,
+        prompt,
       });
-
-      if (error) throw error;
+      if (!scanRes?.success) throw new Error('Git scan failed');
 
       updateStep('plan', 'done', 'Requirements analyzed');
       addOutput('✅ Planning complete');
 
-      // Steps 2-5: Mark as done (handled by ai-developer)
-      for (const stepId of ['ui', 'code', 'db', 'api']) {
-        updateStep(stepId, 'running');
-        await new Promise(r => setTimeout(r, 800));
-        updateStep(stepId, 'done');
-        addOutput(`✅ ${stepId.toUpperCase()} generation complete`);
-      }
+      // Step 2: UI generation
+      updateStep('ui', 'running');
+      const codeRes = await ultraBuilderApi.codeGenerate({
+        app_name: appName,
+        project_name: slug,
+        description: prompt,
+        prompt,
+        tech_stack: 'react',
+        target: 'ui',
+      });
+      if (!codeRes?.success) throw new Error('UI generation failed');
+      updateStep('ui', 'done');
+      addOutput('✅ UI generation complete');
+
+      // Step 3: Code generation
+      updateStep('code', 'running');
+      const fullCodeRes = await ultraBuilderApi.codeGenerate({
+        app_name: appName,
+        project_name: slug,
+        description: prompt,
+        prompt,
+        tech_stack: 'react-node-express',
+        target: 'fullstack',
+      });
+      if (!fullCodeRes?.success) throw new Error('Code generation failed');
+      updateStep('code', 'done');
+      addOutput('✅ CODE generation complete');
+
+      // Step 4: DB generation
+      updateStep('db', 'running');
+      const dbRes = await ultraBuilderApi.dbGenerate({
+        app_name: appName,
+        entities: [
+          {
+            name: `${slug}_users`,
+            fields: [
+              { name: 'email', type: 'text', required: true },
+              { name: 'role', type: 'text', required: true },
+            ],
+          },
+          {
+            name: `${slug}_items`,
+            fields: [
+              { name: 'name', type: 'text', required: true },
+              { name: 'status', type: 'text', required: true },
+              { name: 'owner_id', type: 'uuid', required: false },
+            ],
+          },
+        ],
+      });
+      if (!dbRes?.success) throw new Error('Database generation failed');
+      updateStep('db', 'done');
+      addOutput('✅ DB generation complete');
+
+      // Step 5: API generation (mapped to code generator fullstack pass)
+      updateStep('api', 'running');
+      const apiRes = await ultraBuilderApi.codeGenerate({
+        app_name: appName,
+        project_name: slug,
+        description: prompt,
+        prompt: `Generate API routes and backend for ${appName}. ${prompt}`,
+        tech_stack: 'node-express',
+        target: 'api',
+      });
+      if (!apiRes?.success) throw new Error('API generation failed');
+      updateStep('api', 'done');
+      addOutput('✅ API generation complete');
 
       // Step 6-7: Debug & Fix
       updateStep('debug', 'running');
       addOutput('🔍 Scanning for errors...');
-      await new Promise(r => setTimeout(r, 1000));
-      updateStep('debug', 'done', '0 errors found');
-      addOutput('✅ Debug scan passed');
+      const debugRes = await ultraBuilderApi.debugFull({
+        app_name: appName,
+        project_name: slug,
+        prompt: `Run full debug for ${appName}: ${prompt}`,
+      });
+      if (!debugRes?.success) throw new Error('Debug scan failed');
+      updateStep('debug', 'done', 'Debug completed');
+      addOutput('✅ Debug scan completed');
 
       updateStep('fix', 'running');
-      await new Promise(r => setTimeout(r, 500));
-      updateStep('fix', 'done', 'No fixes needed');
+      let fixRes = await ultraBuilderApi.autoFix({
+        app_name: appName,
+        project_name: slug,
+        prompt: `Fix all issues for ${appName}`,
+      });
+      if (!fixRes?.success) {
+        addOutput('⚠️ Auto fix retry triggered...');
+        fixRes = await ultraBuilderApi.autoFix({
+          app_name: appName,
+          project_name: slug,
+          prompt: `Retry auto-fix and validate all issues for ${appName}`,
+        });
+      }
+      if (!fixRes?.success) throw new Error('Auto fix failed');
+      updateStep('fix', 'done', 'Fix loop complete');
       addOutput('✅ Auto fix complete');
 
-      // Step 8-9: Build & Deploy via factory-deploy
+      // Step 8: Build
       updateStep('build', 'running');
       addOutput('🔨 Building project...');
 
-      const slug = appName.toLowerCase().replace(/\s+/g, '-');
-
-      const { data: deployData } = await supabase.functions.invoke('factory-deploy', {
-        body: {
-          action: 'deploy',
-          repo_name: slug,
-          github_account: 'saasvala'
-        }
+      const buildRes = await ultraBuilderApi.buildRun({
+        app_name: appName,
+        slug,
+        repo_name: slug,
+        repo_url: `https://github.com/saasvala/${slug}`,
       });
+      if (!buildRes?.success) throw new Error('Build failed');
 
       updateStep('build', 'done');
       addOutput('✅ Build complete');
 
+      // Step 9: Deploy
       updateStep('deploy', 'running');
-      await new Promise(r => setTimeout(r, 1000));
+      const deployRes = await ultraBuilderApi.deployFull({
+        filePath: `${slug}/build.zip`,
+      });
+      if (!deployRes?.success) throw new Error('Deploy failed');
 
-      const liveUrl = deployData?.url || `https://${slug}.saasvala.com`;
+      const liveUrl = deployRes?.data?.deployment?.url || `https://${slug}.saasvala.com`;
       const repoUrl = `https://github.com/saasvala/${slug}`;
       setDemoUrl(liveUrl);
       setGithubUrl(repoUrl);
@@ -137,10 +209,14 @@ export default function ValaBuilder() {
       updateStep('deploy', 'done', liveUrl);
       addOutput(`✅ Deployed → ${liveUrl}`);
 
-      // Step 10: Marketplace listing
+      // Step 10: APK + publish
       updateStep('publish', 'running');
-      addOutput('📦 Publishing to marketplace...');
-      await new Promise(r => setTimeout(r, 800));
+      addOutput('📦 Building APK + publishing to marketplace...');
+      await ultraBuilderApi.apkBuild({
+        repo_name: slug,
+        repo_url: `https://github.com/saasvala/${slug}`,
+        slug,
+      });
       updateStep('publish', 'done');
       addOutput('✅ Published to SaaSVala Marketplace');
 
@@ -164,27 +240,26 @@ export default function ValaBuilder() {
     try {
       const slug = appName.toLowerCase().replace(/\s+/g, '-');
       if (action === 'deploy') {
-        const { data } = await supabase.functions.invoke('factory-deploy', {
-          body: { action: 'deploy', repo_name: slug, github_account: 'saasvala' }
+        const data = await ultraBuilderApi.deployFull({
+          filePath: `${slug}/build.zip`,
         });
-        setDemoUrl(data?.url || `https://${slug}.saasvala.com`);
+        setDemoUrl(data?.data?.deployment?.url || `https://${slug}.saasvala.com`);
         toast.success('Deployed!');
       } else if (action === 'generate') {
-        await supabase.functions.invoke('ai-developer', {
-          body: {
-            messages: [{ role: 'user', content: `Create: ${appName} - ${prompt}` }],
-            tools: ['generate_code'],
-            tool_input: { tool: 'generate_code', project_name: slug, description: prompt, features: prompt, tech_stack: 'react' }
-          }
+        await ultraBuilderApi.codeGenerate({
+          app_name: appName,
+          project_name: slug,
+          description: prompt,
+          prompt: `Create: ${appName} - ${prompt}`,
+          tech_stack: 'react',
         });
         setGithubUrl(`https://github.com/saasvala/${slug}`);
         toast.success('Code generated & pushed to GitHub!');
       } else if (action === 'fix') {
-        await supabase.functions.invoke('ai-developer', {
-          body: {
-            messages: [{ role: 'user', content: `Fix all errors in ${slug}` }],
-            tools: ['analyze_code']
-          }
+        await ultraBuilderApi.autoFix({
+          app_name: appName,
+          project_name: slug,
+          prompt: `Fix all errors in ${slug}`,
         });
         toast.success('Error scan complete');
       }

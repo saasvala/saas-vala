@@ -170,6 +170,18 @@ export const apkApi = {
   download: (id: string) => apiCall('GET', `apk/download/${id}`),
 };
 
+// ===================== ULTRA BUILDER =====================
+export const ultraBuilderApi = {
+  scanFull: (data?: any) => apiCall('POST', 'git/scan-full', data),
+  codeGenerate: (data: any) => apiCall('POST', 'code/generate', data),
+  dbGenerate: (data: any) => apiCall('POST', 'db/generate', data),
+  debugFull: (data: any) => apiCall('POST', 'ai/debug-full', data),
+  autoFix: (data: any) => apiCall('POST', 'ai/auto-fix', data),
+  buildRun: (data: any) => apiCall('POST', 'build/run', data),
+  deployFull: (data: any) => apiCall('POST', 'deploy/full', data),
+  apkBuild: (data: any) => apiCall('POST', 'apk/build', data),
+};
+
 // ===================== WALLET =====================
 export const walletApi = {
   get: () => apiCall('GET', 'wallet'),
