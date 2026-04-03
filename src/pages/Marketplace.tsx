@@ -35,7 +35,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatUserTime, getTypoSuggestions } from '@/lib/edgeGuards';
-import { executeButtonAction, registerKnownRoutes, resolveSafeRoute } from '@/lib/buttonEngine';
+
 
 interface Product {
   id: string; title: string; subtitle: string; image: string;
@@ -87,6 +87,7 @@ export default function Marketplace() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResultRow[] | null>(null);
   const [currencyRatesReady, setCurrencyRatesReady] = useState(false);
+  const { runAction, isProcessing } = useButtonEngine();
 
   useEffect(() => {
     registerKnownRoutes([
@@ -197,36 +198,28 @@ export default function Marketplace() {
   }, [searchParams]);
 
   const handleBuyNow = async (product: Product) => {
-    if (!user) { toast.error('Please sign in to purchase'); return; }
-    try {
-      await executeButtonAction<void>({
-        config: { action: 'BUY_NOW', route: '/checkout', api: '/payment/intent', debounceMs: 150, throttleMs: 200, idempotent: true, retries: 1, retryBackoffMs: 1000 },
-        run: async () => {
-          const fraud = await checkUserStatus(user.id, user.email || '');
-          if (fraud.isBlocked) {
-            toast.error(fraud.message);
-            return;
-          }
-          navigate(`${resolveSafeRoute('/checkout', '/')}?product_id=${encodeURIComponent(product.id)}`);
-        },
-        validateResponse: false,
-      });
-    } catch {
-      toast.error('Buy Now failed, please retry');
-    }
+
   };
 
   const handleWalletPayment = async () => {
     if (!selectedProduct || paymentLockRef.current) return;
     paymentLockRef.current = true; setPaymentSubmitting(true);
-    const result = await purchaseApk(selectedProduct);
-    if (result.success) {
-      setPaymentSuccess(true); setGeneratedLicenseKey(result.licenseKey || '');
-      setDownloadUrl(result.downloadUrl || '');
+    const actionResult = await runAction(
+      { action: `PAY_WALLET_${selectedProduct.id}`, button: 'Wallet Pay', route: '/marketplace', api: 'payment/verify', debounce: 150, idempotent: true, retries: 1 },
+      async () => {
+        const result = await purchaseApk(selectedProduct);
+        if (!result?.success) throw new Error(result?.error || 'Payment failed');
+        setPaymentSuccess(true); setGeneratedLicenseKey(result.licenseKey || '');
+        setDownloadUrl(result.downloadUrl || '');
+        return result;
+      },
+    );
+    if (actionResult.ok) {
       toast.success('🎉 Payment successful!');
-    } else {
-      toast.error(result.error || 'Payment failed'); paymentLockRef.current = false;
+    } else if (!actionResult.skipped) {
+      toast.error(actionResult.error?.message || 'Payment failed');
     }
+    paymentLockRef.current = false;
     setPaymentSubmitting(false);
   };
 
@@ -235,46 +228,51 @@ export default function Marketplace() {
     if (paymentLockRef.current) return;
     paymentLockRef.current = true;
     setPaymentSubmitting(true);
-    try {
-      const initRes = await marketplaceApi.paymentCreate({
-        product_id: selectedProduct.id,
-        amount: selectedProduct.price,
-        currency: 'INR',
-        payment_method: buyPayMethod,
-        gateway: buyPayMethod === 'upi' ? 'upi' : buyPayMethod === 'bank' ? 'bank' : 'payu',
-        gateway_reference: manualTxnRef.trim(),
-        lock_wallet: false,
-        meta: {
-          payment_method: buyPayMethod,
-          transaction_ref: manualTxnRef.trim(),
+    const actionResult = await runAction(
+      { action: `PAY_MANUAL_${selectedProduct.id}`, button: 'Manual Submit', route: '/marketplace', api: 'payment/create', debounce: 150, idempotent: true, retries: 1 },
+      async () => {
+        const initRes = await marketplaceApi.paymentCreate({
           product_id: selectedProduct.id,
-          product_title: selectedProduct.title,
-          flow: 'manual_marketplace_purchase',
-        },
-      });
-      const paymentId = String((initRes as any)?.data?.payment?.id || '');
-      if (!paymentId) throw new Error('Payment initialization failed');
+          amount: selectedProduct.price,
+          currency: 'INR',
+          payment_method: buyPayMethod,
+          gateway: buyPayMethod === 'upi' ? 'upi' : buyPayMethod === 'bank' ? 'bank' : 'payu',
+          gateway_reference: manualTxnRef.trim(),
+          lock_wallet: false,
+          meta: {
+            payment_method: buyPayMethod,
+            transaction_ref: manualTxnRef.trim(),
+            product_id: selectedProduct.id,
+            product_title: selectedProduct.title,
+            flow: 'manual_marketplace_purchase',
+          },
+        });
+        const paymentId = String((initRes as any)?.data?.payment?.id || '');
+        if (!paymentId) throw new Error('Payment initialization failed');
 
-      const verifyRes = await marketplaceApi.paymentVerify({
-        payment_id: paymentId,
-        amount: selectedProduct.price,
-        transaction_id: manualTxnRef.trim(),
-      });
-      if (!(verifyRes as any)?.success) {
-        throw new Error((verifyRes as any)?.error || 'Payment verification failed');
-      }
-      const licenseKey = String((verifyRes as any)?.result?.license_key || '');
-      setManualSubmitted(true);
-      setPaymentSuccess(true);
-      setGeneratedLicenseKey(licenseKey);
-      setDownloadUrl(licenseKey ? `/download/apk/${selectedProduct.id}?key=${licenseKey}` : '');
+        const verifyRes = await marketplaceApi.paymentVerify({
+          payment_id: paymentId,
+          amount: selectedProduct.price,
+          transaction_id: manualTxnRef.trim(),
+        });
+        if (!(verifyRes as any)?.success) {
+          throw new Error((verifyRes as any)?.error || 'Payment verification failed');
+        }
+        const licenseKey = String((verifyRes as any)?.result?.license_key || '');
+        setManualSubmitted(true);
+        setPaymentSuccess(true);
+        setGeneratedLicenseKey(licenseKey);
+        setDownloadUrl(licenseKey ? `/download/apk/${selectedProduct.id}?key=${licenseKey}` : '');
+        return { paymentId, licenseKey };
+      },
+    );
+    if (actionResult.ok) {
       toast.success('🎉 Payment successful!');
-    } catch (error: any) {
-      toast.error(error?.message || 'Submission failed');
-    } finally {
-      paymentLockRef.current = false;
-      setPaymentSubmitting(false);
+    } else if (!actionResult.skipped) {
+      toast.error(actionResult.error?.message || 'Submission failed');
     }
+    paymentLockRef.current = false;
+    setPaymentSubmitting(false);
   };
 
   const handleCopy = (text: string, label: string) => {
@@ -525,9 +523,9 @@ export default function Marketplace() {
                   </div>
                 </div>
                 {buyPayMethod === 'wallet' && (
-                  <Button className="w-full h-11" onClick={handleWalletPayment} disabled={paymentSubmitting || processing}>
-                    {paymentSubmitting ? <><Loader2 className="h-4 w-4 animate-spin mr-2" />Processing...</> : `Pay $${selectedProduct?.price} from Wallet`}
-                  </Button>
+                <Button className="w-full h-11" onClick={handleWalletPayment} disabled={paymentSubmitting || processing || isProcessing(`PAY_WALLET_${selectedProduct?.id || ''}`)}>
+                  {paymentSubmitting ? <><Loader2 className="h-4 w-4 animate-spin mr-2" />Processing...</> : `Pay $${selectedProduct?.price} from Wallet`}
+                </Button>
                 )}
                 <button className="w-full flex items-center justify-center gap-1 text-xs text-muted-foreground py-1" onClick={() => setShowMorePayment(!showMorePayment)}>
                   {showMorePayment ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />} More Options
@@ -543,7 +541,7 @@ export default function Marketplace() {
                             <button className="text-xs text-primary border border-primary/30 px-2 py-1 rounded" onClick={e => { e.stopPropagation(); handleCopy(bankDetails.upiId, 'UPI ID'); }}><Copy className="h-3 w-3 inline mr-1" />Copy</button>
                           </div>
                           <Input placeholder="Transaction ID" value={manualTxnRef} onChange={e => setManualTxnRef(e.target.value)} onClick={e => e.stopPropagation()} />
-                          <Button className="w-full h-9" onClick={handleManualPayment} disabled={paymentSubmitting || !manualTxnRef.trim()}>Submit</Button>
+                          <Button className="w-full h-9" onClick={handleManualPayment} disabled={paymentSubmitting || !manualTxnRef.trim() || isProcessing(`PAY_MANUAL_${selectedProduct?.id || ''}`)}>Submit</Button>
                         </div>
                       )}
                     </div>
@@ -556,7 +554,7 @@ export default function Marketplace() {
                             <div className="bg-background rounded p-2"><p className="text-muted-foreground">IFSC</p><p className="font-mono font-bold">{bankDetails.ifsc}</p></div>
                           </div>
                           <Input placeholder="Transaction Ref" value={manualTxnRef} onChange={e => setManualTxnRef(e.target.value)} onClick={e => e.stopPropagation()} />
-                          <Button className="w-full h-9" onClick={handleManualPayment} disabled={paymentSubmitting || !manualTxnRef.trim()}>Submit</Button>
+                          <Button className="w-full h-9" onClick={handleManualPayment} disabled={paymentSubmitting || !manualTxnRef.trim() || isProcessing(`PAY_MANUAL_${selectedProduct?.id || ''}`)}>Submit</Button>
                         </div>
                       )}
                     </div>

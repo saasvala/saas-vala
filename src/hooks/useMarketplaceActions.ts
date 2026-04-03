@@ -63,6 +63,7 @@ export function useMarketplaceActions() {
 
   const toggleFavorite = useCallback(async (productId: string, productName?: string) => {
     const res = await marketplaceApi.favoriteToggle(productId, productName) as FavoriteToggleResponse;
+    if (!res) throw new Error('Failed to toggle favorite: API returned no response');
     const active = Boolean(res?.active);
     setFavoriteIds((prev) => {
       const next = new Set(prev);
@@ -75,13 +76,15 @@ export function useMarketplaceActions() {
 
   const addToCart = useCallback(async (productId: string, qty = 1) => {
     const res = await marketplaceApi.cartAdd(productId, qty) as CartAddResponse;
+    if (!res) throw new Error('Failed to add to cart: API returned no response');
     const nextQty = Math.max(1, Number(res?.qty || qty));
     setCartQtyByProduct((prev) => ({ ...prev, [productId]: nextQty }));
+    void refreshCart();
     return {
       qty: nextQty,
       cartCount: Math.max(0, Number(res?.cart_count || 0)),
     };
-  }, []);
+  }, [refreshCart]);
 
   const addRating = useCallback(async (productId: string, rating: number, productTitle?: string, review?: string) => {
     return marketplaceApi.ratingAdd({
