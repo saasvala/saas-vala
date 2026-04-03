@@ -14,6 +14,10 @@ type ButtonActionContext = {
   traceId: string;
   attempt: number;
 };
+type ButtonActionSkipped = { ok: false; skipped: 'debounce' | 'processing' };
+type ButtonActionFailed = { ok: false; error: Error };
+type ButtonActionSucceeded<T> = { ok: true; response: T };
+type ButtonActionResult<T> = ButtonActionSkipped | ButtonActionFailed | ButtonActionSucceeded<T>;
 
 const RETRY_DELAYS_MS = [1000, 2000, 4000] as const;
 
@@ -36,7 +40,7 @@ export function useButtonEngine() {
     async <T>(
       config: ButtonActionConfig,
       executor: (ctx: ButtonActionContext) => Promise<T>,
-    ): Promise<{ ok: boolean; response?: T; error?: Error; skipped?: 'debounce' | 'processing' }> => {
+    ): Promise<ButtonActionResult<T>> => {
       const key = config.action;
       const now = Date.now();
       const debounceMs = Math.max(0, Number(config.debounce ?? 200));
@@ -65,7 +69,6 @@ export function useButtonEngine() {
         for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
           try {
             const response = await executor({ traceId, attempt });
-            if (response == null) throw new Error('Empty response');
             window.dispatchEvent(new CustomEvent('button:action:success', { detail: { action: key, traceId, route, api } }));
             return { ok: true, response };
           } catch (error) {

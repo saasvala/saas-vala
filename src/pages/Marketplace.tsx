@@ -213,8 +213,8 @@ export default function Marketplace() {
       toast.success('🎉 Payment successful!');
     } else if (!actionResult.skipped) {
       toast.error(actionResult.error?.message || 'Payment failed');
-      paymentLockRef.current = false;
     }
+    paymentLockRef.current = false;
     setPaymentSubmitting(false);
   };
 
