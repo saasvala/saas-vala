@@ -155,6 +155,8 @@ export async function exportAuditLogs(
 }
 
 export async function createManualAuditLog(input: AuditCreateInput = {}) {
+  // Device is best-effort client context; SSR/non-browser environments intentionally send null.
+  const device = input.device ?? (typeof navigator !== 'undefined' ? navigator.userAgent : null);
   return supabase.rpc('audit_create', {
     p_role: input.role ?? 'system',
     p_action: input.action ?? 'read',
@@ -165,7 +167,7 @@ export async function createManualAuditLog(input: AuditCreateInput = {}) {
     p_new_data: toJson(input.newData ?? null),
     p_status: input.status ?? 'success',
     p_ip_address: input.ipAddress ?? null,
-    p_device: input.device ?? (typeof navigator !== 'undefined' ? navigator.userAgent : null),
+    p_device: device,
   });
 }
 

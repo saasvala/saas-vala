@@ -181,12 +181,12 @@ export default function AuditLogs() {
         userId: userFilter.trim() || null,
         query: searchQuery.trim() || null,
         page,
-        pageSize,
+        pageSize: pageSize + 1,
       });
       if (error) throw error;
       const rows = (data || []) as AuditLog[];
-      setLogs(rows);
-      setPageState({ hasMore: rows.length === pageSize });
+      setLogs(rows.slice(0, pageSize));
+      setPageState({ hasMore: rows.length > pageSize });
     } catch (error) {
       console.error('Error fetching audit logs:', error);
       toast.error('Failed to fetch audit logs');
