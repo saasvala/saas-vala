@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { ArrowLeft, CreditCard } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { ArrowLeft, CreditCard } from 'lucide-react';
 import { useCart } from '@/hooks/useCart';
 import { useMarketplaceProducts } from '@/hooks/useMarketplaceProducts';
 import { useApkPurchase } from '@/hooks/useApkPurchase';
 import { useAuth } from '@/hooks/useAuth';
-import { toast } from 'sonner';
 import { useMarketplaceActions } from '@/hooks/useMarketplaceActions';
 
 const SAFE_PRODUCT_PARAM = /^[a-zA-Z0-9_-]+$/;
 const PENDING_PAYMENT_MAX_AGE_MS = 15 * 60 * 1000;
+type PaymentMethod = 'wallet' | 'upi' | 'card' | 'crypto';
 
 function makeIdempotencyKey() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -30,7 +31,19 @@ export default function Checkout() {
   const { products } = useMarketplaceProducts();
   const { purchaseApk, processing } = useApkPurchase();
   const { trackPromoConversion } = useMarketplaceActions();
+
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('wallet');
   const [submitting, setSubmitting] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+
+  const payInFlightRef = useRef(false);
+  const restoreInFlightRef = useRef(false);
+  const pendingRestoreAttemptedRef = useRef(false);
+  const trackedConversionRef = useRef<string | null>(null);
+
+  const requestedProductId = searchParams.get('product_id')?.trim() || '';
+  const refCode = searchParams.get('ref')?.trim() || '';
+  const hasInvalidProductParam = requestedProductId.length > 0 && !SAFE_PRODUCT_PARAM.test(requestedProductId);
 
   const selected = useMemo(() => {
     if (requestedProductId) {
@@ -39,7 +52,12 @@ export default function Checkout() {
     }
     if (items[0]) return items[0];
     return products[0] || null;
+  }, [requestedProductId, products, items]);
 
+  const payable = useMemo(() => {
+    if (selected) return Math.max(0, Number(selected.price || 0));
+    return Math.max(0, Number(total || 0));
+  }, [selected, total]);
 
   const restorePendingPayment = async () => {
     if (restoreInFlightRef.current) return;
@@ -108,9 +126,7 @@ export default function Checkout() {
         }
       }
 
-      if (items.length > 0) {
-        clearCart();
-      }
+      if (items.length > 0) clearCart();
 
       const qs = new URLSearchParams();
       if (result.licenseKey) qs.set('key', result.licenseKey);
@@ -173,7 +189,7 @@ export default function Checkout() {
 
           <div className="space-y-1">
             <span className="text-sm text-muted-foreground">Payment Method</span>
-            <Select value={paymentMethod} onValueChange={(v) => setPaymentMethod(v as typeof paymentMethod)}>
+            <Select value={paymentMethod} onValueChange={(v) => setPaymentMethod(v as PaymentMethod)}>
               <SelectTrigger>
                 <SelectValue placeholder="Select payment method" />
               </SelectTrigger>
