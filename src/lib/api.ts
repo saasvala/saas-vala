@@ -1,7 +1,10 @@
 import { supabase } from '@/integrations/supabase/client';
 import { savePostLoginRedirect, savePreLogoutState } from './sessionState';
 
-const API_BASE = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v1`;
+export const API_BASE_V1 = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v1`;
+export const API_BASE_V2 = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v2`;
+const API_VERSION = String(import.meta.env.VITE_API_VERSION || 'v1').toLowerCase() === 'v2' ? 'v2' : 'v1';
+const API_BASE = API_VERSION === 'v2' ? API_BASE_V2 : API_BASE_V1;
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
   const { data: { session } } = await supabase.auth.getSession();
