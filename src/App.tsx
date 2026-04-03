@@ -121,16 +121,16 @@ function SubscriptionGuard({ children }: { children: React.ReactNode }) {
       }
 
       const routeProductId = productId || id;
-      let subQuery = supabase
+      let subscriptionQuery = supabase
         .from('subscriptions')
         .select('status,current_period_end,product_id')
         .eq('user_id', user.id);
 
       if (routeProductId) {
-        subQuery = subQuery.or(`product_id.eq.${routeProductId},product_id.is.null`);
+        subscriptionQuery = subscriptionQuery.or(`product_id.eq.${routeProductId},product_id.is.null`);
       }
 
-      const subscriptionPromise = subQuery.limit(50);
+      const subscriptionPromise = subscriptionQuery.limit(50);
       let orderQuery = supabase
         .from('marketplace_orders')
         .select('status,product_id')

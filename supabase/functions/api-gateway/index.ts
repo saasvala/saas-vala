@@ -174,6 +174,14 @@ type EnabledGateway = {
   sort_order: number
 }
 
+type GatewayConfig = {
+  mode?: string
+  environment?: string
+  provider?: string
+  public_key?: string
+  key_id?: string
+}
+
 function invalidateProductCache() {
   productListCache.data = null
   productListCache.expiresAt = 0
@@ -411,13 +419,18 @@ async function resolveEnabledPaymentGateway(admin: any, requestedGateway?: strin
   if (!rows.length) return { error: null, gateway: null as EnabledGateway | null }
 
   if (requested) {
-    const matched = rows.find((row: any) => String(row.gateway_code || '').toLowerCase() === requested)
+    const matched = rows.find((row) => String(row.gateway_code || '').toLowerCase() === requested)
     return { error: null, gateway: matched || null }
   }
 
   return { error: null, gateway: rows[0] || null }
 }
 
+/**
+ * Returns the next retry timestamp using exponential backoff.
+ * Delay = baseMs * 2^(attempt-1), capped at exponent 6 to bound retry growth.
+ * With the default base (60s), delays grow up to 64 minutes at the cap.
+ */
 function paymentRetryRunAt(attempts: number, baseMs = 60_000) {
   const safeAttempts = Math.max(1, Number(attempts || 1))
   const cappedExp = Math.min(6, safeAttempts - 1)
@@ -3262,12 +3275,12 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     const effectiveGateway = isWalletMethod ? 'wallet' : String(
       gatewayResolution.gateway?.gateway_code || requestedGateway || 'manual'
     ).toLowerCase()
-    const gatewayConfig = gatewayResolution.gateway?.config && typeof gatewayResolution.gateway.config === 'object'
+    const gatewayConfig: GatewayConfig = gatewayResolution.gateway?.config && typeof gatewayResolution.gateway.config === 'object'
       ? gatewayResolution.gateway.config
       : {}
-    const gatewayMode = String((gatewayConfig as any)?.mode || (gatewayConfig as any)?.environment || 'test').toLowerCase()
-    const gatewayProvider = String((gatewayConfig as any)?.provider || effectiveGateway || 'manual').toLowerCase()
-    const gatewayPublicKey = String((gatewayConfig as any)?.public_key || (gatewayConfig as any)?.key_id || '').trim() || null
+    const gatewayMode = String(gatewayConfig.mode || gatewayConfig.environment || 'test').toLowerCase()
+    const gatewayProvider = String(gatewayConfig.provider || effectiveGateway || 'manual').toLowerCase()
+    const gatewayPublicKey = String(gatewayConfig.public_key || gatewayConfig.key_id || '').trim() || null
     const fallbackRedirectUrl = (isWalletMethod || effectiveGateway === 'manual')
       ? null
       : `/checkout?payment_id=${encodeURIComponent(String(requestedIdempotency))}&gateway=${encodeURIComponent(effectiveGateway)}`
