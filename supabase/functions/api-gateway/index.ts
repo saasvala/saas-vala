@@ -7081,7 +7081,7 @@ async function runModuleHealthCheck(
   const startedAt = Date.now()
   try {
     const result = await check()
-    const responseTime = Math.max(1, Date.now() - startedAt)
+    const responseTime = Math.max(0, Date.now() - startedAt)
     return {
       module: moduleName,
       status: result.status,
@@ -7091,7 +7091,7 @@ async function runModuleHealthCheck(
       checked_at: nowIso(),
     }
   } catch (error) {
-    const responseTime = Math.max(1, Date.now() - startedAt)
+    const responseTime = Math.max(0, Date.now() - startedAt)
     return {
       module: moduleName,
       status: 'error' as const,
@@ -7201,7 +7201,7 @@ async function collectSystemHealthSnapshot(sb: any, req: Request, userId: string
       if (txErr) return { status: 'error' as const, message: txErr.message }
       return {
         status: 'healthy' as const,
-        message: 'Wallet read/write path is reachable (wallet + transaction read checks passed)',
+        message: 'Wallet read path is reachable (wallet + transaction checks passed)',
         details: { wallet_id: wallet.id, balance: Number(wallet.balance || 0) },
       }
     }),
@@ -7211,7 +7211,10 @@ async function collectSystemHealthSnapshot(sb: any, req: Request, userId: string
       const rows = data || []
       if (!rows.length) return { status: 'warning' as const, message: 'No servers configured' }
       const missingIp = rows.filter((row: any) => !row.ip_address).length
-      const lowUptime = rows.filter((row: any) => Number(row.uptime_percent || 0) > 0 && Number(row.uptime_percent || 0) < 90).length
+      const lowUptime = rows.filter((row: any) => {
+        const uptime = Number(row.uptime_percent || 0)
+        return uptime > 0 && uptime < 90
+      }).length
       const unhealthy = rows.filter((row: any) => !['running', 'live', 'active'].includes(String(row.status || '').toLowerCase())).length
       if (unhealthy > 0 || lowUptime > 0) {
         return {

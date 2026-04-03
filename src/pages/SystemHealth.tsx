@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -80,6 +80,7 @@ export default function SystemHealth() {
   const [lastCheck, setLastCheck] = useState<Date | null>(null);
   const [healthChecks, setHealthChecks] = useState<HealthCheck[]>(buildCheckingState());
   const [healthPercentage, setHealthPercentage] = useState(0);
+  const pollingInFlightRef = useRef(false);
 
   const applySnapshot = (raw: unknown) => {
     const snapshot = unwrapHealthPayload(raw);
@@ -97,11 +98,9 @@ export default function SystemHealth() {
     });
 
     setHealthChecks(checks);
-    setHealthPercentage(
-      Number.isFinite(Number(snapshot.health_score))
-        ? Number(snapshot.health_score)
-        : Math.round((checks.filter((check) => check.status === 'healthy').length / checks.length) * 100)
-    );
+    if (Number.isFinite(Number(snapshot.health_score))) {
+      setHealthPercentage(Number(snapshot.health_score));
+    }
     const checkedAt = snapshot.last_checked || snapshot.checked_at;
     setLastCheck(checkedAt ? new Date(checkedAt) : new Date());
   };
@@ -137,7 +136,9 @@ export default function SystemHealth() {
   useEffect(() => {
     fetchHealth();
     const timer = window.setInterval(() => {
-      fetchHealth();
+      if (pollingInFlightRef.current) return;
+      pollingInFlightRef.current = true;
+      fetchHealth().finally(() => { pollingInFlightRef.current = false; });
     }, 5000);
     return () => window.clearInterval(timer);
   }, []);
