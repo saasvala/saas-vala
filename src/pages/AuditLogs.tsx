@@ -28,6 +28,8 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { useAuditStore, type AuditStatus } from '@/stores/useAuditStore';
 
+const SCROLL_INTERSECTION_THRESHOLD = 0.5;
+
 const actionColors: Record<string, string> = {
   create: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
   update: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
@@ -90,7 +92,7 @@ export default function AuditLogs() {
       if (entry?.isIntersecting && hasMore && !loading) {
         void fetchMore();
       }
-    }, { threshold: 0.5 });
+    }, { threshold: SCROLL_INTERSECTION_THRESHOLD });
     observer.observe(target);
     return () => observer.disconnect();
   }, [fetchMore, hasMore, loading]);

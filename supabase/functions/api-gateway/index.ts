@@ -1110,6 +1110,8 @@ async function logActivity(admin: any, entityType: string, entityId: string, act
 }
 
 type AuditUiStatus = 'success' | 'error' | 'warning'
+const MS_PER_DAY = 24 * 60 * 60 * 1000
+const END_OF_DAY_OFFSET_MS = MS_PER_DAY - 1
 
 function parseAuditSearchQuery(rawQuery: unknown) {
   const source = String(rawQuery || '').trim()
@@ -1252,7 +1254,7 @@ async function fetchAuditLogs(sb: any, options: {
     if (statusFilter && String(row.status).toLowerCase() !== statusFilter) return false
     if (moduleFilterValue && String(row.module).toLowerCase() !== moduleFilterValue) return false
     if (dateFrom && Number.isFinite(dateFrom) && createdAtEpoch < dateFrom) return false
-    if (dateTo && Number.isFinite(dateTo) && createdAtEpoch > dateTo + (24 * 60 * 60 * 1000 - 1)) return false
+    if (dateTo && Number.isFinite(dateTo) && createdAtEpoch > dateTo + END_OF_DAY_OFFSET_MS) return false
     if (searchText) {
       const q = String(searchText).toLowerCase()
       const hay = `${row.message} ${row.module} ${row.role} ${row.action} ${row.event_type} ${row.record_id || ''}`.toLowerCase()
@@ -1321,6 +1323,13 @@ function toSimplePdf(content: string) {
   return pdf
 }
 
+function toBase64Utf8(value: string) {
+  const bytes = new TextEncoder().encode(String(value || ''))
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
+}
+
 async function handleAudit(method: string, pathParts: string[], body: any, userId: string, sb: any, req: Request) {
   const adminAllowed = await isSuperAdminUser(userId)
   if (!adminAllowed) return err('Forbidden', 403, 'FORBIDDEN')
@@ -1372,9 +1381,8 @@ async function handleAudit(method: string, pathParts: string[], body: any, userI
   }
 
   if (method === 'GET' && action === 'stats') {
-    const result = await fetchAuditLogs(sb, { limit: 50, offset: 0, query: body.q || '', filters: {} })
     const allResult = await fetchAuditLogs(sb, { limit: 500, offset: 0, query: body.q || '', filters: {} })
-    const logs = (allResult.logs.length >= result.total ? allResult.logs : result.logs)
+    const logs = allResult.logs
     const perMinuteMap = new Map<string, number>()
     const successVsError = { success: 0, error: 0, warning: 0 }
     const topModuleMap = new Map<string, number>()
@@ -1463,7 +1471,7 @@ async function handleAudit(method: string, pathParts: string[], body: any, userI
       .map((log) => `[${log.created_at}] ${log.role} ${log.action} ${log.module} ${log.status} ${log.message}`)
       .join('\n')
     const pdf = toSimplePdf(pdfText || 'No audit logs')
-    const downloadUrl = `data:application/pdf;base64,${btoa(pdf)}`
+    const downloadUrl = `data:application/pdf;base64,${toBase64Utf8(pdf)}`
     return json({
       data: {
         type: 'pdf',

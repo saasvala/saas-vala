@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { auditApi } from '@/lib/api';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -37,6 +37,7 @@ export interface AuditFilters {
 }
 
 const PAGE_SIZE = 50;
+const REALTIME_REFRESH_DEBOUNCE_MS = 250;
 
 const defaultFilters: AuditFilters = {
   q: '',
@@ -87,6 +88,7 @@ export function useAuditStore() {
     success_vs_error: { success: number; error: number; warning: number };
     top_modules: Array<{ module: string; count: number }>;
   } | null>(null);
+  const realtimeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const setFilters = useCallback((patch: Partial<AuditFilters>) => {
     setFiltersState((prev) => ({ ...prev, ...patch }));
@@ -172,12 +174,22 @@ export function useAuditStore() {
 
   const setupRealtime = useCallback(() => {
     const channel = supabase
-      .channel(`audit-logs-live-${Date.now()}`)
+      .channel('audit-logs-live')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'audit_logs' }, () => {
-        void fetchInitial();
+        if (realtimeRefreshTimerRef.current) {
+          clearTimeout(realtimeRefreshTimerRef.current);
+        }
+        realtimeRefreshTimerRef.current = setTimeout(() => {
+          void fetchInitial();
+          realtimeRefreshTimerRef.current = null;
+        }, REALTIME_REFRESH_DEBOUNCE_MS);
       })
       .subscribe();
     return () => {
+      if (realtimeRefreshTimerRef.current) {
+        clearTimeout(realtimeRefreshTimerRef.current);
+        realtimeRefreshTimerRef.current = null;
+      }
       supabase.removeChannel(channel);
     };
   }, [fetchInitial]);
