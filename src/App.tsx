@@ -74,6 +74,7 @@ const Checkout = React.lazy(() => import("./pages/Checkout"));
 const Success = React.lazy(() => import("./pages/Success"));
 const Subscription = React.lazy(() => import("./pages/Subscription"));
 const AppAccess = React.lazy(() => import("./pages/AppAccess"));
+const Logout = React.lazy(() => import("./pages/Logout"));
 
 const queryClient = new QueryClient();
 
@@ -244,6 +245,20 @@ function AppRouteGuarded() {
   );
 }
 
+function ProductEditRouteGuarded() {
+  const { id } = useParams();
+  if (!id || hasInvalidRouteParam([id])) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return (
+    <AuthGuard>
+      <RoleGuard role="super_admin">
+        <Navigate to="/admin/add-product" replace />
+      </RoleGuard>
+    </AuthGuard>
+  );
+}
+
 function AppRoutes() {
   return (
     <Suspense fallback={<PageLoader />}>
@@ -302,17 +317,29 @@ function AppRoutes() {
         <Route path="/app/:id" element={<AppRouteGuarded />} />
         <Route path="/app/:productId" element={<AppRouteGuarded />} />
         <Route path="/products" element={<AuthGuard><Products /></AuthGuard>} />
+        <Route path="/products/create" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/add-product" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/products/edit/:id" element={<ProductEditRouteGuarded />} />
+        <Route path="/products/upload" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/add-product" replace /></RoleGuard></AuthGuard>} />
         <Route path="/keys" element={<AuthGuard><Keys /></AuthGuard>} />
+        <Route path="/keys/generate" element={<AuthGuard><Navigate to="/keys" replace /></AuthGuard>} />
         <Route path="/servers" element={<AuthGuard><Servers /></AuthGuard>} />
+        <Route path="/servers/deploy" element={<AuthGuard><Navigate to="/servers" replace /></AuthGuard>} />
         <Route path="/role-detail" element={<AuthGuard><RoleDetail /></AuthGuard>} />
         <Route path="/transport-role-detail" element={<AuthGuard><TransportRoleDetail /></AuthGuard>} />
         <Route path="/manufacturing-role-detail" element={<AuthGuard><ManufacturingRoleDetail /></AuthGuard>} />
         <Route path="/education" element={<AuthGuard><EducationCategory /></AuthGuard>} />
         <Route path="/vala-builder" element={<AuthGuard><ValaBuilder /></AuthGuard>} />
+        <Route path="/builder" element={<AuthGuard><Navigate to="/vala-builder" replace /></AuthGuard>} />
+        <Route path="/ai" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
+        <Route path="/ai/chat" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/ai-chat" element={<AuthGuard><AiChat /></AuthGuard>} />
         <Route path="/saas-ai-dashboard" element={<AuthGuard><SaasAiDashboard /></AuthGuard>} />
+        <Route path="/marketplace-admin" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/marketplace" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/ai/apis" element={<AuthGuard><Navigate to="/ai-apis" replace /></AuthGuard>} />
         <Route path="/ai-apis" element={<AuthGuard><AiApis /></AuthGuard>} />
         <Route path="/wallet" element={<AuthGuard><Wallet /></AuthGuard>} />
+        <Route path="/billing/credits" element={<AuthGuard><Navigate to="/wallet" replace /></AuthGuard>} />
+        <Route path="/reseller" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard" replace /></RoleGuard></AuthGuard>} />
         <Route path="/seo-leads" element={<AuthGuard><SeoLeads /></AuthGuard>} />
         <Route path="/reseller-dashboard" element={<AuthGuard><RoleGuard role="reseller"><ResellerDashboard /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/dashboard" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard" replace /></RoleGuard></AuthGuard>} />
@@ -332,8 +359,9 @@ function AppRoutes() {
         <Route path="/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
         <Route path="/admin/add-product" element={<AuthGuard><RoleGuard role="super_admin"><AddProduct /></RoleGuard></AuthGuard>} />
         <Route path="/admin/marketplace" element={<AuthGuard><RoleGuard role="super_admin"><MarketplaceAdmin /></RoleGuard></AuthGuard>} />
+        <Route path="/logout" element={<Logout />} />
         <Route path="/404" element={<NotFound />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </Suspense>
   );
