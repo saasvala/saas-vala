@@ -173,6 +173,8 @@ export const marketplaceApi = {
   pricing: (productId: string, price: number, discount?: number) =>
     apiCall('PUT', 'marketplace/pricing', { product_id: productId, price, discount_percent: discount }),
   analyticsSales: () => apiCall('GET', 'analytics/sales'),
+  paymentCreate: (data: any) => apiCall('POST', 'payment/create', data),
+  paymentVerify: (data: any) => apiCall('POST', 'payment/verify', data),
   paymentInit: (data: any) => apiCall('POST', 'marketplace/payment/init', data),
   paymentWebhook: (data: any) => apiCall('POST', 'marketplace/payment/webhook', data),
   verifySignature: (data: any) => apiCall('POST', 'marketplace/payment/verify-signature', data),

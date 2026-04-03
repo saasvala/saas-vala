@@ -1907,8 +1907,14 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     return json({ data })
   }
 
-  // POST /marketplace/payment/init
-  if (method === 'POST' && action === 'payment' && pathParts[1] === 'init') {
+  const isPaymentCreate =
+    method === 'POST' && (
+      (action === 'payment' && pathParts[1] === 'init') ||
+      (action === 'create' && !pathParts[1])
+    )
+
+  // POST /marketplace/payment/init OR /payment/create
+  if (isPaymentCreate) {
     const missing = validateRequired(body, ['product_id', 'amount'])
     if (missing) return err(missing, 422, 'VALIDATION_ERROR')
 
@@ -2032,13 +2038,57 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     return json({ valid })
   }
 
-  // POST /marketplace/payment/mark-paid
-  if (method === 'POST' && action === 'payment' && pathParts[1] === 'mark-paid') {
-    const missing = validateRequired(body, ['payment_id'])
+  const isPaymentVerify =
+    method === 'POST' && (
+      (action === 'payment' && (pathParts[1] === 'mark-paid' || pathParts[1] === 'verify')) ||
+      (action === 'verify' && !pathParts[1])
+    )
+
+  // POST /marketplace/payment/mark-paid OR /marketplace/payment/verify OR /payment/verify
+  if (isPaymentVerify) {
+    const missing = validateRequired(body, ['payment_id', 'amount'])
     if (missing) return err(missing, 422, 'VALIDATION_ERROR')
     const { data: payment, error } = await sb.from('payments').select('*').eq('id', body.payment_id).maybeSingle()
     if (error) return err(error.message)
     if (!payment) return err('Payment not found', 404, 'NOT_FOUND')
+    if (String(payment.status || '').toLowerCase() === 'success') return json({ success: true, duplicate: true, result: { order_id: payment.order_id } })
+
+    const expectedAmount = Number(payment.amount || 0)
+    const providedAmount = Number(body.amount || 0)
+    if (!Number.isFinite(providedAmount) || providedAmount <= 0 || providedAmount !== expectedAmount) {
+      return err('Amount mismatch', 422, 'VALIDATION_ERROR')
+    }
+
+    const isWalletPayment = String(payment.gateway || '').toLowerCase() === 'wallet'
+    const transactionId = String(body.transaction_id || body.gateway_transaction_id || '').trim()
+    if (!isWalletPayment && !transactionId) {
+      return err('transaction_id is required for non-wallet payments', 422, 'VALIDATION_ERROR')
+    }
+    if (isWalletPayment) {
+      const { data: orderRow } = await sb.from('orders').select('user_id,amount').eq('id', payment.order_id).maybeSingle()
+      if (!orderRow?.user_id) return err('Order not found', 404, 'NOT_FOUND')
+      const { data: wallet } = await sb.from('wallets').select('locked_balance').eq('user_id', orderRow.user_id).maybeSingle()
+      const locked = Number(wallet?.locked_balance || 0)
+      const required = Number(orderRow.amount || 0)
+      if (!wallet || locked < required) {
+        return err('Wallet lock not found for payment verification', 422, 'VALIDATION_ERROR')
+      }
+    }
+    if (transactionId) {
+      const { data: duplicateGatewayPayment } = await sb.from('payments')
+        .select('id')
+        .eq('gateway_transaction_id', transactionId)
+        .neq('id', payment.id)
+        .maybeSingle()
+      if (duplicateGatewayPayment?.id) return err('Duplicate transaction_id', 409, 'DUPLICATE_PAYMENT')
+
+      await sb.from('payments').update({
+        gateway_transaction_id: transactionId,
+        gateway_reference: transactionId,
+        updated_at: nowIso(),
+      }).eq('id', payment.id)
+    }
+
     const result = await markPaymentSuccess(admin, sb, userId, payment)
     return json({ success: true, result })
   }
@@ -2637,20 +2687,45 @@ async function markPaymentSuccess(admin: any, sb: any, userId: string, payment: 
   const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', order.user_id).maybeSingle()
   if (wallet) {
     const locked = Number(wallet.locked_balance || 0)
+    const gateway = String(payment.gateway || '').toLowerCase()
     if (locked > 0) {
-      const unlockAmount = Math.min(locked, Number(order.amount || 0))
+      const orderAmount = Number(order.amount || 0)
+      const unlockAmount = Math.min(locked, orderAmount)
+      const isWalletGateway = gateway === 'wallet'
+      const oldBalance = Number(wallet.balance || 0)
+      const finalBalance = isWalletGateway ? Math.max(0, oldBalance - unlockAmount) : oldBalance
       const nextLocked = Math.max(0, locked - unlockAmount)
-      await sb.from('wallets').update({ locked_balance: nextLocked, updated_at: paidAt }).eq('id', wallet.id)
+
+      await sb.from('wallets').update({
+        balance: finalBalance,
+        locked_balance: nextLocked,
+        updated_at: paidAt,
+      }).eq('id', wallet.id)
+
+      if (isWalletGateway) {
+        await sb.from('transactions').insert({
+          wallet_id: wallet.id,
+          type: 'debit',
+          amount: unlockAmount,
+          balance_after: finalBalance,
+          status: 'completed',
+          description: 'Payment settled from wallet',
+          reference_type: 'order_payment',
+          reference_id: order.id,
+          created_by: actorUserId,
+        })
+      }
+
       await sb.from('wallet_ledger').insert({
         wallet_id: wallet.id,
         user_id: order.user_id,
-        entry_type: 'unlock',
+        entry_type: gateway === 'wallet' ? 'debit' : 'unlock',
         amount: unlockAmount,
-        balance_before: wallet.balance || 0,
-        balance_after: wallet.balance || 0,
+        balance_before: oldBalance,
+        balance_after: finalBalance,
         reference_type: 'order',
         reference_id: order.id,
-        metadata: { reason: 'payment_success_unlock' },
+        metadata: { reason: gateway === 'wallet' ? 'payment_success_wallet_debit' : 'payment_success_unlock' },
       })
     }
   }
@@ -6170,22 +6245,57 @@ async function handleSubscriptions(method: string, pathParts: string[], body: an
     if (missing) return err(missing, 422, 'VALIDATION_ERROR')
     const { data: sub } = await sb.from('subscriptions').select('*').eq('id', body.subscription_id).eq('user_id', userId).maybeSingle()
     if (!sub) return err('Subscription not found', 404, 'NOT_FOUND')
-    const end = sub.current_period_end ? new Date(sub.current_period_end) : new Date()
-    const base = end > new Date() ? end : new Date()
-    base.setDate(base.getDate() + 30)
-    await sb.from('subscriptions').update({
-      status: 'active',
-      failed_retry_count: 0,
-      next_retry_at: null,
-      current_period_end: base.toISOString(),
-      updated_at: nowIso(),
-    }).eq('id', sub.id)
-    await sb.from('async_jobs').insert({
-      job_type: 'email',
-      status: 'queued',
-      payload: { kind: 'manual_renew', subscription_id: sub.id, user_id: userId },
+    const renewAmount = Number(sub.amount || 0)
+    if (!Number.isFinite(renewAmount) || renewAmount <= 0) return err('Invalid subscription amount', 422, 'VALIDATION_ERROR')
+
+    const requestedIdempotency = body.idempotency_key || generateIdempotencyKey()
+    const gateway = body.gateway || (body.payment_method === 'wallet' ? 'wallet' : 'manual')
+    const paymentMethod = body.payment_method || (gateway === 'wallet' ? 'wallet' : 'gateway')
+    const meta = {
+      ...(body.meta || {}),
+      subscription_id: sub.id,
+      renew: true,
+      source: 'subscription_renew',
+    }
+
+    const { data: atomicData, error: atomicError } = await sb.rpc('gateway_payment_init_atomic', {
+      p_user_id: userId,
+      p_product_id: sub.product_id,
+      p_amount: renewAmount,
+      p_currency: sub.currency || 'INR',
+      p_payment_method: paymentMethod,
+      p_gateway: gateway,
+      p_gateway_reference: body.gateway_reference || null,
+      p_meta: meta,
+      p_idempotency_key: requestedIdempotency,
+      p_lock_wallet: body.lock_wallet === true || paymentMethod === 'wallet',
+      p_tenant_id: body.tenant_id || null,
     })
-    return json({ success: true, subscription_id: sub.id, current_period_end: base.toISOString() })
+    if (atomicError) return err(atomicError.message)
+    const order = atomicData?.order
+    const payment = atomicData?.payment
+    if (!order?.id || !payment?.id) return err('Failed to initialize renewal payment')
+
+    if (paymentMethod === 'wallet') {
+      const result = await markPaymentSuccess(adminClient(), sb, userId, payment)
+      return json({
+        success: true,
+        auto_verified: true,
+        subscription_id: sub.id,
+        order_id: order.id,
+        payment_id: payment.id,
+        result,
+      })
+    }
+
+    return json({
+      success: true,
+      payment_status: 'pending',
+      subscription_id: sub.id,
+      order_id: order.id,
+      payment_id: payment.id,
+      gateway_redirect_url: body.gateway_redirect_url || null,
+    })
   }
 
   // POST /subscriptions/cron-run
@@ -6284,6 +6394,20 @@ async function handleSubscriptions(method: string, pathParts: string[], body: an
         payload: { kind: 'subscription_renewed', subscription_id: sub.id, transaction_id: tx?.id || null },
       })
       charged++
+    }
+
+    const { data: overdueSubs } = await sb.from('subscriptions').select('id,current_period_end')
+      .eq('auto_renew', false)
+      .eq('status', 'active')
+      .order('current_period_end', { ascending: true })
+      .limit(500)
+    for (const row of (overdueSubs || [])) {
+      if (!row.current_period_end) continue
+      const end = new Date(row.current_period_end)
+      if (Number.isNaN(end.getTime())) continue
+      if (end < now) {
+        await sb.from('subscriptions').update({ status: 'expired', updated_at: nowIso() }).eq('id', row.id)
+      }
     }
 
     return json({ success: true, processed, charged, failed })
@@ -6487,6 +6611,9 @@ Deno.serve(async (req) => {
         routeResponse = await handleProducts(req.method, subParts, body, userId, sb)
         break
       case 'marketplace':
+        routeResponse = await handleMarketplace(req.method, subParts, body, userId, sb)
+        break
+      case 'payment':
         routeResponse = await handleMarketplace(req.method, subParts, body, userId, sb)
         break
       case 'dashboard':

@@ -116,19 +116,47 @@ export default function Marketplace() {
 
   const handleManualPayment = async () => {
     if (!manualTxnRef.trim() || !selectedProduct || !user) return;
+    if (paymentLockRef.current) return;
+    paymentLockRef.current = true;
     setPaymentSubmitting(true);
     try {
-      const { data: w } = await supabase.from('wallets').select('id').eq('user_id', user.id).maybeSingle();
-      if (w) {
-        await supabase.from('transactions').insert({
-          wallet_id: w.id, type: 'credit', amount: selectedProduct.price, status: 'pending',
-          description: `${buyPayMethod.toUpperCase()} for ${selectedProduct.title}`,
-          created_by: user.id, reference_id: manualTxnRef, reference_type: buyPayMethod,
-          meta: { payment_method: buyPayMethod, transaction_ref: manualTxnRef, product_id: selectedProduct.id },
-        });
+      const initRes = await marketplaceApi.paymentCreate({
+        product_id: selectedProduct.id,
+        amount: selectedProduct.price,
+        currency: 'INR',
+        payment_method: buyPayMethod,
+        gateway: buyPayMethod === 'upi' ? 'upi' : buyPayMethod === 'bank' ? 'bank' : 'payu',
+        gateway_reference: manualTxnRef.trim(),
+        lock_wallet: false,
+        meta: {
+          payment_method: buyPayMethod,
+          transaction_ref: manualTxnRef.trim(),
+          product_id: selectedProduct.id,
+          product_title: selectedProduct.title,
+          flow: 'manual_marketplace_purchase',
+        },
+      });
+      const paymentId = String((initRes as any)?.data?.payment?.id || '');
+      if (!paymentId) throw new Error('Payment initialization failed');
+
+      const verifyRes = await marketplaceApi.paymentVerify({
+        payment_id: paymentId,
+        amount: selectedProduct.price,
+        transaction_id: manualTxnRef.trim(),
+      });
+      if (!(verifyRes as any)?.success) {
+        throw new Error((verifyRes as any)?.error || 'Payment verification failed');
       }
+      const licenseKey = String((verifyRes as any)?.result?.license_key || '');
       setManualSubmitted(true);
-    } catch { toast.error('Submission failed'); }
+      setPaymentSuccess(true);
+      setGeneratedLicenseKey(licenseKey);
+      setDownloadUrl(licenseKey ? `/download/apk/${selectedProduct.id}?key=${licenseKey}` : '');
+      toast.success('🎉 Payment successful!');
+    } catch (error: any) {
+      toast.error(error?.message || 'Submission failed');
+      paymentLockRef.current = false;
+    }
     setPaymentSubmitting(false);
   };
 
