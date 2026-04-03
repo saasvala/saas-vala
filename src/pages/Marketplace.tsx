@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { MarketplaceHeader } from '@/components/marketplace/MarketplaceHeader';
 import { LazySection } from '@/components/marketplace/LazySection';
@@ -11,12 +11,23 @@ import { useFraudDetection } from '@/hooks/useFraudDetection';
 import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/integrations/supabase/client';
 import { HeroBannerSlider } from '@/components/marketplace/HeroBannerSlider';
+import { SectionHeader } from '@/components/marketplace/SectionHeader';
+import { SectionSlider } from '@/components/marketplace/SectionSlider';
+import { MarketplaceProductCard } from '@/components/marketplace/MarketplaceProductCard';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { marketplaceApi } from '@/lib/api';
 import {
   ShoppingCart, CreditCard, Wallet, Loader2, ChevronDown, ChevronUp, Copy, Key, Download
 } from 'lucide-react';
@@ -26,6 +37,7 @@ interface Product {
   id: string; title: string; subtitle: string; image: string;
   status: 'upcoming' | 'live' | 'bestseller' | 'draft'; price: number;
 }
+interface SearchResultRow { id: string }
 
 const bankDetails = {
   accountName: 'SOFTWARE VALA', bankName: 'INDIAN BANK',
@@ -35,6 +47,7 @@ const bankDetails = {
 
 
 type BuyPayMethod = 'wallet' | 'upi' | 'bank' | 'crypto';
+const TRENDING_RATING_THRESHOLD = 4.8;
 
 export default function Marketplace() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
@@ -55,6 +68,12 @@ export default function Marketplace() {
   const [searchParams, setSearchParams] = useSearchParams();
   
   const { products } = useMarketplaceProducts();
+  const [searchQuery, setSearchQuery] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [priceFilter, setPriceFilter] = useState('all');
+  const [languageFilter, setLanguageFilter] = useState('all');
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchResults, setSearchResults] = useState<SearchResultRow[] | null>(null);
 
   // Handle ?buy=PRODUCT_ID query param coming from cart checkout
   useEffect(() => {
@@ -117,11 +136,137 @@ export default function Marketplace() {
     navigator.clipboard.writeText(text); toast.success(`${label} copied!`);
   };
 
+  useEffect(() => {
+    const onSearch = (event: Event) => {
+      const custom = event as CustomEvent<string>;
+      setSearchQuery((custom.detail || '').trim());
+    };
+    window.addEventListener('marketplace-search', onSearch as EventListener);
+    return () => window.removeEventListener('marketplace-search', onSearch as EventListener);
+  }, []);
+
+  useEffect(() => {
+    const filters: Record<string, unknown> = {};
+    if (categoryFilter !== 'all') filters.category = categoryFilter;
+    if (priceFilter !== 'all') filters.price = Number(priceFilter);
+    if (languageFilter !== 'all') filters.language = languageFilter;
+    const hasFilters = Object.keys(filters).length > 0;
+    const hasSearch = searchQuery.trim().length > 0;
+
+    const debounceTimer = setTimeout(async () => {
+      if (!hasSearch && !hasFilters) {
+        setSearchResults(null);
+        return;
+      }
+      try {
+        setSearchLoading(true);
+        const res = await marketplaceApi.productSearch(searchQuery.trim(), filters);
+        setSearchResults(Array.isArray((res as any)?.data) ? (res as any).data : []);
+      } catch (_e) {
+        setSearchResults([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(debounceTimer);
+  }, [searchQuery, categoryFilter, priceFilter, languageFilter]);
+
+  const filteredProducts = useMemo(() => {
+    if (!searchResults) return products;
+    const ids = new Set(searchResults.map((row: any) => String(row.id)));
+    return products.filter((p) => ids.has(String(p.id)));
+  }, [products, searchResults]);
+
+  const trendingProducts = useMemo(
+    () => filteredProducts.filter((p: any) => p.trending || p.rating >= TRENDING_RATING_THRESHOLD).slice(0, 30),
+    [filteredProducts]
+  );
+  const newLaunchProducts = useMemo(() => {
+    return [...filteredProducts]
+      .sort((a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+      .slice(0, 30);
+  }, [filteredProducts]);
+  const topSellingProducts = useMemo(() => {
+    return [...filteredProducts]
+      .sort((a: any, b: any) => (Number(b.rating || 0) - Number(a.rating || 0)) || (Number(b.price || 0) - Number(a.price || 0)))
+      .slice(0, 30);
+  }, [filteredProducts]);
+
   return (
     <div className="min-h-screen" style={{ background: '#0B1020' }}>
       <MarketplaceHeader />
       <main className="pt-16 pb-8">
         <HeroBannerSlider />
+        <section className="px-4 md:px-8 mb-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+            <Input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search products..."
+              className="h-9 bg-muted/40"
+            />
+            <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+              <SelectTrigger className="h-9"><SelectValue placeholder="Category" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Categories</SelectItem>
+                <SelectItem value="ai">AI</SelectItem>
+                <SelectItem value="seo">SEO</SelectItem>
+                <SelectItem value="apk">APK</SelectItem>
+                <SelectItem value="finance">Finance</SelectItem>
+                <SelectItem value="education">Education</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={priceFilter} onValueChange={setPriceFilter}>
+              <SelectTrigger className="h-9"><SelectValue placeholder="Price" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Prices</SelectItem>
+                <SelectItem value="5">Up to $5</SelectItem>
+                <SelectItem value="10">Up to $10</SelectItem>
+                <SelectItem value="25">Up to $25</SelectItem>
+                <SelectItem value="50">Up to $50</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={languageFilter} onValueChange={setLanguageFilter}>
+              <SelectTrigger className="h-9"><SelectValue placeholder="Language" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Languages</SelectItem>
+                <SelectItem value="english">English</SelectItem>
+                <SelectItem value="hindi">Hindi</SelectItem>
+                <SelectItem value="spanish">Spanish</SelectItem>
+                <SelectItem value="arabic">Arabic</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {searchLoading && <p className="mt-2 text-xs text-muted-foreground">Searching...</p>}
+        </section>
+
+        <section className="py-2">
+          <SectionHeader icon="🔥" title="Trending" subtitle="Most demanded products right now" badge="TRENDING" badgeVariant="trending" totalCount={trendingProducts.length} />
+          <SectionSlider>
+            {trendingProducts.map((product, i) => (
+              <MarketplaceProductCard key={`trending-${product.id}`} product={product as any} index={i} onBuyNow={handleBuyNow} rank={i + 1} />
+            ))}
+          </SectionSlider>
+        </section>
+
+        <section className="py-2">
+          <SectionHeader icon="🆕" title="New Launch" subtitle="Freshly released marketplace apps" badge="NEW" badgeVariant="new" totalCount={newLaunchProducts.length} />
+          <SectionSlider>
+            {newLaunchProducts.map((product, i) => (
+              <MarketplaceProductCard key={`new-${product.id}`} product={product as any} index={i} onBuyNow={handleBuyNow} rank={i + 1} />
+            ))}
+          </SectionSlider>
+        </section>
+
+        <section className="py-2">
+          <SectionHeader icon="🏆" title="Top Selling" subtitle="Top-rated and high-conversion products" badge="TOP" badgeVariant="top" totalCount={topSellingProducts.length} />
+          <SectionSlider>
+            {topSellingProducts.map((product, i) => (
+              <MarketplaceProductCard key={`top-${product.id}`} product={product as any} index={i} onBuyNow={handleBuyNow} rank={i + 1} />
+            ))}
+          </SectionSlider>
+        </section>
 
         {/* All categories as dynamic rows — no duplicate hardcoded sections */}
         {MARKETPLACE_CATEGORIES.map((cat) => (

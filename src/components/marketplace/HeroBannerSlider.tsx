@@ -2,12 +2,15 @@ import { useState, useEffect, useCallback } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/integrations/supabase/client';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 
 interface HeroSlide {
   id: string;
   image: string;
   title: string;
   subtitle: string;
+  linkUrl?: string;
   badge?: string;
   badgeColor?: string;
   offerText?: string;
@@ -27,6 +30,7 @@ const fallbackTickers: TickerItem[] = [
   { id: 'ft-1', text: '🔥 ALL SOFTWARE $5 ONLY' },
   { id: 'ft-2', text: '⚡ 2000+ Software Products' },
 ];
+const TRUSTED_EXTERNAL_HOSTS = ['saasvala.com', 'www.saasvala.com'];
 
 async function getUserCountry(): Promise<{ country: string; region: string }> {
   try {
@@ -40,6 +44,7 @@ async function getUserCountry(): Promise<{ country: string; region: string }> {
 }
 
 export function HeroBannerSlider({ autoPlayInterval = 4000 }: { autoPlayInterval?: number }) {
+  const navigate = useNavigate();
   const [slides, setSlides] = useState<HeroSlide[]>(fallbackSlides);
   const [tickerItems, setTickerItems] = useState<TickerItem[]>(fallbackTickers);
   const [current, setCurrent] = useState(0);
@@ -69,6 +74,7 @@ export function HeroBannerSlider({ autoPlayInterval = 4000 }: { autoPlayInterval
             image: b.image_url || 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=1200&h=400&fit=crop',
             title: b.title,
             subtitle: b.subtitle || '',
+            linkUrl: b.link_url || undefined,
             badge: b.badge || undefined,
             badgeColor: b.badge_color || 'from-blue-500 to-indigo-500',
             offerText: b.offer_text || undefined,
@@ -140,6 +146,26 @@ export function HeroBannerSlider({ autoPlayInterval = 4000 }: { autoPlayInterval
   const slide = slides[current] || slides[0];
   if (!slide) return null;
 
+  const handleSlideAction = useCallback((target?: string) => {
+    const to = (target || '').trim();
+    if (!to) return;
+    if (/^https?:\/\//i.test(to)) {
+      try {
+        const parsed = new URL(to);
+        if (!TRUSTED_EXTERNAL_HOSTS.includes(parsed.hostname)) {
+          toast.error('Blocked untrusted external link');
+          return;
+        }
+        window.open(parsed.toString(), '_blank', 'noopener,noreferrer');
+      } catch {
+        toast.error('Invalid link target');
+        return;
+      }
+      return;
+    }
+    navigate(to);
+  }, [navigate]);
+
   return (
     <div className="mb-4">
       {/* Offer Ticker */}
@@ -156,11 +182,12 @@ export function HeroBannerSlider({ autoPlayInterval = 4000 }: { autoPlayInterval
         className="relative overflow-hidden mx-2 sm:mx-4 md:mx-6 mt-2 rounded-xl group"
         onMouseEnter={() => setPaused(true)}
         onMouseLeave={() => setPaused(false)}
+        onClick={() => handleSlideAction(slide.linkUrl)}
       >
         <div className="relative h-[160px] sm:h-[220px] md:h-[300px] w-full">
           {slides.map((s, i) => (
             <div key={s.id} className={cn('absolute inset-0 transition-opacity duration-500', i === current ? 'opacity-100' : 'opacity-0 pointer-events-none')}>
-              <img src={s.image} alt={s.title} className="w-full h-full object-cover" loading={i === 0 ? 'eager' : 'lazy'} />
+              <img src={s.image} alt={s.title} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" loading={i === 0 ? 'eager' : 'lazy'} />
               <div className="absolute inset-0 bg-gradient-to-r from-black/80 via-black/40 to-transparent" />
             </div>
           ))}
@@ -182,6 +209,20 @@ export function HeroBannerSlider({ autoPlayInterval = 4000 }: { autoPlayInterval
                 🎟️ CODE: {slide.couponCode}
               </span>
             )}
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                className="h-8 px-3 rounded-md text-[11px] font-black text-white bg-primary hover:bg-primary/90"
+                onClick={(e) => { e.stopPropagation(); handleSlideAction(slide.linkUrl || '/marketplace'); }}
+              >
+                Explore
+              </button>
+              <button
+                className="h-8 px-3 rounded-md text-[11px] font-black text-white bg-emerald-600 hover:bg-emerald-500"
+                onClick={(e) => { e.stopPropagation(); handleSlideAction(slide.linkUrl || '/marketplace'); }}
+              >
+                Buy Now
+              </button>
+            </div>
           </div>
         </div>
 
