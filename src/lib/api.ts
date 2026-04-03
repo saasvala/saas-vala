@@ -336,6 +336,35 @@ export const autoPilotApi = {
   addBilling: (data: any) => apiCall('POST', 'auto-pilot/add-billing', data),
 };
 
+export const billingApi = {
+  create: (data: {
+    client_id: string;
+    title: string;
+    amount: number;
+    type: 'one-time' | 'subscription';
+    due_date: string;
+    notes?: string;
+  }) => apiCall('POST', 'billing/create', data),
+  send: (data: { billing_id?: string; invoice_id?: string; client_id: string }) =>
+    apiCall('POST', 'billing/send', data),
+  alerts: () => apiCall('GET', 'billing/alerts'),
+  otpSend: (data: { invoice_id: string; client_id: string; amount: number; email?: string; otp?: string }) =>
+    apiCall('POST', 'billing/otp/send', data),
+  otpVerify: (data: { invoice_id: string; otp: string }) =>
+    apiCall('POST', 'billing/otp/verify', data),
+};
+
+export const paymentApi = {
+  create: (data: {
+    invoice_id: string;
+    billing_id?: string;
+    client_id: string;
+    amount: number;
+    method?: string;
+    otp?: string;
+  }) => apiCall('POST', 'payment/create', data),
+};
+
 export const adsApi = {
   optimize: (data: any) => apiCall('POST', 'ads/optimize', data),
 };
