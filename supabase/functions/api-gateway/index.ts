@@ -624,12 +624,17 @@ async function handleProducts(method: string, pathParts: string[], body: any, us
 
 async function countTableRows(sb: any, table: string) {
   try {
-    const { count, error } = await sb.from(table).select('id', { count: 'exact', head: true })
+    const { count, error } = await sb.from(table).select('*', { count: 'exact', head: true })
     if (error) return 0
     return Number(count || 0)
   } catch {
     return 0
   }
+}
+
+function isTableMissingError(error: unknown) {
+  const maybeError = error as { code?: string; message?: string } | null
+  return String(maybeError?.code || '') === '42P01' || /does not exist/i.test(String(maybeError?.message || ''))
 }
 
 async function handleDashboard(method: string, userId: string, sb: any) {
@@ -4074,7 +4079,7 @@ async function handleSystemHealth(method: string, pathParts: string[], body: any
     .maybeSingle()
 
   if (error) {
-    if (String((error as { code?: string })?.code || '') === '42P01' || /does not exist/i.test(String(error.message || ''))) {
+    if (isTableMissingError(error)) {
       return ok({ module: moduleName, status: 'healthy', last_check: now, stored: false })
     }
     return err(error.message)

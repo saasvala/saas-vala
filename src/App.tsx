@@ -213,6 +213,12 @@ function ReferralRedirect() {
   return <Navigate to={ref ? `/auth?ref=${ref}` : '/auth'} replace />;
 }
 
+function ChatIdRedirect() {
+  const { id } = useParams();
+  const chatId = id ? encodeURIComponent(id) : '';
+  return <Navigate to={chatId ? `/ai-chat?chat=${chatId}` : '/ai-chat'} replace />;
+}
+
 const SAFE_ROUTE_PARAM = /^[a-zA-Z0-9_-]+$/;
 
 function hasInvalidRouteParam(params: Array<string | undefined>) {
@@ -353,7 +359,7 @@ function AppRoutes() {
         <Route path="/ai" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/ai/chat" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/chat" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
-        <Route path="/chat/:id" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
+        <Route path="/chat/:id" element={<AuthGuard><ChatIdRedirect /></AuthGuard>} />
         <Route path="/ai-chat" element={<AuthGuard><AiChat /></AuthGuard>} />
         <Route path="/chat/history" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/saas-ai-dashboard" element={<AuthGuard><SaasAiDashboard /></AuthGuard>} />
