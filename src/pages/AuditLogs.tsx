@@ -1,16 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import {
   Select,
   SelectContent,
@@ -18,105 +10,218 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import {
-  Search,
-  FileText,
-  RefreshCw,
-  Loader2,
-  Eye,
-  Download,
-  Calendar,
-} from 'lucide-react';
+import { Search, FileText, RefreshCw, Loader2, Download, Clock3, Filter } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { listAuditLogs, type AuditEventCategory } from '@/observability/auditClient';
+import { listAuditLogs } from '@/observability/auditClient';
+import type { Json } from '@/integrations/supabase/types';
 import type { Database } from '@/integrations/supabase/types';
 
 type AuditLog = Database['public']['Tables']['audit_logs']['Row'];
 type AuditAction = Database['public']['Enums']['audit_action'];
+type AuditStatus = 'success' | 'warning' | 'error';
+type TimeWindow = '15m' | '1h' | '24h' | '7d' | '30d';
+type DateFilter = 'all' | 'today' | '7d' | '30d';
 
-const categoryColors: Record<AuditEventCategory, string> = {
-  AUTH: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
-  CRUD: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
-  SYSTEM: 'bg-slate-500/20 text-slate-400 border-slate-500/30',
-  API: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-  FILE: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
-  SECURITY: 'bg-red-500/20 text-red-400 border-red-500/30',
-  PAYMENT: 'bg-violet-500/20 text-violet-400 border-violet-500/30',
-  BACKGROUND: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+const statusColors: Record<AuditStatus, string> = {
+  success: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+  warning: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+  error: 'bg-red-500/20 text-red-400 border-red-500/30',
 };
 
-const actionColors: Record<AuditAction, string> = {
-  create: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
-  update: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
-  delete: 'bg-red-500/20 text-red-400 border-red-500/30',
-  read: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-  login: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
-  logout: 'bg-slate-500/20 text-slate-400 border-slate-500/30',
-  activate: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
-  suspend: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
-};
+const actionOptions: AuditAction[] = [
+  'create',
+  'read',
+  'update',
+  'delete',
+  'login',
+  'logout',
+  'activate',
+  'suspend',
+];
 
 export default function AuditLogs() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState<AuditEventCategory | 'all'>('all');
-  const [tableFilter, setTableFilter] = useState<string>('all');
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>('1h');
+  const [topFilter, setTopFilter] = useState<AuditStatus | 'all'>('all');
+  const [roleFilter, setRoleFilter] = useState<string>('all');
+  const [actionFilter, setActionFilter] = useState<AuditAction | 'all'>('all');
+  const [moduleFilter, setModuleFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<AuditStatus | 'all'>('all');
+  const [dateFilter, setDateFilter] = useState<DateFilter>('all');
   const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
 
-  const fetchLogs = async () => {
-    setLoading(true);
+  const getTimeCutoff = useCallback((windowFilter: TimeWindow | DateFilter): number => {
+    const now = Date.now();
+    if (windowFilter === '15m') return now - (15 * 60 * 1000);
+    if (windowFilter === '1h') return now - (60 * 60 * 1000);
+    if (windowFilter === '24h') return now - (24 * 60 * 60 * 1000);
+    if (windowFilter === '7d') return now - (7 * 24 * 60 * 60 * 1000);
+    if (windowFilter === '30d') return now - (30 * 24 * 60 * 60 * 1000);
+    if (windowFilter === 'today') {
+      const start = new Date();
+      start.setHours(0, 0, 0, 0);
+      return start.getTime();
+    }
+    return 0;
+  }, []);
+
+  const getMetaObject = useCallback((log: AuditLog): Record<string, unknown> => {
+    const metadata = log.metadata as Json;
+    if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+      return metadata as Record<string, unknown>;
+    }
+    return {};
+  }, []);
+
+  const getRole = useCallback((log: AuditLog): string => {
+    const metadata = getMetaObject(log);
+    return String(metadata.role || metadata.user_role || (log.is_system ? 'system' : 'user'));
+  }, [getMetaObject]);
+
+  const getModule = useCallback((log: AuditLog): string => {
+    return log.target_table || log.table_name || log.entity || log.event_category || 'system';
+  }, []);
+
+  const getStatus = useCallback((log: AuditLog): AuditStatus => {
+    const metadata = getMetaObject(log);
+    const rawStatus = String(metadata.status || metadata.level || '').toLowerCase();
+    if (rawStatus.includes('error') || rawStatus.includes('fail') || log.action === 'delete' || log.action === 'suspend') {
+      return 'error';
+    }
+    if (rawStatus.includes('warn') || log.action === 'update') {
+      return 'warning';
+    }
+    return 'success';
+  }, [getMetaObject]);
+
+  const getMessage = useCallback((log: AuditLog): string => {
+    const metadata = getMetaObject(log);
+    return String(metadata.message || metadata.description || log.event_type || 'Audit log entry');
+  }, [getMetaObject]);
+
+  const fetchLogs = useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+    }
     try {
       const { data, error } = await listAuditLogs({
         limit: 500,
-        eventCategory: categoryFilter === 'all' ? null : categoryFilter,
-        targetTable: tableFilter === 'all' ? null : tableFilter,
         search: searchQuery || null,
       });
       if (error) throw error;
       setLogs((data || []) as AuditLog[]);
     } catch (error) {
       console.error('Error fetching audit logs:', error);
-      toast.error('Failed to fetch audit logs');
+      if (!silent) {
+        toast.error('Failed to fetch audit logs');
+      }
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
-  };
+  }, [searchQuery]);
 
   useEffect(() => {
     fetchLogs();
-  }, [categoryFilter, tableFilter]);
+  }, [fetchLogs]);
 
-  const filteredLogs = logs.filter((log) => {
-    const table = log.target_table || log.table_name || '';
-    const eventType = log.event_type || '';
-    const targetId = log.target_id || log.record_id || '';
-    return table.toLowerCase().includes(searchQuery.toLowerCase())
-      || eventType.toLowerCase().includes(searchQuery.toLowerCase())
-      || targetId.includes(searchQuery);
-  });
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void fetchLogs(true);
+    }, 8000);
+    return () => window.clearInterval(interval);
+  }, [fetchLogs]);
 
-  const uniqueTables = [...new Set(logs.map((l) => l.target_table || l.table_name || 'system'))];
+  const filteredLogs = useMemo(() => {
+    const cutoffTop = getTimeCutoff(timeWindow);
+    const cutoffDate = getTimeCutoff(dateFilter);
+    const effectiveCutoff = Math.max(cutoffTop, cutoffDate);
+    const query = searchQuery.trim().toLowerCase();
+
+    return logs.filter((log) => {
+      const occurredAt = new Date(log.occurred_at || log.created_at || '').getTime();
+      const role = getRole(log).toLowerCase();
+      const action = (log.action || '').toLowerCase();
+      const moduleName = getModule(log).toLowerCase();
+      const status = getStatus(log);
+      const message = getMessage(log).toLowerCase();
+      const targetId = String(log.target_id || log.record_id || '').toLowerCase();
+
+      const matchesTime = occurredAt >= effectiveCutoff;
+      const matchesRole = roleFilter === 'all' || role === roleFilter;
+      const matchesAction = actionFilter === 'all' || log.action === actionFilter;
+      const matchesModule = moduleFilter === 'all' || moduleName === moduleFilter;
+      const matchesStatus = statusFilter === 'all' || status === statusFilter;
+      const matchesTopStatus = topFilter === 'all' || status === topFilter;
+      const matchesSearch = !query
+        || message.includes(query)
+        || role.includes(query)
+        || moduleName.includes(query)
+        || action.includes(query)
+        || targetId.includes(query);
+
+      return matchesTime
+        && matchesRole
+        && matchesAction
+        && matchesModule
+        && matchesStatus
+        && matchesTopStatus
+        && matchesSearch;
+    });
+  }, [
+    logs,
+    timeWindow,
+    dateFilter,
+    searchQuery,
+    roleFilter,
+    actionFilter,
+    moduleFilter,
+    statusFilter,
+    topFilter,
+    getRole,
+    getModule,
+    getStatus,
+    getMessage,
+    getTimeCutoff,
+  ]);
+
+  const roles = useMemo(
+    () => [...new Set(logs.map((log) => getRole(log).toLowerCase()))].sort(),
+    [logs, getRole],
+  );
+
+  const modules = useMemo(
+    () => [...new Set(logs.map((log) => getModule(log).toLowerCase()))].sort(),
+    [logs, getModule],
+  );
+
+  useEffect(() => {
+    if (!selectedLog && filteredLogs.length > 0) {
+      setSelectedLog(filteredLogs[0]);
+      return;
+    }
+    if (selectedLog && !filteredLogs.find((log) => log.id === selectedLog.id)) {
+      setSelectedLog(filteredLogs[0] || null);
+    }
+  }, [filteredLogs, selectedLog]);
 
   const exportLogs = () => {
     const csv = [
-      ['ID', 'Category', 'Event Type', 'Action', 'Target Table', 'Target ID', 'Actor ID', 'Occurred At'].join(','),
+      ['Time', 'Role', 'Action', 'Module', 'Status', 'Message', 'Actor ID', 'IP', 'Device'].join(','),
       ...filteredLogs.map((log) => [
-        log.id,
-        log.event_category || '',
-        log.event_type || '',
-        log.action,
-        log.target_table || log.table_name || '',
-        log.target_id || log.record_id || '',
-        log.actor_id || log.user_id || '',
         log.occurred_at || log.created_at || '',
+        getRole(log),
+        log.action,
+        getModule(log),
+        getStatus(log),
+        `"${getMessage(log).replaceAll('"', '""')}"`,
+        log.actor_id || log.user_id || '',
+        log.ip_address || '',
+        `"${(log.user_agent || '').replaceAll('"', '""')}"`,
       ].join(',')),
     ].join('\n');
 
@@ -126,237 +231,253 @@ export default function AuditLogs() {
     a.href = url;
     a.download = `audit-logs-${new Date().toISOString().split('T')[0]}.csv`;
     a.click();
+    URL.revokeObjectURL(url);
     toast.success('Logs exported successfully');
   };
 
   return (
     <DashboardLayout>
-      <div className="space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <h2 className="font-display text-2xl font-bold text-foreground">
-              Audit Logs
-            </h2>
-            <p className="text-muted-foreground">
-              Tamper-evident, append-only system activity logs
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <Button variant="outline" onClick={fetchLogs} className="gap-2">
-              <RefreshCw className="h-4 w-4" />
-              Refresh
-            </Button>
-            <Button onClick={exportLogs} className="gap-2">
-              <Download className="h-4 w-4" />
-              Export CSV
-            </Button>
-          </div>
-        </div>
-
+      <div className="space-y-4">
         <div className="glass-card rounded-xl p-4">
-          <div className="flex flex-col md:flex-row gap-4 items-start md:items-center">
-            <div className="relative flex-1 md:max-w-xs">
+          <div className="flex flex-col xl:flex-row gap-3 xl:items-center">
+            <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Search logs..."
+                placeholder="Search logs, users, modules, IDs..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-10 bg-muted/50 border-border"
               />
             </div>
             <div className="flex items-center gap-3">
-              <Select value={categoryFilter} onValueChange={(v) => setCategoryFilter(v as AuditEventCategory | 'all')}>
-                <SelectTrigger className="w-[170px]">
-                  <SelectValue placeholder="Category" />
+              <Select value={timeWindow} onValueChange={(v) => setTimeWindow(v as TimeWindow)}>
+                <SelectTrigger className="w-[120px]">
+                  <Clock3 className="h-4 w-4 mr-2 text-muted-foreground" />
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Categories</SelectItem>
-                  <SelectItem value="AUTH">AUTH</SelectItem>
-                  <SelectItem value="CRUD">CRUD</SelectItem>
-                  <SelectItem value="SYSTEM">SYSTEM</SelectItem>
-                  <SelectItem value="API">API</SelectItem>
-                  <SelectItem value="FILE">FILE</SelectItem>
-                  <SelectItem value="SECURITY">SECURITY</SelectItem>
-                  <SelectItem value="PAYMENT">PAYMENT</SelectItem>
-                  <SelectItem value="BACKGROUND">BACKGROUND</SelectItem>
+                  <SelectItem value="15m">Last 15m</SelectItem>
+                  <SelectItem value="1h">Last 1h</SelectItem>
+                  <SelectItem value="24h">Last 24h</SelectItem>
+                  <SelectItem value="7d">Last 7d</SelectItem>
+                  <SelectItem value="30d">Last 30d</SelectItem>
                 </SelectContent>
               </Select>
-              <Select value={tableFilter} onValueChange={setTableFilter}>
-                <SelectTrigger className="w-[170px]">
-                  <SelectValue placeholder="Target Table" />
+              <Select value={topFilter} onValueChange={(v) => setTopFilter(v as AuditStatus | 'all')}>
+                <SelectTrigger className="w-[130px]">
+                  <Filter className="h-4 w-4 mr-2 text-muted-foreground" />
+                  <SelectValue placeholder="Status" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Targets</SelectItem>
-                  {uniqueTables.map((table) => (
-                    <SelectItem key={table} value={table}>{table}</SelectItem>
+                  <SelectItem value="all">All Status</SelectItem>
+                  <SelectItem value="success">Success</SelectItem>
+                  <SelectItem value="warning">Warning</SelectItem>
+                  <SelectItem value="error">Error</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button variant="outline" onClick={() => fetchLogs()} className="gap-2">
+                <RefreshCw className="h-4 w-4" />
+                Refresh
+              </Button>
+              <Button onClick={exportLogs} className="gap-2">
+                <Download className="h-4 w-4" />
+                Export
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-[260px_minmax(0,1fr)_360px] gap-4">
+          <aside className="glass-card rounded-xl p-4 space-y-4 h-fit">
+            <div>
+              <h2 className="font-display text-lg font-semibold text-foreground">Filters</h2>
+              <p className="text-xs text-muted-foreground">Role, action, module, status, date</p>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Role</p>
+              <Select value={roleFilter} onValueChange={setRoleFilter}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Roles</SelectItem>
+                  {roles.map((role) => (
+                    <SelectItem key={role} value={role}>{role}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-          </div>
-        </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="glass-card rounded-xl p-4 text-center">
-            <p className="text-2xl font-bold text-foreground">{logs.length}</p>
-            <p className="text-sm text-muted-foreground">Total Logs</p>
-          </div>
-          <div className="glass-card rounded-xl p-4 text-center">
-            <p className="text-2xl font-bold text-primary">{logs.filter((l) => l.event_category === 'AUTH').length}</p>
-            <p className="text-sm text-muted-foreground">AUTH</p>
-          </div>
-          <div className="glass-card rounded-xl p-4 text-center">
-            <p className="text-2xl font-bold text-primary">{logs.filter((l) => l.event_category === 'CRUD').length}</p>
-            <p className="text-sm text-muted-foreground">CRUD</p>
-          </div>
-          <div className="glass-card rounded-xl p-4 text-center">
-            <p className="text-2xl font-bold text-primary">{logs.filter((l) => l.event_category === 'API').length}</p>
-            <p className="text-sm text-muted-foreground">API</p>
-          </div>
-        </div>
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Action</p>
+              <Select value={actionFilter} onValueChange={(v) => setActionFilter(v as AuditAction | 'all')}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Actions</SelectItem>
+                  {actionOptions.map((action) => (
+                    <SelectItem key={action} value={action}>{action}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
 
-        <div className="glass-card rounded-xl overflow-hidden">
-          {loading ? (
-            <div className="flex items-center justify-center p-12">
-              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Module</p>
+              <Select value={moduleFilter} onValueChange={setModuleFilter}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Modules</SelectItem>
+                  {modules.map((moduleName) => (
+                    <SelectItem key={moduleName} value={moduleName}>{moduleName}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-          ) : filteredLogs.length === 0 ? (
-            <div className="flex flex-col items-center justify-center p-12 text-center">
-              <FileText className="h-12 w-12 text-muted-foreground mb-4" />
-              <h3 className="font-semibold text-foreground mb-2">No audit logs found</h3>
-              <p className="text-muted-foreground">Activity will appear here as users interact with the system</p>
+
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Status</p>
+              <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as AuditStatus | 'all')}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Status</SelectItem>
+                  <SelectItem value="success">Success</SelectItem>
+                  <SelectItem value="warning">Warning</SelectItem>
+                  <SelectItem value="error">Error</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="border-border hover:bg-muted/50">
-                  <TableHead className="text-muted-foreground">Category</TableHead>
-                  <TableHead className="text-muted-foreground">Event</TableHead>
-                  <TableHead className="text-muted-foreground">Action</TableHead>
-                  <TableHead className="text-muted-foreground">Target</TableHead>
-                  <TableHead className="text-muted-foreground">Actor</TableHead>
-                  <TableHead className="text-muted-foreground">Timestamp</TableHead>
-                  <TableHead className="text-muted-foreground text-right">Details</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredLogs.slice(0, 100).map((log) => {
-                  const category = (log.event_category || 'SYSTEM') as AuditEventCategory;
-                  const action = log.action;
+
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Date</p>
+              <Select value={dateFilter} onValueChange={(v) => setDateFilter(v as DateFilter)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All dates</SelectItem>
+                  <SelectItem value="today">Today</SelectItem>
+                  <SelectItem value="7d">Last 7 days</SelectItem>
+                  <SelectItem value="30d">Last 30 days</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <Button
+              variant="outline"
+              onClick={() => {
+                setRoleFilter('all');
+                setActionFilter('all');
+                setModuleFilter('all');
+                setStatusFilter('all');
+                setDateFilter('all');
+                setTimeWindow('1h');
+                setTopFilter('all');
+                setSearchQuery('');
+              }}
+              className="w-full"
+            >
+              Reset filters
+            </Button>
+          </aside>
+
+          <section className="glass-card rounded-xl overflow-hidden min-h-[560px]">
+            <div className="grid grid-cols-[130px_120px_120px_140px_120px_minmax(240px,1fr)] gap-3 px-4 py-3 border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
+              <p>Time</p>
+              <p>Role</p>
+              <p>Action</p>
+              <p>Module</p>
+              <p>Status</p>
+              <p>Message</p>
+            </div>
+            <div className="max-h-[560px] overflow-y-auto">
+              {loading ? (
+                <div className="flex items-center justify-center p-12">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                </div>
+              ) : filteredLogs.length === 0 ? (
+                <div className="flex flex-col items-center justify-center p-12 text-center">
+                  <FileText className="h-12 w-12 text-muted-foreground mb-4" />
+                  <h3 className="font-semibold text-foreground mb-2">No logs found</h3>
+                  <p className="text-muted-foreground">Try adjusting filters or search terms.</p>
+                </div>
+              ) : (
+                filteredLogs.map((log) => {
+                  const status = getStatus(log);
                   return (
-                    <TableRow key={log.id} className="border-border hover:bg-muted/30">
-                      <TableCell>
-                        <Badge variant="outline" className={cn('uppercase text-xs', categoryColors[category])}>
-                          {category}
+                    <button
+                      type="button"
+                      key={log.id}
+                      onClick={() => setSelectedLog(log)}
+                      className={cn(
+                        'w-full text-left grid grid-cols-[130px_120px_120px_140px_120px_minmax(240px,1fr)] gap-3 px-4 py-3 border-b border-border transition-colors',
+                        'hover:bg-muted/30',
+                        selectedLog?.id === log.id && 'bg-muted/30',
+                      )}
+                    >
+                      <p className="text-xs text-muted-foreground truncate">
+                        {new Date(log.occurred_at || log.created_at || '').toLocaleTimeString()}
+                      </p>
+                      <p className="text-sm text-foreground truncate">{getRole(log)}</p>
+                      <p className="text-sm text-foreground uppercase truncate">{log.action}</p>
+                      <p className="text-sm text-foreground truncate">{getModule(log)}</p>
+                      <div>
+                        <Badge variant="outline" className={cn('uppercase text-xs', statusColors[status])}>
+                          {status}
                         </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <span className="font-medium text-foreground">{log.event_type || 'unknown'}</span>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className={cn('uppercase text-xs', actionColors[action])}>
-                          {action}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <span className="font-medium text-foreground">{log.target_table || log.table_name || 'system'}</span>
-                      </TableCell>
-                      <TableCell>
-                        <span className="font-mono text-xs text-muted-foreground">
-                          {(log.actor_id || log.user_id || 'System').slice(0, 8)}...
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                          <Calendar className="h-3 w-3" />
-                          {new Date(log.occurred_at || log.created_at || '').toLocaleString()}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => setSelectedLog(log)}
-                        >
-                          <Eye className="h-4 w-4" />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
+                      </div>
+                      <p className="text-sm text-muted-foreground truncate">{getMessage(log)}</p>
+                    </button>
                   );
-                })}
-              </TableBody>
-            </Table>
-          )}
+                })
+              )}
+            </div>
+          </section>
+
+          <aside className="glass-card rounded-xl p-4 min-h-[560px]">
+            <h2 className="font-display text-lg font-semibold text-foreground mb-4">Log Details</h2>
+            {selectedLog ? (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <p className="text-xs text-muted-foreground uppercase">User</p>
+                    <p className="font-mono break-all">{selectedLog.actor_id || selectedLog.user_id || 'System'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground uppercase">IP</p>
+                    <p className="font-mono break-all">{selectedLog.ip_address || 'N/A'}</p>
+                  </div>
+                  <div className="col-span-2">
+                    <p className="text-xs text-muted-foreground uppercase">Device</p>
+                    <p className="break-all text-sm text-foreground">{selectedLog.user_agent || 'Unknown'}</p>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground uppercase mb-2">JSON</p>
+                  <pre className="bg-muted/50 p-3 rounded-lg text-xs overflow-auto max-h-[360px]">
+                    {JSON.stringify(
+                      {
+                        id: selectedLog.id,
+                        time: selectedLog.occurred_at || selectedLog.created_at,
+                        role: getRole(selectedLog),
+                        action: selectedLog.action,
+                        module: getModule(selectedLog),
+                        status: getStatus(selectedLog),
+                        message: getMessage(selectedLog),
+                        metadata: selectedLog.metadata || {},
+                        old_data: selectedLog.old_data,
+                        new_data: selectedLog.new_data,
+                      },
+                      null,
+                      2,
+                    )}
+                  </pre>
+                </div>
+              </div>
+            ) : (
+              <div className="h-full flex items-center justify-center text-center text-muted-foreground text-sm">
+                Select a log row to inspect details.
+              </div>
+            )}
+          </aside>
         </div>
       </div>
-
-      <Dialog open={!!selectedLog} onOpenChange={() => setSelectedLog(null)}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Audit Log Details</DialogTitle>
-          </DialogHeader>
-          {selectedLog && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-sm text-muted-foreground">Category</p>
-                  <p className="font-medium">{selectedLog.event_category}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Event</p>
-                  <p className="font-medium">{selectedLog.event_type}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Action</p>
-                  <p className="font-medium">{selectedLog.action}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Target</p>
-                  <p className="font-mono text-sm">{selectedLog.target_table || selectedLog.table_name}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Target ID</p>
-                  <p className="font-mono text-sm">{selectedLog.target_id || selectedLog.record_id || 'N/A'}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Actor ID</p>
-                  <p className="font-mono text-sm">{selectedLog.actor_id || selectedLog.user_id || 'System'}</p>
-                </div>
-                <div className="col-span-2">
-                  <p className="text-sm text-muted-foreground">Timestamp</p>
-                  <p>{new Date(selectedLog.occurred_at || selectedLog.created_at || '').toLocaleString()}</p>
-                </div>
-              </div>
-
-              <div>
-                <p className="text-sm text-muted-foreground mb-2">Metadata</p>
-                <pre className="bg-muted/50 p-4 rounded-lg text-xs overflow-auto max-h-48">
-                  {JSON.stringify(selectedLog.metadata || {}, null, 2)}
-                </pre>
-              </div>
-
-              {selectedLog.old_data && (
-                <div>
-                  <p className="text-sm text-muted-foreground mb-2">Old Data</p>
-                  <pre className="bg-muted/50 p-4 rounded-lg text-xs overflow-auto max-h-40">
-                    {JSON.stringify(selectedLog.old_data, null, 2)}
-                  </pre>
-                </div>
-              )}
-
-              {selectedLog.new_data && (
-                <div>
-                  <p className="text-sm text-muted-foreground mb-2">New Data</p>
-                  <pre className="bg-muted/50 p-4 rounded-lg text-xs overflow-auto max-h-40">
-                    {JSON.stringify(selectedLog.new_data, null, 2)}
-                  </pre>
-                </div>
-              )}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
     </DashboardLayout>
   );
 }
-
