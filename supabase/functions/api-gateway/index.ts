@@ -2433,7 +2433,13 @@ async function handleGithub(method: string, pathParts: string[], body: any, user
     return json({ data: allRepos })
   }
 
-  return err('Not found', 404)
+  // POST /github/connect
+  if (method === 'POST' && action === 'connect') {
+    await logActivity(adminClient(), 'github', userId, 'connect', userId, { via: 'api' })
+    return ok({ connected: true })
+  }
+
+  return fail('Not found', 404, 'NOT_FOUND')
 }
 
 // ===================== 8. SAAS AI =====================
@@ -2462,7 +2468,29 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
     return json({ data })
   }
 
-  return err('Not found', 404)
+  // POST /ai/debug
+  if (method === 'POST' && action === 'debug') {
+    const { data, error } = await sb.from('ai_logs').insert({
+      server_id: body.server_id || null,
+      action: 'debug',
+      result: body.prompt || body.input || null,
+    }).select().single()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    return ok(data, 201)
+  }
+
+  // POST /ai/voice
+  if (method === 'POST' && action === 'voice') {
+    const { data, error } = await sb.from('ai_logs').insert({
+      server_id: body.server_id || null,
+      action: 'voice',
+      result: body.transcript || body.intent || null,
+    }).select().single()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    return ok(data, 201)
+  }
+
+  return fail('Not found', 404, 'NOT_FOUND')
 }
 
 // ===================== 9. AI CHAT =====================
@@ -3349,9 +3377,13 @@ Deno.serve(async (req) => {
       case 'marketplace': return await handleMarketplace(req.method, subParts, body, userId, sb)
       case 'keys': return await handleKeys(req.method, subParts, body, userId, sb)
       case 'projects':
+      case 'servers':
       case 'deploy':
       case 'deploy-targets':
+      case 'dns':
       case 'domain':
+      case 'ssl':
+      case 'git':
       case 'server':
         return await handleServers(req.method, [module, ...subParts], body, userId, sb)
       case 'github': return await handleGithub(req.method, subParts, body, userId, sb)

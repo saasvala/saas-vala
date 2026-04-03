@@ -58,7 +58,7 @@ const typeConfig: Record<string, { icon: typeof Server; label: string }> = {
   vps: { icon: Server, label: 'VPS' },
 };
 
-export function ServerListPanel() {
+export function ServerListPanel({ routeModeAdd = false }: { routeModeAdd?: boolean }) {
   const navigate = useNavigate();
   const [servers, setServers] = useState<ServerItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -98,6 +98,12 @@ export function ServerListPanel() {
   useEffect(() => {
     fetchServers();
   }, []);
+
+  useEffect(() => {
+    if (routeModeAdd) {
+      setShowAddModal(true);
+    }
+  }, [routeModeAdd]);
 
   const canTriggerAction = useCallback((key: string) => {
     const now = Date.now();
@@ -339,7 +345,7 @@ export function ServerListPanel() {
               <Button
                 size="sm"
                 className="h-8 text-xs gap-1.5 bg-gradient-to-r from-primary to-cyan hover:from-primary/90 hover:to-cyan/90"
-                onClick={() => navigate('/servers/add')}
+                onClick={() => routeModeAdd ? setShowAddModal(true) : navigate('/servers/add')}
               >
                 <Plus className="h-3.5 w-3.5" />
                 Add Server
@@ -359,7 +365,7 @@ export function ServerListPanel() {
               <Button
                 size="sm"
                 className="gap-1.5 bg-gradient-to-r from-primary to-cyan"
-                onClick={() => navigate('/servers/add')}
+                onClick={() => routeModeAdd ? setShowAddModal(true) : navigate('/servers/add')}
               >
                 <Plus className="h-3.5 w-3.5" />
                 Add Your First Server

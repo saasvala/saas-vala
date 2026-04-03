@@ -9,7 +9,7 @@ export default function ServerAdd() {
           <h2 className="font-display text-xl sm:text-2xl font-bold text-foreground">Add Server</h2>
           <p className="text-sm text-muted-foreground">Create and connect a new server.</p>
         </div>
-        <ServerListPanel />
+        <ServerListPanel routeModeAdd />
       </div>
     </DashboardLayout>
   );
