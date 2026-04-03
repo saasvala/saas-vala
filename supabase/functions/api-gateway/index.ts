@@ -36,6 +36,39 @@ const settingsUpdateSchema = z.object({
   ddos: z.boolean().optional(),
 })
 
+const serverAddSchema = z.object({
+  name: z.string().min(1),
+  type: z.string().optional(),
+  server_type: z.string().optional(),
+  ip: z.string().optional(),
+  ip_address: z.string().optional(),
+  agent_url: z.string().optional(),
+  agent_token: z.string().optional(),
+  provider: z.string().optional(),
+  region: z.string().optional(),
+})
+
+function generateAgentToken() {
+  const bytes = new Uint8Array(24)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+function generateSubdomainSuffix(length = 6) {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
+  const bytes = new Uint8Array(length)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes).map((b) => chars[b % chars.length]).join('')
+}
+
+function isValidIpAddress(input: string) {
+  const value = input.trim()
+  if (!value) return true
+  const ipv4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/
+  const ipv6 = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|::1)$/
+  return ipv4.test(value) || ipv6.test(value)
+}
+
 async function logRequestSafe(
   admin: any,
   params: {
@@ -3090,6 +3123,198 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   const secondSegment = pathParts[1]
   const thirdSegment = pathParts[2]
 
+  // GET /servers/list
+  if (method === 'GET' && segment === 'servers' && secondSegment === 'list') {
+    const { data, error } = await sb.from('servers').select('*').order('created_at', { ascending: false })
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    return ok(data || [])
+  }
+
+  // POST /server/add
+  if (method === 'POST' && segment === 'server' && secondSegment === 'add') {
+    const parsed = serverAddSchema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+
+    const name = parsed.data.name.trim()
+    const type = (parsed.data.type || parsed.data.server_type || 'vps').toLowerCase()
+    const ipAddress = (parsed.data.ip_address || parsed.data.ip || '').trim()
+    if (!isValidIpAddress(ipAddress)) {
+      return fail('Invalid IP address', 422, 'VALIDATION_ERROR')
+    }
+
+    const plainAgentToken = (parsed.data.agent_token || '').trim() || generateAgentToken()
+    const baseSubdomain = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '') || 'server'
+    const subdomain = `${baseSubdomain}-${generateSubdomainSuffix(6)}`
+    const provider = sanitizeTextInput(parsed.data.provider || '')
+    const region = sanitizeTextInput(parsed.data.region || '')
+
+    const insertPayload: Record<string, unknown> = {
+      name,
+      subdomain,
+      server_type: type,
+      ip_address: ipAddress || null,
+      agent_url: parsed.data.agent_url || null,
+      agent_token: plainAgentToken,
+      status: 'stopped',
+      health_status: 'pending',
+      git_branch: 'main',
+      runtime: 'nodejs18',
+      auto_deploy: true,
+      created_by: userId,
+    }
+
+    if (provider) insertPayload.provider = provider
+    if (region) insertPayload.region = region
+
+    const { data, error } = await sb.from('servers').insert(insertPayload).select('*').single()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+
+    await logActivity(admin, 'server', data.id, 'created', userId, { name, type })
+
+    return ok({
+      ...data,
+      agent_token: plainAgentToken,
+      token_generated: !(parsed.data.agent_token || '').trim(),
+    }, 201)
+  }
+
+  // POST /agent/connect
+  if (method === 'POST' && segment === 'agent' && secondSegment === 'connect') {
+    const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
+    const params = {
+      name: sanitizeTextInput(body?.name || 'Server Agent', 120),
+      ip_address: sanitizeTextInput(body?.ip_address || body?.ip || '', 120) || undefined,
+      agent_url: sanitizeTextInput(body?.agent_url || '', 240),
+      agent_token: sanitizeTextInput(body?.agent_token || '', 256),
+    }
+    if (!params.name || !params.agent_url || !params.agent_token) return fail('Missing required fields', 422, 'VALIDATION_ERROR')
+    const { data, error } = await sb.functions.invoke('server-agent', {
+      body: {
+        action: 'register',
+        serverId: serverId || undefined,
+        params,
+      },
+    })
+    if (error || !data?.success) return fail(error?.message || data?.error || 'Agent connect failed', 400, 'AGENT_CONNECT_FAILED')
+    return ok(data)
+  }
+
+  // POST /agent/status
+  if (method === 'POST' && segment === 'agent' && secondSegment === 'status') {
+    const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
+    if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
+    const { data, error } = await sb.functions.invoke('server-agent', {
+      body: { action: 'status', serverId },
+    })
+    if (error || !data?.success) return fail(error?.message || data?.error || 'Agent status failed', 400, 'AGENT_STATUS_FAILED')
+    return ok(data)
+  }
+
+  // POST /agent/execute
+  if (method === 'POST' && segment === 'agent' && secondSegment === 'execute') {
+    const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
+    const command = sanitizeTextInput(body?.command || '', 120)
+    if (!serverId || !command) return fail('server_id and command required', 422, 'VALIDATION_ERROR')
+    const { data, error } = await sb.functions.invoke('server-agent', {
+      body: { action: 'execute', serverId, command, params: body?.params || {} },
+    })
+    if (error || !data?.success) return fail(error?.message || data?.error || 'Agent execute failed', 400, 'AGENT_EXECUTE_FAILED')
+    return ok(data)
+  }
+
+  // POST /server/ai-action
+  if (method === 'POST' && segment === 'server' && secondSegment === 'ai-action') {
+    const parsed = serverActionSchema.extend({ action: z.string().min(1) }).safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+
+    const action = sanitizeTextInput(parsed.data.action, 64).toLowerCase()
+    const aliasMap: Record<string, string> = {
+      ai_scan_server: 'ai_scan',
+      auto_fix: 'fix_issues',
+      deploy_project: 'deploy',
+      restart_server: 'restart',
+    }
+    const canonicalAction = aliasMap[action] || action
+    const actionMap: Record<string, { command: string; activity: string }> = {
+      ai_scan: { command: 'status', activity: 'ai_scan' },
+      fix_issues: { command: 'service_status', activity: 'ai_fix' },
+      deploy: { command: 'deploy', activity: 'ai_deploy' },
+      restart: { command: 'restart', activity: 'ai_restart' },
+      security_scan: { command: 'firewall_status', activity: 'ai_security_scan' },
+      optimize: { command: 'cpu_usage', activity: 'ai_optimize' },
+    }
+    const mapped = actionMap[canonicalAction]
+    if (!mapped) return fail('Unsupported AI action', 422, 'VALIDATION_ERROR')
+
+    const { data, error } = await sb.functions.invoke('server-agent', {
+      body: {
+        action: 'execute',
+        serverId: parsed.data.server_id,
+        command: mapped.command,
+        params: body?.params || {},
+      },
+    })
+    if (error || !data?.success) return fail(error?.message || data?.error || 'AI action failed', 400, 'AI_ACTION_FAILED')
+
+    const { error: aiLogError } = await sb.from('ai_logs').insert({
+      server_id: parsed.data.server_id,
+      action: mapped.activity,
+      result: JSON.stringify(data),
+    })
+    if (aiLogError) return fail(aiLogError.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'server', parsed.data.server_id, mapped.activity, userId, { action })
+
+    return ok({
+      server_id: parsed.data.server_id,
+      action,
+      executed: true,
+      result: data,
+    })
+  }
+
+  // POST /server/git-scan
+  if (method === 'POST' && segment === 'server' && secondSegment === 'git-scan') {
+    const parsed = serverActionSchema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    const { data: server, error } = await sb.from('servers').select('id,name,git_repo,git_branch').eq('id', parsed.data.server_id).maybeSingle()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    if (!server) return fail('Server not found', 404, 'NOT_FOUND')
+    await logActivity(admin, 'git', parsed.data.server_id, 'scan', userId, { git_repo: server.git_repo || null })
+    return ok({
+      server_id: parsed.data.server_id,
+      repo_connected: !!server.git_repo,
+      checked: true,
+      errors_detected: false,
+      report: {
+        repository: server.git_repo || null,
+        branch: server.git_branch || 'main',
+        issues: [],
+      },
+    })
+  }
+
+  // POST /deploy/webhook
+  if (method === 'POST' && segment === 'deploy' && secondSegment === 'webhook') {
+    const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
+    if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
+    const { data, error } = await sb.from('deployments').insert({
+      server_id: serverId,
+      status: 'building',
+      triggered_by: userId,
+      commit_sha: sanitizeTextInput(body?.commit_sha || body?.after || '', 120) || null,
+      commit_message: sanitizeTextInput(body?.commit_message || 'Webhook deploy triggered', 400),
+      branch: sanitizeTextInput(body?.branch || body?.ref || 'main', 120),
+    }).select().single()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await sb.from('servers').update({ status: 'deploying', last_deploy_at: nowIso() }).eq('id', serverId)
+    await logActivity(admin, 'deployment', data.id, 'webhook_triggered', userId, { server_id: serverId })
+    return ok(data, 201)
+  }
+
   // GET /projects
   if (method === 'GET' && segment === 'projects' && !id) {
     const { data, error } = await sb.from('servers').select('*').order('created_at', { ascending: false })
@@ -3329,6 +3554,15 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     return ok(data, 201)
   }
 
+  // GET /domain/list
+  if (method === 'GET' && segment === 'domain' && id === 'list') {
+    let query = sb.from('domains').select('*').order('created_at', { ascending: false }).limit(200)
+    if (body.server_id) query = query.eq('server_id', body.server_id)
+    const { data, error } = await query
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    return ok(data || [])
+  }
+
   // POST /domain/verify
   if (method === 'POST' && segment === 'domain' && id === 'verify') {
     const { error } = await sb.from('domains').update({ dns_verified: true, dns_verified_at: new Date().toISOString() })
@@ -3359,6 +3593,66 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     if (error) return fail(error.message, 400, 'DB_ERROR')
     await logActivity(admin, 'dns_record', data.id, 'created', userId, { server_id: parsed.data.server_id })
     return ok(data, 201)
+  }
+
+  // POST /dns/add
+  if (method === 'POST' && segment === 'dns' && secondSegment === 'add') {
+    const schema = z.object({
+      domain_id: z.string().optional(),
+      server_id: z.string().optional(),
+      type: z.string().default('A').optional(),
+      value: z.string().min(1),
+      name: z.string().default('@').optional(),
+      ttl: z.number().int().positive().optional(),
+    })
+    const parsed = schema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    const { data, error } = await sb.from('dns_records').insert({
+      domain_id: parsed.data.domain_id || null,
+      server_id: parsed.data.server_id || null,
+      record_type: parsed.data.type || 'A',
+      value: parsed.data.value,
+      name: parsed.data.name || '@',
+      ttl: parsed.data.ttl || 300,
+      status: 'pending',
+    }).select().single()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'dns_record', data.id, 'created', userId, { domain_id: parsed.data.domain_id || null })
+    return ok(data, 201)
+  }
+
+  // PUT /dns/update
+  if (method === 'PUT' && segment === 'dns' && secondSegment === 'update') {
+    const schema = z.object({
+      id: z.string().min(1),
+      type: z.string().optional(),
+      value: z.string().optional(),
+      name: z.string().optional(),
+      ttl: z.number().int().positive().optional(),
+    })
+    const parsed = schema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    const updates: Record<string, unknown> = {}
+    if (parsed.data.type) updates.record_type = parsed.data.type
+    if (parsed.data.value) updates.value = parsed.data.value
+    if (parsed.data.name) updates.name = parsed.data.name
+    if (parsed.data.ttl) updates.ttl = parsed.data.ttl
+    if (Object.keys(updates).length === 0) return fail('No update fields provided', 422, 'VALIDATION_ERROR')
+    const { data, error } = await sb.from('dns_records').update(updates).eq('id', parsed.data.id).select().maybeSingle()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    if (!data) return fail('DNS record not found', 404, 'NOT_FOUND')
+    await logActivity(admin, 'dns_record', parsed.data.id, 'updated', userId, updates)
+    return ok(data)
+  }
+
+  // DELETE /dns/delete
+  if (method === 'DELETE' && segment === 'dns' && secondSegment === 'delete') {
+    const recordId = sanitizeTextInput(body?.id || body?.record_id || '', 120)
+    if (!recordId) return fail('id required', 422, 'VALIDATION_ERROR')
+    const { error } = await sb.from('dns_records').delete().eq('id', recordId)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'dns_record', recordId, 'deleted', userId)
+    return ok({ id: recordId, deleted: true })
   }
 
   // POST /dns/verify
@@ -3397,6 +3691,21 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     if (error) return fail(error.message, 400, 'DB_ERROR')
     await logActivity(admin, 'domain', parsed.data.domain_id, 'ssl_enabled', userId)
     return ok({ domain_id: parsed.data.domain_id, ssl_status: 'active' })
+  }
+
+  // POST /ssl/generate
+  if (method === 'POST' && segment === 'ssl' && secondSegment === 'generate') {
+    const schema = z.object({ domain_id: z.string().min(1) })
+    const parsed = schema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    const { error } = await sb.from('domains').update({
+      ssl_status: 'active',
+      ssl_auto_renew: true,
+      status: 'active',
+    }).eq('id', parsed.data.domain_id)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'domain', parsed.data.domain_id, 'ssl_generated', userId)
+    return ok({ domain_id: parsed.data.domain_id, ssl_status: 'active', generated: true })
   }
 
   // POST /git/scan

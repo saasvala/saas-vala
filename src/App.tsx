@@ -340,6 +340,16 @@ function AppRoutes() {
         <Route path="/admin/keys" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/keys" replace /></RoleGuard></AuthGuard>} />
         <Route path="/keys/generate" element={<AuthGuard><Navigate to="/keys" replace /></AuthGuard>} />
         <Route path="/servers" element={<AuthGuard><Servers /></AuthGuard>} />
+        <Route path="/admin/servers" element={<AuthGuard><RoleGuard role="super_admin"><Servers /></RoleGuard></AuthGuard>} />
+        <Route path="/servers/add" element={<AuthGuard><ServerAdd /></AuthGuard>} />
+        <Route path="/servers/:id" element={<AuthGuard><ServerDetail /></AuthGuard>} />
+        <Route path="/servers/:id/logs" element={<AuthGuard><ServerLogsPage /></AuthGuard>} />
+        <Route path="/servers/:id/deploy" element={<AuthGuard><ServerDeployPage /></AuthGuard>} />
+        <Route path="/servers/:id/dns" element={<AuthGuard><ServerDnsPage /></AuthGuard>} />
+        <Route path="/servers/:id/hosting" element={<AuthGuard><ServerSettingsPage /></AuthGuard>} />
+        <Route path="/servers/:id/git" element={<AuthGuard><ServerGitPage /></AuthGuard>} />
+        <Route path="/servers/:id/settings" element={<AuthGuard><ServerSettingsPage /></AuthGuard>} />
+        <Route path="/admin/servers/hosting" element={<AuthGuard><RoleGuard role="super_admin"><ServerSettingsPage /></RoleGuard></AuthGuard>} />
 
         <Route path="/role-detail" element={<AuthGuard><RoleDetail /></AuthGuard>} />
         <Route path="/transport-role-detail" element={<AuthGuard><TransportRoleDetail /></AuthGuard>} />
