@@ -2102,6 +2102,375 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
   return err('Not found', 404)
 }
 
+function parseAliasFilters(raw: unknown): Record<string, string> {
+  if (!raw) return {}
+  if (typeof raw === 'object') {
+    return Object.entries(raw as Record<string, unknown>).reduce<Record<string, string>>((acc, [k, v]) => {
+      if (v === undefined || v === null) return acc
+      acc[String(k).toLowerCase()] = String(v)
+      return acc
+    }, {})
+  }
+  const text = String(raw || '').trim()
+  if (!text) return {}
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed && typeof parsed === 'object') return parseAliasFilters(parsed)
+  } catch {
+    // no-op
+  }
+  return text.split(',').reduce<Record<string, string>>((acc, pair) => {
+    const [k, v] = pair.split(':').map((p) => p?.trim())
+    if (k && v) acc[k.toLowerCase()] = v
+    return acc
+  }, {})
+}
+
+function mapBannerRowToAlias(row: any) {
+  return {
+    id: row.id,
+    title: row.title,
+    product_id: row.link_url?.includes('/marketplace/product/')
+      ? String(row.link_url).split('/marketplace/product/')[1] || null
+      : null,
+    category: row.badge || null,
+    description: row.subtitle || null,
+    image: row.image_url || null,
+    button_action: row.link_url || null,
+    priority: Number(row.sort_order || 1),
+    status: row.is_active ? 'active' : 'inactive',
+    start_date: row.start_date || null,
+    end_date: row.end_date || null,
+  }
+}
+
+async function handleBannerAliases(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const admin = adminClient()
+  const action = pathParts[0]
+
+  // POST /banner/create
+  if (method === 'POST' && action === 'create') {
+    const title = String(body.title || '').trim()
+    if (!title) return err('title is required', 422, 'VALIDATION_ERROR')
+    const productId = String(body.product_id || '').trim()
+    const payload = {
+      title,
+      subtitle: body.description || null,
+      image_url: body.image || null,
+      badge: body.category || null,
+      link_url: body.button_action || (productId ? `/marketplace/product/${productId}` : null),
+      sort_order: toPositiveNumber(body.priority, 1),
+      is_active: String(body.status || 'active').toLowerCase() !== 'inactive',
+      start_date: body.start_date || null,
+      end_date: body.end_date || null,
+      updated_at: nowIso(),
+    }
+    const { data, error } = await sb.from('marketplace_banners').insert(payload).select('*').single()
+    if (error) return err(error.message)
+    await logActivity(admin, 'banner', data.id, 'created', userId, payload)
+    return json({ data: mapBannerRowToAlias(data) }, 201)
+  }
+
+  // GET /banner/list
+  if (method === 'GET' && action === 'list') {
+    const { data, error } = await sb.from('marketplace_banners').select('*').order('sort_order', { ascending: true })
+    if (error) return err(error.message)
+    return json({ data: (data || []).map(mapBannerRowToAlias) })
+  }
+
+  // PUT /banner/update
+  if (method === 'PUT' && action === 'update') {
+    const id = String(body.id || '').trim()
+    if (!id) return err('id is required', 422, 'VALIDATION_ERROR')
+    const productId = String(body.product_id || '').trim()
+    const updates: Record<string, unknown> = {
+      updated_at: nowIso(),
+    }
+    if (body.title !== undefined) updates.title = String(body.title || '').trim()
+    if (body.description !== undefined) updates.subtitle = body.description || null
+    if (body.image !== undefined) updates.image_url = body.image || null
+    if (body.category !== undefined) updates.badge = body.category || null
+    if (body.button_action !== undefined || body.product_id !== undefined) {
+      updates.link_url = body.button_action || (productId ? `/marketplace/product/${productId}` : null)
+    }
+    if (body.priority !== undefined) updates.sort_order = toPositiveNumber(body.priority, 1)
+    if (body.status !== undefined) updates.is_active = String(body.status || '').toLowerCase() !== 'inactive'
+    if (body.start_date !== undefined) updates.start_date = body.start_date || null
+    if (body.end_date !== undefined) updates.end_date = body.end_date || null
+
+    const { data, error } = await sb.from('marketplace_banners').update(updates).eq('id', id).select('*').single()
+    if (error) return err(error.message)
+    await logActivity(admin, 'banner', id, 'updated', userId, updates)
+    return json({ data: mapBannerRowToAlias(data) })
+  }
+
+  // DELETE /banner/delete
+  if (method === 'DELETE' && action === 'delete') {
+    const id = String(body.id || body.banner_id || '').trim()
+    if (!id) return err('id is required', 422, 'VALIDATION_ERROR')
+    const { error } = await sb.from('marketplace_banners').delete().eq('id', id)
+    if (error) return err(error.message)
+    await logActivity(admin, 'banner', id, 'deleted', userId)
+    return json({ success: true })
+  }
+
+  return err('Not found', 404)
+}
+
+async function handleOfferAliases(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const admin = adminClient()
+  const action = pathParts[0]
+
+  // POST /offer/create
+  if (method === 'POST' && action === 'create') {
+    const productId = String(body.product_id || '').trim()
+    if (!productId) return err('product_id is required', 422, 'VALIDATION_ERROR')
+    const discount = toPositiveNumber(body.discount ?? body.discount_percent, 0)
+    if (discount <= 0) return err('discount is required', 422, 'VALIDATION_ERROR')
+    const code = String(body.code || `OFF-${Date.now()}`).toUpperCase()
+    const payload = {
+      code,
+      description: `product:${productId}`,
+      discount_type: 'percent',
+      discount_value: discount,
+      min_order: 0,
+      max_uses: toPositiveNumber(body.max_uses, 999999),
+      is_active: String(body.status || 'active').toLowerCase() !== 'inactive',
+      start_date: body.start_date || null,
+      end_date: body.end_date || null,
+      updated_at: nowIso(),
+    }
+    const { data, error } = await sb.from('marketplace_coupons').insert(payload).select('*').single()
+    if (error) return err(error.message)
+    const { error: productErr } = await sb.from('products').update({ discount_percent: discount, updated_at: nowIso() }).eq('id', productId)
+    if (!productErr) invalidateProductCache()
+    await logActivity(admin, 'offer', data.id, 'created', userId, { ...payload, product_id: productId })
+    return json({
+      data: {
+        id: data.id,
+        product_id: productId,
+        discount: discount,
+        start_date: data.start_date,
+        end_date: data.end_date,
+        status: data.is_active ? 'active' : 'inactive',
+      },
+    }, 201)
+  }
+
+  // GET /offer/list
+  if (method === 'GET' && action === 'list') {
+    const { data, error } = await sb.from('marketplace_coupons').select('*').order('created_at', { ascending: false })
+    if (error) return err(error.message)
+    return json({
+      data: (data || []).map((row: any) => ({
+        id: row.id,
+        product_id: String(row.description || '').startsWith('product:') ? String(row.description).replace('product:', '') : null,
+        discount: Number(row.discount_value || 0),
+        start_date: row.start_date || null,
+        end_date: row.end_date || null,
+        status: row.is_active ? 'active' : 'inactive',
+      })),
+    })
+  }
+
+  return err('Not found', 404)
+}
+
+async function handleProductAliases(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const admin = adminClient()
+  const action = pathParts[0]
+
+  // POST /product/create
+  if (method === 'POST' && action === 'create') {
+    const name = String(body.name || '').trim()
+    if (!name) return err('name is required', 422, 'VALIDATION_ERROR')
+    const payload: Record<string, unknown> = {
+      name,
+      slug: body.slug || name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
+      price: Number(body.price || 0),
+      status: body.status || 'draft',
+      business_type: body.category || body.business_type || null,
+      short_description: body.description || null,
+      apk_url: body.apk_url || null,
+      features: Array.isArray(body.features) ? body.features : [],
+      marketplace_visible: true,
+      updated_at: nowIso(),
+    }
+    const { data, error } = await sb.from('products').insert(payload).select('*').single()
+    if (error) return err(error.message)
+    invalidateProductCache()
+    await logActivity(admin, 'product', data.id, 'created_alias', userId, payload)
+    return json({ data }, 201)
+  }
+
+  // GET /product/list
+  if (method === 'GET' && action === 'list') {
+    const { data, error } = await sb
+      .from('products')
+      .select('id, name, slug, description, short_description, price, status, business_type, features, apk_url, discount_percent, rating, created_at, marketplace_visible')
+      .order('created_at', { ascending: false })
+      .limit(500)
+    if (error) return err(error.message)
+    return json({ data })
+  }
+
+  // PUT /product/update
+  if (method === 'PUT' && action === 'update') {
+    const id = String(body.id || body.product_id || '').trim()
+    if (!id) return err('id is required', 422, 'VALIDATION_ERROR')
+    const updates: Record<string, unknown> = { updated_at: nowIso() }
+    if (body.name !== undefined) updates.name = body.name
+    if (body.slug !== undefined) updates.slug = body.slug
+    if (body.price !== undefined) updates.price = Number(body.price || 0)
+    if (body.status !== undefined) updates.status = body.status
+    if (body.category !== undefined || body.business_type !== undefined) updates.business_type = body.category || body.business_type || null
+    if (body.description !== undefined) updates.short_description = body.description || null
+    if (body.apk_url !== undefined) updates.apk_url = body.apk_url || null
+    if (body.features !== undefined) updates.features = Array.isArray(body.features) ? body.features : []
+    const { data, error } = await sb.from('products').update(updates).eq('id', id).select('*').single()
+    if (error) return err(error.message)
+    invalidateProductCache()
+    await logActivity(admin, 'product', id, 'updated_alias', userId, updates)
+    return json({ data })
+  }
+
+  // GET /product/search?q=&filter=
+  if (method === 'GET' && action === 'search') {
+    const q = sanitizeSearchTerm(String(body.q || '').trim())
+    const filters = parseAliasFilters(body.filter)
+    let query = sb
+      .from('products')
+      .select('id, name, slug, description, short_description, price, status, business_type, features, apk_url, discount_percent, rating, tags, created_at, marketplace_visible')
+      .eq('marketplace_visible', true)
+      .order('created_at', { ascending: false })
+      .limit(500)
+
+    if (q) {
+      query = query.or(`name.ilike.%${q}%,slug.ilike.%${q}%,description.ilike.%${q}%,business_type.ilike.%${q}%`)
+    }
+    if (filters.category) {
+      const safeCategory = sanitizeSearchTerm(filters.category)
+      if (safeCategory) query = query.ilike('business_type', `%${safeCategory}%`)
+    }
+
+    const { data, error } = await query
+    if (error) return err(error.message)
+    let rows = data || []
+
+    if (filters.rating) {
+      const minRating = Number(filters.rating)
+      if (Number.isFinite(minRating)) rows = rows.filter((row: any) => Number(row.rating || 0) >= minRating)
+    }
+    if (filters.price) {
+      const maxPrice = Number(filters.price)
+      if (Number.isFinite(maxPrice)) rows = rows.filter((row: any) => Number(row.price || 0) <= maxPrice)
+    }
+    if (filters.language) {
+      const token = filters.language.toLowerCase()
+      rows = rows.filter((row: any) => {
+        const tags = Array.isArray(row.tags) ? row.tags.map((t: unknown) => String(t).toLowerCase()) : []
+        return tags.some((t: string) => t.includes(token))
+      })
+    }
+    return json({ data: rows })
+  }
+
+  return err('Not found', 404)
+}
+
+async function handleCategoryAliases(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const admin = adminClient()
+  const action = pathParts[0]
+
+  // POST /category/create
+  if (method === 'POST' && action === 'create') {
+    const name = String(body.name || body.category_name || '').trim()
+    if (!name) return err('name is required', 422, 'VALIDATION_ERROR')
+    const slug = String(body.slug || name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''))
+    const levelRaw = String(body.level || body.type || 'macro').toLowerCase()
+    const level = levelRaw === 'sub' || levelRaw === 'micro' ? levelRaw : 'macro'
+    const payload = {
+      name,
+      slug,
+      level,
+      parent_id: body.parent_id || null,
+      description: body.description || null,
+      icon: body.icon || null,
+      sort_order: toPositiveNumber(body.sort_order, 1),
+      is_active: body.is_active !== false,
+      created_by: userId,
+      updated_at: nowIso(),
+    }
+    const { data, error } = await sb.from('categories').insert(payload).select('*').single()
+    if (error) return err(error.message)
+    await logActivity(admin, 'category', data.id, 'created_alias', userId, payload)
+    return json({ data }, 201)
+  }
+
+  // GET /category/tree
+  if (method === 'GET' && action === 'tree') {
+    const { data, error } = await sb.from('categories').select('*').eq('is_active', true).order('sort_order', { ascending: true })
+    if (error) return err(error.message)
+    const rows = data || []
+    const byParent = new Map<string, any[]>()
+    rows.forEach((row: any) => {
+      const key = row.parent_id || 'root'
+      const list = byParent.get(key) || []
+      list.push(row)
+      byParent.set(key, list)
+    })
+    const toNode = (row: any): any => ({
+      ...row,
+      children: (byParent.get(row.id) || []).map(toNode),
+    })
+    const tree = (byParent.get('root') || []).map(toNode)
+    return json({ data: tree })
+  }
+
+  return err('Not found', 404)
+}
+
+async function handleAnalyticsAliases(method: string, pathParts: string[], body: any, _userId: string, sb: any) {
+  const action = pathParts[0]
+
+  // GET /analytics/sales
+  if (method === 'GET' && action === 'sales') {
+    const { data, error } = await sb
+      .from('marketplace_orders')
+      .select('product_id, product_name, status, amount, final_amount, created_at')
+      .order('created_at', { ascending: false })
+      .limit(100000)
+    if (error) return err(error.message)
+
+    const rows = data || []
+    const completed = rows.filter((row: any) => row.status === 'completed')
+    const totalSales = completed.length
+    const revenue = completed.reduce((sum: number, row: any) => sum + Number(row.final_amount ?? row.amount ?? 0), 0)
+    const conversionRate = rows.length > 0 ? Number(((totalSales / rows.length) * 100).toFixed(2)) : 0
+
+    const counts = new Map<string, { product_id: string | null; product_name: string | null; count: number }>()
+    completed.forEach((row: any) => {
+      const key = String(row.product_id || row.product_name || 'unknown')
+      const prev = counts.get(key) || { product_id: row.product_id || null, product_name: row.product_name || null, count: 0 }
+      prev.count += 1
+      counts.set(key, prev)
+    })
+
+    const ranked = Array.from(counts.values()).sort((a, b) => b.count - a.count)
+    return json({
+      data: {
+        total_sales: totalSales,
+        revenue: Number(revenue.toFixed(2)),
+        top_selling: ranked.slice(0, 10),
+        low_selling: [...ranked].sort((a, b) => a.count - b.count).slice(0, 10),
+        conversion_rate: conversionRate,
+      },
+    })
+  }
+
+  return err('Not found', 404)
+}
+
 async function markPaymentSuccess(admin: any, sb: any, userId: string, payment: any) {
   if (!payment?.order_id) return null
 
@@ -4980,6 +5349,31 @@ Deno.serve(async (req) => {
 
     let routeResponse: Response
     switch (module) {
+
+      case 'products':
+        routeResponse = await handleProducts(req.method, subParts, body, userId, sb)
+        break
+      case 'marketplace':
+        routeResponse = await handleMarketplace(req.method, subParts, body, userId, sb)
+        break
+      case 'dashboard':
+        routeResponse = await handleDashboard(req.method, userId, sb)
+        break
+      case 'banner':
+        routeResponse = await handleBannerAliases(req.method, subParts, body, userId, sb)
+        break
+      case 'offer':
+        routeResponse = await handleOfferAliases(req.method, subParts, body, userId, sb)
+        break
+      case 'product':
+        routeResponse = await handleProductAliases(req.method, subParts, body, userId, sb)
+        break
+      case 'category':
+        routeResponse = await handleCategoryAliases(req.method, subParts, body, userId, sb)
+        break
+      case 'analytics':
+        routeResponse = await handleAnalyticsAliases(req.method, subParts, body, userId, sb)
+        break
 
       case 'keys':
         if (subParts[0] === 'create' || subParts[0] === 'revoke' || subParts[0] === 'usage') {
