@@ -23,6 +23,7 @@
     "alert:run": "node scripts/ultra-next/alert-engine.mjs",
     "selfheal:run": "node scripts/ultra-next/self-heal.mjs",
     "perf:test": "node scripts/ultra-next/performance-test.mjs",
+    "orchestrator:run": "node scripts/ultra-next/orchestrator.mjs",
     "ultra:test": "npm run test && npm run test:api && npm run test:realtime && npm run test:e2e",
     "ultra:detect": "npm run monitor:run && npm run alert:run && npm run test:db",
     "ultra:fix": "npm run selfheal:run",

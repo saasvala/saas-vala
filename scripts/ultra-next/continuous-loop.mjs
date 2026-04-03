@@ -1,33 +1,19 @@
-import { spawn } from 'node:child_process';
 import { getEnv, logReport, toNumber } from './common.mjs';
+import { runOrchestrator } from './orchestrator.mjs';
 
 const loopDelayMs = toNumber(getEnv('ULTRA_LOOP_DELAY_MS', '30000'), 30000);
 const nonStop = getEnv('ULTRA_LOOP_NON_STOP', 'true') !== 'false';
 
-function runCommand(command, args) {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: 'inherit', shell: false });
-    child.on('close', (code) => resolve(code || 0));
-  });
-}
-
 async function runCycle(cycle) {
-  const commands = [
-    ['npm', ['run', 'ultra:test']],
-    ['npm', ['run', 'ultra:detect']],
-    ['npm', ['run', 'ultra:fix']],
-    ['npm', ['run', 'ultra:retest']],
-  ];
-
-  const status = [];
-  for (const [command, args] of commands) {
-    const code = await runCommand(command, args);
-    status.push({ command: `${command} ${args.join(' ')}`, code });
-  }
-
-  const failed = status.filter((item) => item.code !== 0);
-  logReport('continuous_loop_cycle', { cycle, status, passed: failed.length === 0 });
-
+  const result = await runOrchestrator({ title: `Continuous loop cycle ${cycle}` });
+  const failed = result.artifacts.filter((item) => item.status === 'failed');
+  logReport('continuous_loop_cycle', {
+    cycle,
+    state: result.state,
+    failed_agents: failed.map((item) => item.agent),
+    artifacts: result.artifacts,
+    passed: failed.length === 0,
+  });
   return failed.length === 0;
 }
 
