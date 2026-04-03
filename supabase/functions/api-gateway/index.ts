@@ -116,6 +116,8 @@ const NOTIFY_ALLOWED_CHANNELS = ['in_app', 'email', 'system_alert'] as const
 const NOTIFY_CHANNEL_SET = new Set<string>(NOTIFY_ALLOWED_CHANNELS)
 const NOTIFY_TRIGGER_SET = new Set<string>(NOTIFY_ALLOWED_TRIGGERS)
 const NOTIFY_MAX_TITLE_LENGTH = 120
+const MAX_IMAGE_OPTIMIZE_WIDTH = 4096
+const MAX_IMAGE_OPTIMIZE_QUALITY = 100
 const FINAL_RESELLER_GAP_FEATURE_KEYS = [
   'tier_based_dynamic_commission_engine',
   'per_product_commission_override',
@@ -411,6 +413,47 @@ async function emitDomainEvent(
       status: 'queued',
       tenant_id: tenantId || null,
     })
+    const eventTypeMap: Record<string, string> = {
+      build_completed: 'apk_ready',
+      payment_success: 'payment_success',
+      lead_generated: 'lead_generated',
+    }
+    const mappedEventType = eventTypeMap[eventType] || null
+    if (!mappedEventType) return
+    const { data: webhookEndpoints } = await admin
+      .from('webhook_endpoints')
+      .select('id')
+      .eq('is_active', true)
+      .contains('events', [mappedEventType])
+    if (!Array.isArray(webhookEndpoints) || webhookEndpoints.length === 0) return
+    const { data: deliveries } = await admin
+      .from('webhook_deliveries')
+      .insert(
+        webhookEndpoints.map((endpoint: any) => ({
+          endpoint_id: endpoint.id,
+          event_type: mappedEventType,
+          payload: {
+            event: mappedEventType,
+            data: payload,
+            tenant_id: tenantId || null,
+          },
+          status: 'pending',
+          attempts: 0,
+        }))
+      )
+      .select('id,endpoint_id,event_type')
+    if (!Array.isArray(deliveries) || deliveries.length === 0) return
+    await admin.from('async_jobs').insert(
+      deliveries.map((delivery: any) => ({
+        job_type: 'webhook_delivery',
+        status: 'queued',
+        payload: {
+          delivery_id: delivery.id,
+          endpoint_id: delivery.endpoint_id,
+          event_type: delivery.event_type,
+        },
+      }))
+    )
   } catch {
     // no-op
   }
@@ -8470,13 +8513,16 @@ async function handleScheduler(method: string, pathParts: string[], body: any, s
   if (!expected || !timingSafeEqualText(expected, provided)) return err('Forbidden', 403, 'FORBIDDEN')
 
   if (method === 'POST' && action === 'run') {
-    const minute = new Date().getUTCMinutes()
+    const nowDate = new Date()
+    const minute = nowDate.getUTCMinutes()
+    const hour = nowDate.getUTCHours()
     const dueJobs = [
       { job_name: 'health_check', run: true, schedule_hint: '*/1 * * * *' },
       { job_name: 'billing_check', run: minute % 5 === 0, schedule_hint: '*/5 * * * *' },
       { job_name: 'ai_tasks', run: minute % 10 === 0, schedule_hint: '*/10 * * * *' },
       { job_name: 'seo_scan', run: minute === 0, schedule_hint: '0 * * * *' },
       { job_name: 'key_expiry', run: minute === 0, schedule_hint: '0 * * * *' },
+      { job_name: 'daily_backup', run: minute === 0 && hour === 0, schedule_hint: '0 0 * * *' },
     ].filter((j) => j.run)
 
     const inserted: any[] = []
@@ -8510,6 +8556,25 @@ async function handleScheduler(method: string, pathParts: string[], body: any, s
         job_type: 'seo_scan',
         status: 'queued',
         payload: { trigger: 'scheduler', kind: 'seo_scan' },
+      })
+    }
+    if (dueJobs.some((j) => j.job_name === 'daily_backup')) {
+      const { data: backupRow } = await sb.from('backup_logs').insert({
+        status: 'queued',
+        details: {
+          trigger: 'scheduler',
+          kind: 'daily_backup',
+          requested_at: nowIso(),
+        },
+      }).select('id').maybeSingle()
+      await sb.from('async_jobs').insert({
+        job_type: 'database_backup',
+        status: 'queued',
+        payload: {
+          trigger: 'scheduler',
+          kind: 'daily_backup',
+          backup_log_id: backupRow?.id || null,
+        },
       })
     }
     if (dueJobs.some((j) => j.job_name === 'key_expiry')) {
@@ -8723,6 +8788,309 @@ async function handleSessionManagement(method: string, pathParts: string[], body
   return err('Not found', 404)
 }
 
+async function handleBackupManagement(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const action = String(pathParts[0] || '').trim().toLowerCase()
+  const reqUrl = new URL(String(body?.__request_url || ''), 'http://localhost')
+
+  if (method === 'POST' && action === 'trigger') {
+    const now = nowIso()
+    const { data: row, error } = await sb
+      .from('backup_logs')
+      .insert({
+        status: 'queued',
+        created_by: userId,
+        started_at: now,
+        backup_type: String(body?.backup_type || 'manual'),
+      })
+      .select('*')
+      .maybeSingle()
+    if (error) return err(error.message)
+    await sb.from('async_jobs').insert({
+      job_type: 'database_backup',
+      status: 'queued',
+      payload: {
+        backup_log_id: row?.id || null,
+        requested_by: userId,
+        trigger: 'manual',
+      },
+    })
+    return json({ success: true, data: row })
+  }
+
+  if (method === 'GET' && (action === 'list' || !action)) {
+    const limit = Math.min(100, Math.max(1, Number(reqUrl.searchParams.get('limit') || body?.limit || 25)))
+    const { data, error } = await sb
+      .from('backup_logs')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit)
+    if (error) {
+      if (isTableMissingError(error)) return json({ success: true, data: [] })
+      return err(error.message)
+    }
+    return json({ success: true, data: data || [] })
+  }
+
+  if (method === 'POST' && (action === 'restore' || action === '' || action === 'run')) {
+    const backupId = String(body?.backup_id || '').trim()
+    if (!backupId) return err('backup_id is required', 422, 'VALIDATION_ERROR')
+    const { error } = await sb.from('async_jobs').insert({
+      job_type: 'database_restore',
+      status: 'queued',
+      payload: {
+        backup_id: backupId,
+        requested_by: userId,
+      },
+    })
+    if (error) return err(error.message)
+    return json({ success: true, data: { backup_id: backupId, status: 'queued' } })
+  }
+
+  return err('Not found', 404)
+}
+
+async function handleFileStorageManagement(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const action = String(pathParts[0] || '').trim().toLowerCase()
+  const reqUrl = new URL(String(body?.__request_url || ''), 'http://localhost')
+
+  if (method === 'GET' && (action === 'list' || !action)) {
+    const limit = Math.min(200, Math.max(1, Number(reqUrl.searchParams.get('limit') || body?.limit || 50)))
+    let query = sb
+      .from('file_metadata')
+      .select('id,tenant_id,bucket,path,file_type,size_bytes,source,metadata,created_by,created_at')
+      .order('created_at', { ascending: false })
+      .limit(limit)
+    const bucket = String(reqUrl.searchParams.get('bucket') || body?.bucket || '').trim()
+    if (bucket) query = query.eq('bucket', bucket)
+    const { data, error } = await query
+    if (error) {
+      if (isTableMissingError(error)) return json({ success: true, data: [] })
+      return err(error.message)
+    }
+    return json({ success: true, data: data || [] })
+  }
+
+  if (method === 'GET' && action === 'usage') {
+    const { data, error } = await sb.from('file_metadata').select('bucket,size_bytes')
+    if (error) {
+      if (isTableMissingError(error)) return json({ success: true, data: { total_bytes: 0, by_bucket: {} } })
+      return err(error.message)
+    }
+    const rows = Array.isArray(data) ? data : []
+    const byBucket: Record<string, number> = {}
+    let totalBytes = 0
+    for (const row of rows as any[]) {
+      const bucket = String(row?.bucket || 'missing_bucket')
+      const size = Number(row?.size_bytes || 0)
+      if (!Number.isFinite(size) || size <= 0) continue
+      byBucket[bucket] = Number(byBucket[bucket] || 0) + size
+      totalBytes += size
+    }
+    return json({ success: true, data: { total_bytes: totalBytes, by_bucket: byBucket } })
+  }
+
+  if (method === 'POST' && action === 'delete') {
+    const bucket = String(body?.bucket || '').trim()
+    const path = String(body?.path || '').trim()
+    if (!bucket || !path) return err('bucket and path are required', 422, 'VALIDATION_ERROR')
+
+    const admin = adminClient()
+    try {
+      await admin.storage.from(bucket).remove([path])
+    } catch {
+      // no-op
+    }
+    const { error } = await sb.from('file_metadata').delete().eq('bucket', bucket).eq('path', path)
+    if (error) return err(error.message)
+    return json({ success: true, data: { deleted: true, bucket, path } })
+  }
+
+  return err('Not found', 404)
+}
+
+async function handleQueueMonitor(method: string, pathParts: string[], body: any, sb: any) {
+  const action = String(pathParts[0] || '').trim().toLowerCase()
+  const reqUrl = new URL(String(body?.__request_url || ''), 'http://localhost')
+  const limit = Math.min(200, Math.max(1, Number(reqUrl.searchParams.get('limit') || body?.limit || 50)))
+
+  if (method === 'GET' && (action === 'dashboard' || !action)) {
+    const { data: jobs } = await sb
+      .from('async_jobs')
+      .select('id,job_type,status,attempts,created_at,updated_at')
+      .order('created_at', { ascending: false })
+      .limit(limit)
+    const { data: failed } = await sb
+      .from('dead_jobs')
+      .select('id,error,source_job_type,attempts,created_at')
+      .order('created_at', { ascending: false })
+      .limit(limit)
+    const safeJobs = Array.isArray(jobs) ? jobs : []
+    const safeFailed = Array.isArray(failed) ? failed : []
+    const pending = safeJobs.filter((job: any) => ['queued', 'pending', 'retry'].includes(String(job?.status || '').toLowerCase()))
+    return json({
+      success: true,
+      data: {
+        summary: {
+          total_jobs: safeJobs.length,
+          pending_jobs: pending.length,
+          failed_jobs: safeFailed.length,
+        },
+        pending_jobs: pending,
+        failed_jobs: safeFailed,
+      },
+    })
+  }
+
+  if (method === 'GET' && action === 'pending') {
+    const { data, error } = await sb
+      .from('async_jobs')
+      .select('id,job_type,status,attempts,payload,created_at,updated_at')
+      .in('status', ['queued', 'pending', 'retry'])
+      .order('created_at', { ascending: false })
+      .limit(limit)
+    if (error) {
+      if (isTableMissingError(error)) return json({ success: true, data: [] })
+      return err(error.message)
+    }
+    return json({ success: true, data: data || [] })
+  }
+
+  if (method === 'GET' && action === 'failed') {
+    const { data, error } = await sb
+      .from('dead_jobs')
+      .select('id,payload,error,source_job_type,attempts,created_at')
+      .order('created_at', { ascending: false })
+      .limit(limit)
+    if (error) {
+      if (isTableMissingError(error)) return json({ success: true, data: [] })
+      return err(error.message)
+    }
+    return json({ success: true, data: data || [] })
+  }
+
+  return err('Not found', 404)
+}
+
+async function handleSystemSettingsPanel(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const action = String(pathParts[0] || '').trim().toLowerCase()
+
+  if (method === 'GET' && (action === '' || action === 'list' || action === 'panel')) {
+    const [envRes, flagRes] = await Promise.all([
+      sb.from('env_config').select('id,key,value,encrypted,created_at,updated_at').order('key', { ascending: true }),
+      sb.from('feature_flags').select('*').order('created_at', { ascending: false }).limit(200),
+    ])
+
+    const admin = adminClient()
+    let keys: any[] = []
+    if (await isSuperAdminUser(userId)) {
+      const { data } = await admin
+        .from('ai_api_keys')
+        .select('id,name,provider,status,rate_limit,daily_quota,is_default,created_at,updated_at')
+        .order('created_at', { ascending: false })
+        .limit(200)
+      keys = data || []
+    }
+
+    return json({
+      success: true,
+      data: {
+        config: envRes.data || [],
+        feature_flags: flagRes.data || [],
+        api_keys: keys,
+        limits: {
+          rate_limit_window_seconds: RATE_LIMIT_WINDOW_SECONDS,
+          rate_limit_max_requests: RATE_LIMIT_MAX_REQUESTS,
+        },
+      },
+    })
+  }
+
+  if (method === 'POST' && action === 'config') {
+    const isAdmin = await isSuperAdminUser(userId)
+    if (!isAdmin) return err('Forbidden', 403, 'FORBIDDEN')
+    const key = String(body?.key || '').trim()
+    if (!key) return err('key is required', 422, 'VALIDATION_ERROR')
+    const value = body?.value === undefined || body?.value === null ? null : String(body.value)
+    const encrypted = body?.encrypted === undefined ? true : Boolean(body.encrypted)
+    const { data, error } = await sb
+      .from('env_config')
+      .upsert({ key, value, encrypted, updated_at: nowIso() }, { onConflict: 'key' })
+      .select('*')
+      .single()
+    if (error) return err(error.message)
+    return json({ success: true, data })
+  }
+
+  if (method === 'POST' && action === 'feature-toggle') {
+    const isAdmin = await isSuperAdminUser(userId)
+    if (!isAdmin) return err('Forbidden', 403, 'FORBIDDEN')
+    const featureKey = String(body?.feature_key || body?.flag_key || body?.feature_name || '').trim()
+    if (!featureKey) return err('feature_key is required', 422, 'VALIDATION_ERROR')
+    if (!/^[a-zA-Z0-9_.:-]+$/.test(featureKey)) return err('Invalid feature_key', 422, 'VALIDATION_ERROR')
+    const enabled = Boolean(body?.enabled)
+    const { data, error } = await sb
+      .from('feature_flags')
+      .update({ enabled, is_enabled: enabled, updated_at: nowIso() })
+      .or(`flag_key.eq.${featureKey},name.eq.${featureKey},feature_name.eq.${featureKey}`)
+      .select('*')
+    if (error) return err(error.message)
+    return json({ success: true, data: data || [] })
+  }
+
+  return err('Not found', 404)
+}
+
+async function handleAssets(method: string, pathParts: string[], body: any, sb: any) {
+  const action = String(pathParts[0] || '').trim().toLowerCase()
+
+  if (method === 'GET' && (action === 'cdn' || action === 'config')) {
+    return json({
+      success: true,
+      data: {
+        cdn_base_url: Deno.env.get('CDN_BASE_URL') || null,
+        image_optimizer_url: Deno.env.get('IMAGE_OPTIMIZER_URL') || null,
+      },
+    })
+  }
+
+  if (method === 'POST' && (action === 'optimize' || action === 'image-optimize')) {
+    const filePath = String(body?.path || body?.url || '').trim()
+    if (!filePath) return err('path is required', 422, 'VALIDATION_ERROR')
+    const isHttpUrl = /^https?:\/\//i.test(filePath)
+    const isStoragePath = /^[a-zA-Z0-9/_\-.]+$/.test(filePath)
+    if (!isHttpUrl && !isStoragePath) return err('Invalid path', 422, 'VALIDATION_ERROR')
+    const width = Math.max(1, Math.min(MAX_IMAGE_OPTIMIZE_WIDTH, Number(body?.width || 0) || 0))
+    const quality = Math.max(1, Math.min(MAX_IMAGE_OPTIMIZE_QUALITY, Number(body?.quality || 80) || 80))
+    const cdnBase = String(Deno.env.get('CDN_BASE_URL') || '').trim()
+    const optimizerBase = String(Deno.env.get('IMAGE_OPTIMIZER_URL') || '').trim()
+    const optimizedUrl = optimizerBase
+      ? `${optimizerBase.replace(/\/$/, '')}?url=${encodeURIComponent(filePath)}${width ? `&w=${width}` : ''}&q=${quality}`
+      : cdnBase
+        ? `${cdnBase.replace(/\/$/, '')}/${filePath.replace(/^\/+/, '')}`
+        : filePath
+
+    try {
+      await sb
+        .from('file_metadata')
+        .update({
+          metadata: {
+            optimized_url: optimizedUrl,
+            optimized_width: width || null,
+            optimized_quality: quality,
+            optimized_at: nowIso(),
+          },
+        })
+        .eq('path', filePath)
+    } catch {
+      // no-op
+    }
+
+    return json({ success: true, data: { path: filePath, optimized_url: optimizedUrl } })
+  }
+
+  return err('Not found', 404)
+}
+
 // ===================== MAIN ROUTER =====================
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -8909,6 +9277,28 @@ Deno.serve(async (req) => {
         break
       case 'session':
         routeResponse = await handleSessionManagement(req.method, subParts, body, userId, sb)
+        break
+      case 'backup':
+      case 'backups':
+        routeResponse = await handleBackupManagement(req.method, subParts, body, userId, sb)
+        break
+      case 'restore':
+        routeResponse = await handleBackupManagement('POST', ['restore'], body, userId, sb)
+        break
+      case 'files':
+      case 'file':
+      case 'storage':
+        routeResponse = await handleFileStorageManagement(req.method, subParts, body, userId, sb)
+        break
+      case 'queue':
+        routeResponse = await handleQueueMonitor(req.method, subParts, body, sb)
+        break
+      case 'settings':
+        routeResponse = await handleSystemSettingsPanel(req.method, subParts, body, userId, sb)
+        break
+      case 'assets':
+      case 'cdn':
+        routeResponse = await handleAssets(req.method, subParts, body, sb)
         break
       case 'subscriptions':
       case 'subscription':
