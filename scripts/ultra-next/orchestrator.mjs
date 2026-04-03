@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { AGENT_SEQUENCE, FAILURE_TYPES, RUN_STATES, createAgentArtifact, createTaskEnvelope } from './orchestration-contracts.mjs';
 import { getEnv, logReport, toNumber } from './common.mjs';
 
@@ -6,9 +7,15 @@ const agentRetries = toNumber(getEnv('ORCH_AGENT_RETRIES', '1'), 1);
 
 function runCommand(command, args) {
   return new Promise((resolve) => {
+    let settled = false;
+    const complete = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     const child = spawn(command, args, { stdio: 'inherit', shell: false });
-    child.on('error', () => resolve(1));
-    child.on('close', (code) => resolve(code || 0));
+    child.on('error', () => complete(1));
+    child.on('close', (code) => complete(code || 0));
   });
 }
 
@@ -92,6 +99,6 @@ export async function runOrchestrator(input = {}) {
   return report;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   runOrchestrator();
 }
