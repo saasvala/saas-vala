@@ -1,16 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import {
   Select,
   SelectContent,
@@ -19,37 +11,43 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import {
+  CheckCircle2,
+  CircleAlert,
+  CircleX,
   Search,
   FileText,
   RefreshCw,
   Loader2,
-  Eye,
-  Download,
-  Calendar,
+  Clock3,
+  Filter,
+  Wifi,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { listAuditLogs, type AuditEventCategory } from '@/observability/auditClient';
+import { listAuditLogs } from '@/observability/auditClient';
 import type { Database } from '@/integrations/supabase/types';
 
 type AuditLog = Database['public']['Tables']['audit_logs']['Row'];
 type AuditAction = Database['public']['Enums']['audit_action'];
+type AuditStatus = 'success' | 'error' | 'warning';
+type TimeRange = '15m' | '1h' | '24h' | '7d' | '30d' | 'all';
+type DateFilter = 'today' | '7d' | '30d' | 'all';
 
-const categoryColors: Record<AuditEventCategory, string> = {
-  AUTH: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
-  CRUD: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
-  SYSTEM: 'bg-slate-500/20 text-slate-400 border-slate-500/30',
-  API: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-  FILE: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
-  SECURITY: 'bg-red-500/20 text-red-400 border-red-500/30',
-  PAYMENT: 'bg-violet-500/20 text-violet-400 border-violet-500/30',
-  BACKGROUND: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+interface EnrichedAuditLog {
+  id: string;
+  raw: AuditLog;
+  time: string;
+  role: string;
+  action: AuditAction;
+  module: string;
+  status: AuditStatus;
+  message: string;
+}
+
+const statusColors: Record<AuditStatus, string> = {
+  success: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  error: 'bg-red-500/15 text-red-400 border-red-500/30',
+  warning: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
 };
 
 const actionColors: Record<AuditAction, string> = {
@@ -63,300 +61,490 @@ const actionColors: Record<AuditAction, string> = {
   suspend: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
 };
 
+const LIVE_REFRESH_INTERVAL_MILLISECONDS = 8000;
+
+function toObject(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function stringFrom(metadata: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function toStatus(log: AuditLog, metadata: Record<string, unknown>): AuditStatus {
+  const status = (stringFrom(metadata, ['status', 'result', 'outcome', 'severity', 'level']) || '').toLowerCase();
+  if (status.includes('error') || status.includes('fail') || status.includes('denied') || status.includes('unauthorized')) {
+    return 'error';
+  }
+  if (status.includes('warn') || status.includes('pending') || status.includes('suspicious')) {
+    return 'warning';
+  }
+  if (log.event_category === 'SECURITY') {
+    return 'warning';
+  }
+  return 'success';
+}
+
+function isWithinTimeRange(dateIso: string, range: TimeRange): boolean {
+  if (range === 'all') return true;
+  const now = Date.now();
+  const time = new Date(dateIso).getTime();
+  if (Number.isNaN(time)) return false;
+  const windowMs: Record<Exclude<TimeRange, 'all'>, number> = {
+    '15m': 15 * 60 * 1000,
+    '1h': 60 * 60 * 1000,
+    '24h': 24 * 60 * 60 * 1000,
+    '7d': 7 * 24 * 60 * 60 * 1000,
+    '30d': 30 * 24 * 60 * 60 * 1000,
+  };
+  return now - time <= windowMs[range];
+}
+
+function isInDateFilter(dateIso: string, filter: DateFilter): boolean {
+  if (filter === 'all') return true;
+  const now = new Date();
+  const time = new Date(dateIso);
+  if (Number.isNaN(time.getTime())) return false;
+  if (filter === 'today') {
+    return time.toDateString() === now.toDateString();
+  }
+  if (filter === '7d') {
+    return now.getTime() - time.getTime() <= 7 * 24 * 60 * 60 * 1000;
+  }
+  return now.getTime() - time.getTime() <= 30 * 24 * 60 * 60 * 1000;
+}
+
 export default function AuditLogs() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState<AuditEventCategory | 'all'>('all');
-  const [tableFilter, setTableFilter] = useState<string>('all');
-  const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
+  const [timeRange, setTimeRange] = useState<TimeRange>('24h');
+  const [roleFilter, setRoleFilter] = useState('all');
+  const [actionFilter, setActionFilter] = useState<'all' | AuditAction>('all');
+  const [moduleFilter, setModuleFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | AuditStatus>('all');
+  const [dateFilter, setDateFilter] = useState<DateFilter>('all');
+  const [selectedLogId, setSelectedLogId] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const fetchLogs = async () => {
-    setLoading(true);
+  const fetchLogs = useCallback(async (showLoader = true) => {
+    if (showLoader) {
+      setLoading(true);
+    } else {
+      if (isRefreshing || loading) {
+        return;
+      }
+      setIsRefreshing(true);
+    }
     try {
-      const { data, error } = await listAuditLogs({
-        limit: 500,
-        eventCategory: categoryFilter === 'all' ? null : categoryFilter,
-        targetTable: tableFilter === 'all' ? null : tableFilter,
-        search: searchQuery || null,
-      });
+      const { data, error } = await listAuditLogs({ limit: 500 });
       if (error) throw error;
       setLogs((data || []) as AuditLog[]);
     } catch (error) {
       console.error('Error fetching audit logs:', error);
       toast.error('Failed to fetch audit logs');
     } finally {
-      setLoading(false);
+      if (showLoader) {
+        setLoading(false);
+      } else {
+        setIsRefreshing(false);
+      }
     }
-  };
+  }, [isRefreshing, loading]);
 
   useEffect(() => {
     fetchLogs();
-  }, [categoryFilter, tableFilter]);
+  }, [fetchLogs]);
 
-  const filteredLogs = logs.filter((log) => {
-    const table = log.target_table || log.table_name || '';
-    const eventType = log.event_type || '';
-    const targetId = log.target_id || log.record_id || '';
-    return table.toLowerCase().includes(searchQuery.toLowerCase())
-      || eventType.toLowerCase().includes(searchQuery.toLowerCase())
-      || targetId.includes(searchQuery);
-  });
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      fetchLogs(false);
+    }, LIVE_REFRESH_INTERVAL_MILLISECONDS);
+    return () => window.clearInterval(interval);
+  }, [fetchLogs]);
 
-  const uniqueTables = [...new Set(logs.map((l) => l.target_table || l.table_name || 'system'))];
+  const enrichedLogs = useMemo<EnrichedAuditLog[]>(() => {
+    return logs.map((log) => {
+      const metadata = toObject(log.metadata);
+      const role = stringFrom(metadata, ['role', 'user_role', 'actor_role', 'userRole', 'actorRole']) || (log.is_system ? 'system' : 'user');
+      const module = log.target_table || log.table_name || log.entity || stringFrom(metadata, ['module', 'service']) || 'system';
+      const message = stringFrom(metadata, ['message', 'description', 'event_message']) || `${log.event_type || 'event'} on ${module}`;
+      const time = log.occurred_at || log.created_at || new Date().toISOString();
+      return {
+        id: log.id,
+        raw: log,
+        time,
+        role,
+        action: log.action,
+        module,
+        status: toStatus(log, metadata),
+        message,
+      };
+    });
+  }, [logs]);
 
-  const exportLogs = () => {
-    const csv = [
-      ['ID', 'Category', 'Event Type', 'Action', 'Target Table', 'Target ID', 'Actor ID', 'Occurred At'].join(','),
-      ...filteredLogs.map((log) => [
-        log.id,
-        log.event_category || '',
-        log.event_type || '',
-        log.action,
-        log.target_table || log.table_name || '',
-        log.target_id || log.record_id || '',
-        log.actor_id || log.user_id || '',
-        log.occurred_at || log.created_at || '',
-      ].join(',')),
-    ].join('\n');
+  const filteredLogs = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return enrichedLogs.filter((log) => {
+      if (!isWithinTimeRange(log.time, timeRange)) return false;
+      if (!isInDateFilter(log.time, dateFilter)) return false;
+      if (roleFilter !== 'all' && log.role !== roleFilter) return false;
+      if (actionFilter !== 'all' && log.action !== actionFilter) return false;
+      if (moduleFilter !== 'all' && log.module !== moduleFilter) return false;
+      if (statusFilter !== 'all' && log.status !== statusFilter) return false;
+      if (!q) return true;
+      return (
+        log.message.toLowerCase().includes(q)
+        || log.role.toLowerCase().includes(q)
+        || log.action.toLowerCase().includes(q)
+        || log.module.toLowerCase().includes(q)
+        || (log.raw.event_type || '').toLowerCase().includes(q)
+        || (log.raw.target_id || '').toLowerCase().includes(q)
+      );
+    });
+  }, [actionFilter, dateFilter, enrichedLogs, moduleFilter, roleFilter, searchQuery, statusFilter, timeRange]);
 
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `audit-logs-${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
-    toast.success('Logs exported successfully');
+  const roles = useMemo(() => [...new Set(enrichedLogs.map((log) => log.role))], [enrichedLogs]);
+  const modules = useMemo(() => [...new Set(enrichedLogs.map((log) => log.module))], [enrichedLogs]);
+
+  const selectedLog = useMemo(() => {
+    if (!selectedLogId) return null;
+    return enrichedLogs.find((log) => log.id === selectedLogId) || null;
+  }, [enrichedLogs, selectedLogId]);
+
+  useEffect(() => {
+    if (selectedLogId && !selectedLog) {
+      setSelectedLogId(null);
+    }
+  }, [selectedLog, selectedLogId]);
+
+  const resetFilters = () => {
+    setSearchQuery('');
+    setTimeRange('24h');
+    setRoleFilter('all');
+    setActionFilter('all');
+    setModuleFilter('all');
+    setStatusFilter('all');
+    setDateFilter('all');
+  };
+
+  const statusCounts = useMemo(() => {
+    return {
+      success: filteredLogs.filter((log) => log.status === 'success').length,
+      warning: filteredLogs.filter((log) => log.status === 'warning').length,
+      error: filteredLogs.filter((log) => log.status === 'error').length,
+    };
+  }, [filteredLogs]);
+
+  const statusIcon = (status: AuditStatus) => {
+    if (status === 'success') return <CheckCircle2 className="h-4 w-4 text-emerald-400" />;
+    if (status === 'error') return <CircleX className="h-4 w-4 text-red-400" />;
+    return <CircleAlert className="h-4 w-4 text-amber-400" />;
   };
 
   return (
     <DashboardLayout>
-      <div className="space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <h2 className="font-display text-2xl font-bold text-foreground">
-              Audit Logs
-            </h2>
-            <p className="text-muted-foreground">
-              Tamper-evident, append-only system activity logs
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <Button variant="outline" onClick={fetchLogs} className="gap-2">
-              <RefreshCw className="h-4 w-4" />
-              Refresh
-            </Button>
-            <Button onClick={exportLogs} className="gap-2">
-              <Download className="h-4 w-4" />
-              Export CSV
-            </Button>
-          </div>
-        </div>
-
+      <div className="space-y-4">
         <div className="glass-card rounded-xl p-4">
-          <div className="flex flex-col md:flex-row gap-4 items-start md:items-center">
-            <div className="relative flex-1 md:max-w-xs">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Search logs..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10 bg-muted/50 border-border"
-              />
-            </div>
-            <div className="flex items-center gap-3">
-              <Select value={categoryFilter} onValueChange={(v) => setCategoryFilter(v as AuditEventCategory | 'all')}>
-                <SelectTrigger className="w-[170px]">
-                  <SelectValue placeholder="Category" />
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex flex-1 items-center gap-3">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  placeholder="Search logs, users, module, message..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-10"
+                />
+              </div>
+              <Select value={timeRange} onValueChange={(value) => setTimeRange(value as TimeRange)}>
+                <SelectTrigger className="w-[120px]">
+                  <SelectValue placeholder="Time" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Categories</SelectItem>
-                  <SelectItem value="AUTH">AUTH</SelectItem>
-                  <SelectItem value="CRUD">CRUD</SelectItem>
-                  <SelectItem value="SYSTEM">SYSTEM</SelectItem>
-                  <SelectItem value="API">API</SelectItem>
-                  <SelectItem value="FILE">FILE</SelectItem>
-                  <SelectItem value="SECURITY">SECURITY</SelectItem>
-                  <SelectItem value="PAYMENT">PAYMENT</SelectItem>
-                  <SelectItem value="BACKGROUND">BACKGROUND</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={tableFilter} onValueChange={setTableFilter}>
-                <SelectTrigger className="w-[170px]">
-                  <SelectValue placeholder="Target Table" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Targets</SelectItem>
-                  {uniqueTables.map((table) => (
-                    <SelectItem key={table} value={table}>{table}</SelectItem>
-                  ))}
+                  <SelectItem value="15m">15m</SelectItem>
+                  <SelectItem value="1h">1h</SelectItem>
+                  <SelectItem value="24h">24h</SelectItem>
+                  <SelectItem value="7d">7d</SelectItem>
+                  <SelectItem value="30d">30d</SelectItem>
+                  <SelectItem value="all">All</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-          </div>
-        </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="glass-card rounded-xl p-4 text-center">
-            <p className="text-2xl font-bold text-foreground">{logs.length}</p>
-            <p className="text-sm text-muted-foreground">Total Logs</p>
-          </div>
-          <div className="glass-card rounded-xl p-4 text-center">
-            <p className="text-2xl font-bold text-primary">{logs.filter((l) => l.event_category === 'AUTH').length}</p>
-            <p className="text-sm text-muted-foreground">AUTH</p>
-          </div>
-          <div className="glass-card rounded-xl p-4 text-center">
-            <p className="text-2xl font-bold text-primary">{logs.filter((l) => l.event_category === 'CRUD').length}</p>
-            <p className="text-sm text-muted-foreground">CRUD</p>
-          </div>
-          <div className="glass-card rounded-xl p-4 text-center">
-            <p className="text-2xl font-bold text-primary">{logs.filter((l) => l.event_category === 'API').length}</p>
-            <p className="text-sm text-muted-foreground">API</p>
-          </div>
-        </div>
-
-        <div className="glass-card rounded-xl overflow-hidden">
-          {loading ? (
-            <div className="flex items-center justify-center p-12">
-              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="gap-1 border-emerald-500/30 text-emerald-400">
+                <Wifi className="h-3 w-3" />
+                Live
+              </Badge>
+              <Button variant="outline" onClick={resetFilters} className="gap-2">
+                <Filter className="h-4 w-4" />
+                Reset
+              </Button>
+              <Button variant="outline" onClick={() => fetchLogs()} className="gap-2">
+                <RefreshCw className="h-4 w-4" />
+                Refresh
+              </Button>
             </div>
-          ) : filteredLogs.length === 0 ? (
-            <div className="flex flex-col items-center justify-center p-12 text-center">
-              <FileText className="h-12 w-12 text-muted-foreground mb-4" />
-              <h3 className="font-semibold text-foreground mb-2">No audit logs found</h3>
-              <p className="text-muted-foreground">Activity will appear here as users interact with the system</p>
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="border-border hover:bg-muted/50">
-                  <TableHead className="text-muted-foreground">Category</TableHead>
-                  <TableHead className="text-muted-foreground">Event</TableHead>
-                  <TableHead className="text-muted-foreground">Action</TableHead>
-                  <TableHead className="text-muted-foreground">Target</TableHead>
-                  <TableHead className="text-muted-foreground">Actor</TableHead>
-                  <TableHead className="text-muted-foreground">Timestamp</TableHead>
-                  <TableHead className="text-muted-foreground text-right">Details</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredLogs.slice(0, 100).map((log) => {
-                  const category = (log.event_category || 'SYSTEM') as AuditEventCategory;
-                  const action = log.action;
-                  return (
-                    <TableRow key={log.id} className="border-border hover:bg-muted/30">
-                      <TableCell>
-                        <Badge variant="outline" className={cn('uppercase text-xs', categoryColors[category])}>
-                          {category}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <span className="font-medium text-foreground">{log.event_type || 'unknown'}</span>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className={cn('uppercase text-xs', actionColors[action])}>
-                          {action}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <span className="font-medium text-foreground">{log.target_table || log.table_name || 'system'}</span>
-                      </TableCell>
-                      <TableCell>
-                        <span className="font-mono text-xs text-muted-foreground">
-                          {(log.actor_id || log.user_id || 'System').slice(0, 8)}...
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                          <Calendar className="h-3 w-3" />
-                          {new Date(log.occurred_at || log.created_at || '').toLocaleString()}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => setSelectedLog(log)}
-                        >
-                          <Eye className="h-4 w-4" />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          )}
+          </div>
         </div>
-      </div>
 
-      <Dialog open={!!selectedLog} onOpenChange={() => setSelectedLog(null)}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Audit Log Details</DialogTitle>
-          </DialogHeader>
-          {selectedLog && (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_1fr_360px]">
+          <aside className="glass-card rounded-xl p-4">
+            <div className="mb-4">
+              <h2 className="font-display text-xl font-bold text-foreground">Audit Logs</h2>
+              <p className="text-sm text-muted-foreground">Datadog-style live activity stream</p>
+            </div>
+
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-sm text-muted-foreground">Category</p>
-                  <p className="font-medium">{selectedLog.event_category}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Event</p>
-                  <p className="font-medium">{selectedLog.event_type}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Action</p>
-                  <p className="font-medium">{selectedLog.action}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Target</p>
-                  <p className="font-mono text-sm">{selectedLog.target_table || selectedLog.table_name}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Target ID</p>
-                  <p className="font-mono text-sm">{selectedLog.target_id || selectedLog.record_id || 'N/A'}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Actor ID</p>
-                  <p className="font-mono text-sm">{selectedLog.actor_id || selectedLog.user_id || 'System'}</p>
-                </div>
-                <div className="col-span-2">
-                  <p className="text-sm text-muted-foreground">Timestamp</p>
-                  <p>{new Date(selectedLog.occurred_at || selectedLog.created_at || '').toLocaleString()}</p>
-                </div>
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Role</p>
+                <Select value={roleFilter} onValueChange={setRoleFilter}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Role" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Roles</SelectItem>
+                    {roles.map((role) => (
+                      <SelectItem key={role} value={role}>{role}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div>
-                <p className="text-sm text-muted-foreground mb-2">Metadata</p>
-                <pre className="bg-muted/50 p-4 rounded-lg text-xs overflow-auto max-h-48">
-                  {JSON.stringify(selectedLog.metadata || {}, null, 2)}
-                </pre>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Action</p>
+                <Select value={actionFilter} onValueChange={(value) => setActionFilter(value as 'all' | AuditAction)}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Action" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Actions</SelectItem>
+                    <SelectItem value="create">create</SelectItem>
+                    <SelectItem value="read">read</SelectItem>
+                    <SelectItem value="update">update</SelectItem>
+                    <SelectItem value="delete">delete</SelectItem>
+                    <SelectItem value="login">login</SelectItem>
+                    <SelectItem value="logout">logout</SelectItem>
+                    <SelectItem value="activate">activate</SelectItem>
+                    <SelectItem value="suspend">suspend</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
 
-              {selectedLog.old_data && (
-                <div>
-                  <p className="text-sm text-muted-foreground mb-2">Old Data</p>
-                  <pre className="bg-muted/50 p-4 rounded-lg text-xs overflow-auto max-h-40">
-                    {JSON.stringify(selectedLog.old_data, null, 2)}
-                  </pre>
-                </div>
-              )}
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Module</p>
+                <Select value={moduleFilter} onValueChange={setModuleFilter}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Module" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Modules</SelectItem>
+                    {modules.map((module) => (
+                      <SelectItem key={module} value={module}>{module}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
-              {selectedLog.new_data && (
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</p>
+                <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as 'all' | AuditStatus)}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Status</SelectItem>
+                    <SelectItem value="success">Success</SelectItem>
+                    <SelectItem value="warning">Warning</SelectItem>
+                    <SelectItem value="error">Error</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Date</p>
+                <Select value={dateFilter} onValueChange={(value) => setDateFilter(value as DateFilter)}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Date" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Time</SelectItem>
+                    <SelectItem value="today">Today</SelectItem>
+                    <SelectItem value="7d">Last 7 days</SelectItem>
+                    <SelectItem value="30d">Last 30 days</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </aside>
+
+          <section role="table" aria-label="Audit logs list" className="glass-card rounded-xl overflow-hidden">
+            <div
+              role="rowgroup"
+              className="grid grid-cols-[150px_120px_120px_1fr_110px_2fr] border-b border-border bg-muted/20 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+            >
+              <span role="columnheader" aria-colindex={1}>Time</span>
+              <span role="columnheader" aria-colindex={2}>Role</span>
+              <span role="columnheader" aria-colindex={3}>Action</span>
+              <span role="columnheader" aria-colindex={4}>Module</span>
+              <span role="columnheader" aria-colindex={5}>Status</span>
+              <span role="columnheader" aria-colindex={6}>Message</span>
+            </div>
+
+            {loading ? (
+              <div className="flex h-[70vh] items-center justify-center">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+              </div>
+            ) : filteredLogs.length === 0 ? (
+              <div className="flex h-[70vh] flex-col items-center justify-center px-6 text-center">
+                <FileText className="mb-3 h-12 w-12 text-muted-foreground" />
+                <h3 className="font-semibold text-foreground">No logs found</h3>
+                <p className="text-sm text-muted-foreground">No audit events match the current filters.</p>
+              </div>
+            ) : (
+              <div
+                role="rowgroup"
+                aria-label="Audit log rows"
+                className="h-[70vh] overflow-y-auto"
+              >
+                {filteredLogs.map((log) => (
+                  <button
+                    key={log.id}
+                    type="button"
+                    onClick={() => setSelectedLogId(log.id)}
+                    aria-label={`View details for ${log.action} on ${log.module} at ${new Date(log.time).toLocaleString()}`}
+                    className={cn(
+                      'grid w-full grid-cols-[150px_120px_120px_1fr_110px_2fr] items-center gap-2 border-b border-border px-4 py-3 text-left transition-colors',
+                      'hover:bg-muted/30',
+                      selectedLogId === log.id && 'bg-muted/40',
+                    )}
+                  >
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Clock3 className="h-3 w-3" />
+                      {new Date(log.time).toLocaleTimeString()}
+                    </div>
+                    <span className="truncate text-sm text-foreground">{log.role}</span>
+                    <Badge variant="outline" className={cn('w-fit uppercase text-xs', actionColors[log.action])}>
+                      {log.action}
+                    </Badge>
+                    <span className="truncate text-sm text-foreground">{log.module}</span>
+                    <Badge variant="outline" className={cn('w-fit capitalize text-xs', statusColors[log.status])}>
+                      {log.status}
+                    </Badge>
+                    <div className="truncate text-sm text-muted-foreground">{log.message}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <aside className="glass-card rounded-xl p-4">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="font-semibold text-foreground">Log Details</h3>
+              <Badge variant="outline" className="gap-1 border-emerald-500/30 text-emerald-400">
+                <Wifi className="h-3 w-3" />
+                Live
+              </Badge>
+            </div>
+
+            {!selectedLog ? (
+              <div className="flex h-[70vh] items-center justify-center text-sm text-muted-foreground">
+                Select a log row to inspect details
+              </div>
+            ) : (
+              <div className="h-[70vh] space-y-4 overflow-y-auto">
+                <div className="grid grid-cols-2 gap-3 rounded-lg border border-border p-3">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Time</p>
+                    <p className="text-sm text-foreground">{new Date(selectedLog.time).toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Role</p>
+                    <p className="text-sm text-foreground">{selectedLog.role}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">User</p>
+                    <p className="truncate font-mono text-xs text-foreground">
+                      {selectedLog.raw.actor_id || selectedLog.raw.user_id || 'System'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">IP</p>
+                    <p className="text-sm text-foreground">
+                      {selectedLog.raw.ip_address || stringFrom(toObject(selectedLog.raw.metadata), ['ip', 'ipAddress']) || 'N/A'}
+                    </p>
+                  </div>
+                  <div className="col-span-2">
+                    <p className="text-xs text-muted-foreground">Device</p>
+                    <p className="text-sm text-foreground">
+                      {selectedLog.raw.user_agent || stringFrom(toObject(selectedLog.raw.metadata), ['device', 'deviceName']) || 'Unknown'}
+                    </p>
+                  </div>
+                  <div className="col-span-2 flex items-center gap-2">
+                    {statusIcon(selectedLog.status)}
+                    <Badge variant="outline" className={cn('capitalize', statusColors[selectedLog.status])}>
+                      {selectedLog.status}
+                    </Badge>
+                    <Badge variant="outline" className={cn('uppercase', actionColors[selectedLog.action])}>
+                      {selectedLog.action}
+                    </Badge>
+                  </div>
+                </div>
+
                 <div>
-                  <p className="text-sm text-muted-foreground mb-2">New Data</p>
-                  <pre className="bg-muted/50 p-4 rounded-lg text-xs overflow-auto max-h-40">
-                    {JSON.stringify(selectedLog.new_data, null, 2)}
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">JSON</p>
+                  <pre className="max-h-[220px] overflow-auto rounded-lg border border-border bg-muted/40 p-3 text-xs">
+                    {JSON.stringify(selectedLog.raw.metadata || {}, null, 2)}
                   </pre>
                 </div>
-              )}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+
+                {selectedLog.raw.old_data && (
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Old Data</p>
+                    <pre className="max-h-[170px] overflow-auto rounded-lg border border-border bg-muted/40 p-3 text-xs">
+                      {JSON.stringify(selectedLog.raw.old_data, null, 2)}
+                    </pre>
+                  </div>
+                )}
+
+                {selectedLog.raw.new_data && (
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">New Data</p>
+                    <pre className="max-h-[170px] overflow-auto rounded-lg border border-border bg-muted/40 p-3 text-xs">
+                      {JSON.stringify(selectedLog.raw.new_data, null, 2)}
+                    </pre>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-lg border border-border p-2 text-center">
+                    <p className="text-lg font-semibold text-foreground">{filteredLogs.length}</p>
+                    <p className="text-xs text-muted-foreground">Visible</p>
+                  </div>
+                  <div className="rounded-lg border border-border p-2 text-center">
+                    <p className="text-lg font-semibold text-emerald-400">{statusCounts.success}</p>
+                    <p className="text-xs text-muted-foreground">Success</p>
+                  </div>
+                  <div className="rounded-lg border border-border p-2 text-center">
+                    <p className="text-lg font-semibold text-amber-400">{statusCounts.warning + statusCounts.error}</p>
+                    <p className="text-xs text-muted-foreground">Issues</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </aside>
+        </div>
+      </div>
     </DashboardLayout>
   );
 }
-
