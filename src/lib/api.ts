@@ -1,4 +1,5 @@
 import { supabase } from '@/integrations/supabase/client';
+import { savePostLoginRedirect, savePreLogoutState } from './sessionState';
 
 const API_BASE = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v1`;
 
@@ -31,6 +32,10 @@ class ApiError extends Error {
 const API_TIMEOUT_MS = Number(import.meta.env.VITE_API_TIMEOUT_MS || 10000);
 const API_MAX_RETRIES = Number(import.meta.env.VITE_API_MAX_RETRIES || 2);
 const RETRYABLE_STATUS_CODES = new Set([502, 503, 504]);
+const API_CACHE_TTL_MS = 30_000;
+const responseCache = new Map<string, { data: unknown; ts: number }>();
+let consecutiveFailures = 0;
+let degradedUntil = 0;
 
 async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promise<Response> {
   let lastError: unknown = null;
@@ -59,8 +64,10 @@ async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promi
 
 async function apiCall<T = any>(method: string, path: string, body?: any): Promise<T> {
   const headers = await getAuthHeaders();
+  const now = Date.now();
 
   const config: RequestInit = { method, headers };
+  const cacheKey = method === 'GET' ? `${path}|${JSON.stringify(body || {})}` : '';
 
   if (method === 'GET' && body) {
     const params = new URLSearchParams();
@@ -73,6 +80,10 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
   }
 
   const pathWithoutLeadingSlash = path.replace(/^\/+/, '');
+  if (degradedUntil > now && method === 'GET') {
+    const cached = responseCache.get(cacheKey);
+    if (cached && now - cached.ts < API_CACHE_TTL_MS) return cached.data as T;
+  }
   const res = await fetchWithTimeoutAndRetry(`${API_BASE}/${pathWithoutLeadingSlash}`, config);
   const data = await res.json().catch(() => ({}));
 
@@ -83,7 +94,26 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
         ? errorPayload
         : errorPayload?.message || data?.message || `API error: ${res.status}`;
     const code = errorPayload?.code || data?.code;
+    if (res.status === 401 || code === 'TOKEN_EXPIRED') {
+      savePreLogoutState(window.location.pathname, window.location.search, window.location.hash);
+      savePostLoginRedirect(`${window.location.pathname}${window.location.search}${window.location.hash}`);
+      if (window.location.pathname !== '/auth') {
+        window.location.assign('/auth');
+      }
+    }
+    consecutiveFailures += 1;
+    if (consecutiveFailures >= 5) degradedUntil = Date.now() + 30_000;
     throw new ApiError(message, res.status, code, data);
+  }
+
+  consecutiveFailures = 0;
+  degradedUntil = 0;
+  if (method === 'GET') {
+    responseCache.set(cacheKey, { data, ts: Date.now() });
+  } else {
+    for (const key of responseCache.keys()) {
+      if (key.startsWith(`${path}`) || key.includes(path.split('?')[0])) responseCache.delete(key);
+    }
   }
 
   return data;

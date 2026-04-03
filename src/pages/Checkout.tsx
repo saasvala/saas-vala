@@ -50,6 +50,9 @@ export default function Checkout() {
     });
     setSubmitting(false);
     if (result.success) {
+      try {
+        sessionStorage.removeItem('sv_pending_payment');
+      } catch {}
       const promoRef = (() => {
         try { return localStorage.getItem('sv_last_promo_ref') || ''; } catch { return ''; }
       })();
@@ -64,6 +67,26 @@ export default function Checkout() {
       navigate(`/success${next.toString() ? `?${next.toString()}` : ''}`);
     } else {
       toast.error(result.error || 'Payment failed');
+    }
+  };
+
+  const restorePendingPayment = async () => {
+    try {
+      const raw = sessionStorage.getItem('sv_pending_payment');
+      if (!raw) {
+        toast.info('No pending payment found');
+        return;
+      }
+      const parsed = JSON.parse(raw) as { paymentId?: string };
+      if (!parsed?.paymentId) {
+        toast.info('No pending payment found');
+        return;
+      }
+      const { marketplaceApi } = await import('@/lib/api');
+      await marketplaceApi.retryPayment(parsed.paymentId);
+      toast.success('Payment restore initiated');
+    } catch {
+      toast.error('Failed to restore payment');
     }
   };
 
@@ -98,6 +121,9 @@ export default function Checkout() {
           <Button className="w-full" onClick={onPay} disabled={processing || submitting || !selected}>
             <CreditCard className="h-4 w-4 mr-2" />
             {processing || submitting ? 'Processing...' : `Pay $${payable}`}
+          </Button>
+          <Button variant="outline" className="w-full" onClick={restorePendingPayment}>
+            Retry Pending Payment
           </Button>
         </section>
       </main>
