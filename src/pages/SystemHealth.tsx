@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -11,8 +11,6 @@ import {
   Server,
   Database,
   Shield,
-  Key,
-  Users,
   Package,
   CreditCard,
   Activity,
@@ -22,193 +20,138 @@ import {
   Clock,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { supabase } from '@/integrations/supabase/client';
+import { systemHealthApi } from '@/lib/api';
 import { toast } from 'sonner';
+
+type ModuleKey = 'database' | 'auth' | 'api' | 'wallet' | 'server' | 'ai' | 'storage' | 'payment';
+type ModuleStatus = 'healthy' | 'warning' | 'error' | 'checking';
 
 interface HealthCheck {
   name: string;
-  status: 'ok' | 'warning' | 'error' | 'checking';
+  status: ModuleStatus;
   message: string;
   icon: React.ComponentType<{ className?: string }>;
-  count?: number;
+  responseTime?: number;
+}
+
+type HealthSnapshot = {
+  database: 'healthy' | 'warning' | 'error';
+  auth: 'healthy' | 'warning' | 'error';
+  api: 'healthy' | 'warning' | 'error';
+  wallet: 'healthy' | 'warning' | 'error';
+  server: 'healthy' | 'warning' | 'error';
+  ai: 'healthy' | 'warning' | 'error';
+  storage: 'healthy' | 'warning' | 'error';
+  payment: 'healthy' | 'warning' | 'error';
+  checked_at?: string;
+  last_checked?: string;
+  response_times?: Partial<Record<ModuleKey, number>>;
+  details?: Partial<Record<ModuleKey, { message?: string }>>;
+  health_score?: number;
+};
+
+const moduleConfig: Array<{ key: ModuleKey; name: string; icon: React.ComponentType<{ className?: string }> }> = [
+  { key: 'database', name: 'Database', icon: Database },
+  { key: 'auth', name: 'Authentication', icon: Shield },
+  { key: 'api', name: 'API', icon: Activity },
+  { key: 'wallet', name: 'Wallet', icon: CreditCard },
+  { key: 'server', name: 'Server', icon: Server },
+  { key: 'ai', name: 'AI', icon: Cpu },
+  { key: 'storage', name: 'Storage', icon: HardDrive },
+  { key: 'payment', name: 'Payment', icon: Package },
+];
+
+const buildCheckingState = (): HealthCheck[] =>
+  moduleConfig.map((module) => ({
+    name: module.name,
+    status: 'checking',
+    message: 'Checking...',
+    icon: module.icon,
+  }));
+
+function unwrapHealthPayload(raw: unknown): HealthSnapshot {
+  const payload = raw as Record<string, unknown> | null;
+  const data = (payload?.data as Record<string, unknown> | undefined) || payload || {};
+  return data as unknown as HealthSnapshot;
 }
 
 export default function SystemHealth() {
   const [loading, setLoading] = useState(true);
   const [lastCheck, setLastCheck] = useState<Date | null>(null);
-  const [healthChecks, setHealthChecks] = useState<HealthCheck[]>([
-    { name: 'Database Connection', status: 'checking', message: 'Checking...', icon: Database },
-    { name: 'Authentication Service', status: 'checking', message: 'Checking...', icon: Shield },
-    { name: 'Products Table', status: 'checking', message: 'Checking...', icon: Package },
-    { name: 'License Keys', status: 'checking', message: 'Checking...', icon: Key },
-    { name: 'User Profiles', status: 'checking', message: 'Checking...', icon: Users },
-    { name: 'Servers Table', status: 'checking', message: 'Checking...', icon: Server },
-    { name: 'Wallets & Transactions', status: 'checking', message: 'Checking...', icon: CreditCard },
-    { name: 'Audit Logs', status: 'checking', message: 'Checking...', icon: Activity },
-    { name: 'AI Usage Tracking', status: 'checking', message: 'Checking...', icon: Cpu },
-    { name: 'Storage Buckets', status: 'checking', message: 'Checking...', icon: HardDrive },
-  ]);
+  const [healthChecks, setHealthChecks] = useState<HealthCheck[]>(buildCheckingState());
+  const [healthPercentage, setHealthPercentage] = useState(0);
 
-  const runHealthCheck = async () => {
-    setLoading(true);
-    const checks: HealthCheck[] = [];
-
-    // Check Database Connection
-    try {
-      const { error } = await supabase.from('products').select('id').limit(1);
-      checks.push({
-        name: 'Database Connection',
-        status: error ? 'error' : 'ok',
-        message: error ? error.message : 'Connected successfully',
-        icon: Database,
-      });
-    } catch {
-      checks.push({ name: 'Database Connection', status: 'error', message: 'Connection failed', icon: Database });
-    }
-
-    // Check Auth Service
-    try {
-      const { data } = await supabase.auth.getSession();
-      checks.push({
-        name: 'Authentication Service',
-        status: 'ok',
-        message: data.session ? 'Authenticated' : 'Service active',
-        icon: Shield,
-      });
-    } catch {
-      checks.push({ name: 'Authentication Service', status: 'error', message: 'Auth service error', icon: Shield });
-    }
-
-    // Check Products
-    try {
-      const { data, error } = await supabase.from('products').select('id', { count: 'exact' });
-      checks.push({
-        name: 'Products Table',
-        status: error ? 'error' : 'ok',
-        message: error ? error.message : `${data?.length || 0} products`,
-        icon: Package,
-        count: data?.length || 0,
-      });
-    } catch {
-      checks.push({ name: 'Products Table', status: 'error', message: 'Query failed', icon: Package });
-    }
-
-    // Check License Keys
-    try {
-      const { data, error } = await supabase.from('license_keys').select('id', { count: 'exact' });
-      checks.push({
-        name: 'License Keys',
-        status: error ? 'error' : 'ok',
-        message: error ? error.message : `${data?.length || 0} keys`,
-        icon: Key,
-        count: data?.length || 0,
-      });
-    } catch {
-      checks.push({ name: 'License Keys', status: 'error', message: 'Query failed', icon: Key });
-    }
-
-    // Check Profiles
-    try {
-      const { data, error } = await supabase.from('profiles').select('id', { count: 'exact' });
-      checks.push({
-        name: 'User Profiles',
-        status: error ? 'error' : 'ok',
-        message: error ? error.message : `${data?.length || 0} profiles`,
-        icon: Users,
-        count: data?.length || 0,
-      });
-    } catch {
-      checks.push({ name: 'User Profiles', status: 'error', message: 'Query failed', icon: Users });
-    }
-
-    // Check Servers
-    try {
-      const { data, error } = await supabase.from('servers').select('id, status');
-      const liveCount = data?.filter(s => s.status === 'live').length || 0;
-      checks.push({
-        name: 'Servers Table',
-        status: error ? 'error' : liveCount > 0 ? 'ok' : 'warning',
-        message: error ? error.message : `${liveCount} live / ${data?.length || 0} total`,
-        icon: Server,
-        count: data?.length || 0,
-      });
-    } catch {
-      checks.push({ name: 'Servers Table', status: 'error', message: 'Query failed', icon: Server });
-    }
-
-    // Check Wallets
-    try {
-      const { data, error } = await supabase.from('wallets').select('id, balance');
-      const totalBalance = data?.reduce((sum, w) => sum + (Number(w.balance) || 0), 0) || 0;
-      checks.push({
-        name: 'Wallets & Transactions',
-        status: error ? 'error' : 'ok',
-        message: error ? error.message : `${data?.length || 0} wallets, ₹${totalBalance.toLocaleString()} total`,
-        icon: CreditCard,
-        count: data?.length || 0,
-      });
-    } catch {
-      checks.push({ name: 'Wallets & Transactions', status: 'error', message: 'Query failed', icon: CreditCard });
-    }
-
-    // Check Audit Logs
-    try {
-      const { data, error } = await supabase.from('audit_logs').select('id').limit(100);
-      checks.push({
-        name: 'Audit Logs',
-        status: error ? 'error' : 'ok',
-        message: error ? error.message : `${data?.length || 0}+ entries`,
-        icon: Activity,
-        count: data?.length || 0,
-      });
-    } catch {
-      checks.push({ name: 'Audit Logs', status: 'error', message: 'Query failed', icon: Activity });
-    }
-
-    // Check AI Usage
-    try {
-      const { data, error } = await supabase.from('ai_usage').select('id').limit(100);
-      checks.push({
-        name: 'AI Usage Tracking',
-        status: error ? 'error' : 'ok',
-        message: error ? error.message : `${data?.length || 0}+ records`,
-        icon: Cpu,
-        count: data?.length || 0,
-      });
-    } catch {
-      checks.push({ name: 'AI Usage Tracking', status: 'error', message: 'Query failed', icon: Cpu });
-    }
-
-    // Storage check (simulated)
-    checks.push({
-      name: 'Storage Buckets',
-      status: 'ok',
-      message: '2 buckets active',
-      icon: HardDrive,
-      count: 2,
+  const applySnapshot = (raw: unknown) => {
+    const snapshot = unwrapHealthPayload(raw);
+    const checks = moduleConfig.map((module) => {
+      const status = snapshot[module.key] || 'error';
+      const responseTime = Number(snapshot.response_times?.[module.key] || 0);
+      const message = snapshot.details?.[module.key]?.message || `${module.name} ${status}`;
+      return {
+        name: module.name,
+        status,
+        message,
+        icon: module.icon,
+        responseTime,
+      } as HealthCheck;
     });
 
     setHealthChecks(checks);
-    setLastCheck(new Date());
-    setLoading(false);
-    toast.success('Health check completed');
+    setHealthPercentage(
+      Number.isFinite(Number(snapshot.health_score))
+        ? Number(snapshot.health_score)
+        : Math.round((checks.filter((check) => check.status === 'healthy').length / checks.length) * 100)
+    );
+    const checkedAt = snapshot.last_checked || snapshot.checked_at;
+    setLastCheck(checkedAt ? new Date(checkedAt) : new Date());
+  };
+
+  const fetchHealth = async (showToast = false) => {
+    try {
+      setLoading(true);
+      const result = await systemHealthApi.get();
+      applySnapshot(result);
+      if (showToast) toast.success('Health check completed');
+    } catch (error) {
+      console.error('System health fetch failed:', error);
+      toast.error('Failed to fetch system health');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runHealthCheck = async () => {
+    try {
+      setLoading(true);
+      const result = await systemHealthApi.runCheck();
+      applySnapshot(result);
+      toast.success('Health check completed');
+    } catch (error) {
+      console.error('Run check failed:', error);
+      toast.error('Run check failed');
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
-    runHealthCheck();
+    fetchHealth();
+    const timer = window.setInterval(() => {
+      fetchHealth();
+    }, 5000);
+    return () => window.clearInterval(timer);
   }, []);
 
-  const overallStatus = healthChecks.every(c => c.status === 'ok') 
-    ? 'ok' 
-    : healthChecks.some(c => c.status === 'error') 
-    ? 'error' 
-    : 'warning';
+  const overallStatus = healthChecks.every((c) => c.status === 'healthy')
+    ? 'healthy'
+    : healthChecks.some((c) => c.status === 'error')
+      ? 'error'
+      : 'warning';
 
-  const okCount = healthChecks.filter(c => c.status === 'ok').length;
-  const healthPercentage = Math.round((okCount / healthChecks.length) * 100);
+  const okCount = healthChecks.filter((c) => c.status === 'healthy').length;
 
   const statusConfig = {
-    ok: { icon: CheckCircle2, color: 'text-emerald-400', bg: 'bg-emerald-500/20' },
+    healthy: { icon: CheckCircle2, color: 'text-emerald-400', bg: 'bg-emerald-500/20' },
     warning: { icon: AlertTriangle, color: 'text-amber-400', bg: 'bg-amber-500/20' },
     error: { icon: XCircle, color: 'text-red-400', bg: 'bg-red-500/20' },
     checking: { icon: Loader2, color: 'text-muted-foreground', bg: 'bg-muted' },
@@ -217,7 +160,6 @@ export default function SystemHealth() {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h2 className="font-display text-2xl font-bold text-foreground">
@@ -241,7 +183,6 @@ export default function SystemHealth() {
           </div>
         </div>
 
-        {/* Overall Status */}
         <div className="glass-card rounded-xl p-6">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
             <div className="flex items-center gap-4">
@@ -256,7 +197,7 @@ export default function SystemHealth() {
               </div>
               <div>
                 <h3 className="text-xl font-bold text-foreground uppercase">
-                  {loading ? 'CHECKING...' : overallStatus === 'ok' ? 'ALL SYSTEMS OPERATIONAL' : overallStatus === 'warning' ? 'MINOR ISSUES DETECTED' : 'CRITICAL ISSUES'}
+                  {loading ? 'CHECKING...' : overallStatus === 'healthy' ? 'ALL SYSTEMS OPERATIONAL' : overallStatus === 'warning' ? 'MINOR ISSUES DETECTED' : 'CRITICAL ISSUES'}
                 </h3>
                 <p className="text-muted-foreground">
                   {okCount}/{healthChecks.length} modules healthy
@@ -273,7 +214,6 @@ export default function SystemHealth() {
           </div>
         </div>
 
-        {/* Health Checks Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {healthChecks.map((check) => {
             const StatusIcon = statusConfig[check.status].icon;
@@ -298,9 +238,9 @@ export default function SystemHealth() {
                 </div>
                 <h4 className="font-semibold text-foreground mb-1">{check.name}</h4>
                 <p className="text-sm text-muted-foreground">{check.message}</p>
-                {check.count !== undefined && (
+                {check.responseTime !== undefined && check.responseTime > 0 && (
                   <Badge variant="outline" className="mt-2 text-xs">
-                    {check.count} records
+                    {check.responseTime} ms
                   </Badge>
                 )}
               </div>
@@ -308,7 +248,6 @@ export default function SystemHealth() {
           })}
         </div>
 
-        {/* Quick Actions */}
         <div className="glass-card rounded-xl p-6">
           <h3 className="font-semibold text-foreground mb-4">Quick Actions</h3>
           <div className="flex flex-wrap gap-3">
