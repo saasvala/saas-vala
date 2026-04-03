@@ -59,7 +59,7 @@ export async function writeAuditEvent(input: AuditWriteInput): Promise<string | 
     p_occurred_at: input.occurredAt ?? new Date().toISOString(),
   };
 
-  const { data, error } = await (supabase as any).rpc('log_audit_event', payload);
+  const { data, error } = await supabase.rpc('log_audit_event', payload);
   if (error) {
     console.error('Failed to write audit event', error);
     return null;
@@ -68,7 +68,7 @@ export async function writeAuditEvent(input: AuditWriteInput): Promise<string | 
 }
 
 export async function listAuditLogs(input: AuditListInput = {}) {
-  return (supabase as any).rpc('list_audit_logs', {
+  return supabase.rpc('list_audit_logs', {
     p_limit: input.limit ?? 100,
     p_before: input.before ?? null,
     p_event_category: input.eventCategory ?? null,
@@ -78,4 +78,3 @@ export async function listAuditLogs(input: AuditListInput = {}) {
     p_search: input.search ?? null,
   });
 }
-

@@ -206,7 +206,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       void writeAuditEvent({
         eventCategory: 'AUTH',
         eventType: 'failed_login',
-        action: 'read',
+        action: 'login',
         targetTable: 'auth',
         targetId: null,
         metadata: { email, message: error.message },

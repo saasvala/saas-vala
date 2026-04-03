@@ -75,7 +75,10 @@ function ChangePasswordForm() {
         });
         return;
       }
-      const { data: userData } = await supabase.auth.getUser();
+      const { data: userData, error: getUserError } = await supabase.auth.getUser();
+      if (getUserError) {
+        toast.warning('Password updated, but audit actor resolution failed.');
+      }
       void writeAuditEvent({
         eventCategory: 'AUTH',
         eventType: 'password_change',

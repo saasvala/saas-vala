@@ -84,7 +84,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_target_ts ON public.audit_logs (target
 CREATE INDEX IF NOT EXISTS idx_audit_logs_integrity_prev_hash ON public.audit_logs (integrity_prev_hash);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_occurred_at_brin ON public.audit_logs USING brin (occurred_at);
 
--- 3) Retention helper (for scheduled cleanup jobs, not auto-executed here)
+-- 3) Retention helper (append-only safe: reports candidates, does not delete)
 CREATE OR REPLACE FUNCTION public.cleanup_audit_logs_older_than(p_days integer DEFAULT 365)
 RETURNS bigint
 LANGUAGE plpgsql
@@ -92,13 +92,14 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_deleted bigint;
+  v_candidates bigint;
 BEGIN
-  DELETE FROM public.audit_logs
+  SELECT count(*)
+  INTO v_candidates
+  FROM public.audit_logs
   WHERE occurred_at < (now() - make_interval(days => GREATEST(p_days, 1)));
 
-  GET DIAGNOSTICS v_deleted = ROW_COUNT;
-  RETURN v_deleted;
+  RETURN v_candidates;
 END;
 $$;
 
