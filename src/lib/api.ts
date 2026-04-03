@@ -14,6 +14,48 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   return headers;
 }
 
+class ApiError extends Error {
+  status: number;
+  code?: string;
+  details?: unknown;
+
+  constructor(message: string, status: number, code?: string, details?: unknown) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+    this.details = details;
+  }
+}
+
+const API_TIMEOUT_MS = Number(import.meta.env.VITE_API_TIMEOUT_MS || 10000);
+const API_MAX_RETRIES = Number(import.meta.env.VITE_API_MAX_RETRIES || 2);
+
+async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promise<Response> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt <= API_MAX_RETRIES; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { ...config, signal: controller.signal });
+      clearTimeout(timeout);
+      if (res.status >= 500 && attempt < API_MAX_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+        continue;
+      }
+      return res;
+    } catch (error) {
+      clearTimeout(timeout);
+      lastError = error;
+      if (attempt < API_MAX_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+        continue;
+      }
+    }
+  }
+  throw new ApiError(lastError instanceof Error ? lastError.message : 'Network request failed', 0, 'NETWORK_ERROR', lastError);
+}
+
 async function apiCall<T = any>(method: string, path: string, body?: any): Promise<T> {
   const headers = await getAuthHeaders();
 
@@ -29,11 +71,18 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
     config.body = JSON.stringify(body);
   }
 
-  const res = await fetch(`${API_BASE}/${path}`, config);
-  const data = await res.json();
+  const normalizedPath = path.replace(/^\/+/, '');
+  const res = await fetchWithTimeoutAndRetry(`${API_BASE}/${normalizedPath}`, config);
+  const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    throw new Error(data.error || `API error: ${res.status}`);
+    const errorPayload = data?.error;
+    const message =
+      typeof errorPayload === 'string'
+        ? errorPayload
+        : errorPayload?.message || data?.message || `API error: ${res.status}`;
+    const code = errorPayload?.code || data?.code;
+    throw new ApiError(message, res.status, code, data);
   }
 
   return data;
@@ -119,13 +168,34 @@ export const keysApi = {
 // ===================== SERVERS =====================
 export const serversApi = {
   list: () => apiCall('GET', 'projects'),
+  get: (id: string) => apiCall('GET', `servers/${id}`),
+  status: (params?: { page?: number; limit?: number }) => apiCall('GET', 'servers/status', params),
   create: (data: any) => apiCall('POST', 'projects', data),
+  start: (server_id: string) => apiCall('POST', 'servers/start', { server_id }),
+  stop: (server_id: string) => apiCall('POST', 'servers/stop', { server_id }),
+  restart: (server_id: string) => apiCall('POST', 'servers/restart', { server_id }),
   deployTargets: () => apiCall('GET', 'deploy-targets'),
   triggerDeploy: (serverId: string) => apiCall('POST', 'deploy/trigger', { server_id: serverId }),
+  deployStart: (server_id: string) => apiCall('POST', 'deploy/start', { server_id }),
+  redeploy: (server_id: string) => apiCall('POST', 'deploy/redeploy', { server_id }),
+  rollback: (server_id: string) => apiCall('POST', 'deploy/rollback', { server_id }),
   deployStatus: (serverId: string) => apiCall('GET', `deploy/status/${serverId}`),
+  deployStatusList: (server_id?: string) => apiCall('GET', 'deploy/status', server_id ? { server_id } : undefined),
+  deployHistory: (server_id?: string) => apiCall('GET', 'deploy/history', server_id ? { server_id } : undefined),
   deployLogs: (deploymentId: string) => apiCall('GET', `deploy/logs/${deploymentId}`),
+  deployLogsList: (server_id?: string, deployment_id?: string) =>
+    apiCall('GET', 'deploy/logs', { server_id, deployment_id }),
+  deployLogsStream: (server_id: string) => apiCall('GET', 'deploy/logs/stream', { server_id }),
+  dnsCreate: (data: any) => apiCall('POST', 'dns/create', data),
+  dnsVerify: (data: any) => apiCall('POST', 'dns/verify', data),
+  dnsStatus: (server_id: string) => apiCall('GET', 'dns/status', { server_id }),
   addDomain: (data: any) => apiCall('POST', 'domain/add', data),
   verifyDomain: (domainId: string) => apiCall('POST', 'domain/verify', { domain_id: domainId }),
+  sslEnable: (domain_id: string) => apiCall('POST', 'ssl/enable', { domain_id }),
+  gitScan: (server_id: string) => apiCall('POST', 'git/scan', { server_id }),
+  gitDeploy: (server_id: string) => apiCall('POST', 'git/deploy', { server_id }),
+  serverSettings: (server_id: string) => apiCall('GET', 'server/settings', { server_id }),
+  updateServerSettings: (data: any) => apiCall('POST', 'server/settings/update', data),
   health: () => apiCall('GET', 'server/health'),
 };
 
@@ -133,12 +203,15 @@ export const serversApi = {
 export const githubApi = {
   installUrl: () => apiCall('GET', 'github/install-url'),
   callback: (code: string) => apiCall('POST', 'github/callback', { code }),
+  connect: (payload?: Record<string, unknown>) => apiCall('POST', 'github/connect', payload || {}),
   repos: () => apiCall('GET', 'github/repos'),
 };
 
 // ===================== AI =====================
 export const aiApi = {
   run: (data: any) => apiCall('POST', 'ai/run', data),
+  debug: (data: any) => apiCall('POST', 'ai/debug', data),
+  voice: (data: any) => apiCall('POST', 'ai/voice', data),
   models: () => apiCall('GET', 'ai/models'),
   usage: () => apiCall('GET', 'ai/usage'),
 };
