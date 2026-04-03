@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
@@ -339,7 +340,25 @@ const Field = ({
 );
 
 export default function MarketplaceAdmin() {
+  const location = useLocation();
   const { user } = useAuth();
+  const path = location.pathname.toLowerCase();
+  const initialTab =
+    path.endsWith('/products')
+      ? 'products'
+      : path.endsWith('/offers')
+      ? 'offers'
+      : path.endsWith('/banners')
+      ? 'settings'
+      : path.endsWith('/categories')
+      ? 'settings'
+      : path.endsWith('/languages')
+      ? 'offers'
+      : path.endsWith('/pricing')
+      ? 'payments'
+      : path.endsWith('/analytics')
+      ? 'payments'
+      : 'settings';
 
   const [products, setProducts] = useState<Product[]>([]);
   const [productCatalog, setProductCatalog] = useState<Array<{ id: string; name: string; status: string; apk_enabled: boolean }>>([]);
@@ -1238,7 +1257,7 @@ export default function MarketplaceAdmin() {
           </div>
         </div>
 
-        <Tabs defaultValue="settings" className="w-full">
+        <Tabs key={initialTab} defaultValue={initialTab} className="w-full">
           <TabsList className="grid h-10 w-full grid-cols-6">
             <TabsTrigger value="settings" className="text-[10px] gap-1"><Layout className="h-3 w-3" />Settings</TabsTrigger>
             <TabsTrigger value="products" className="text-[10px] gap-1"><Package className="h-3 w-3" />Products</TabsTrigger>
