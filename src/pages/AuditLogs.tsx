@@ -39,6 +39,7 @@ const actionOptions: AuditAction[] = [
   'activate',
   'suspend',
 ];
+const logGridColumns = 'grid-cols-[130px_120px_120px_140px_120px_minmax(240px,1fr)]';
 
 export default function AuditLogs() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
@@ -102,8 +103,8 @@ export default function AuditLogs() {
     return String(metadata.message || metadata.description || log.event_type || 'Audit log entry');
   }, [getMetaObject]);
 
-  const fetchLogs = useCallback(async (silent = false) => {
-    if (!silent) {
+  const fetchLogs = useCallback(async (suppressLoadingUI = false) => {
+    if (!suppressLoadingUI) {
       setLoading(true);
     }
     try {
@@ -115,11 +116,11 @@ export default function AuditLogs() {
       setLogs((data || []) as AuditLog[]);
     } catch (error) {
       console.error('Error fetching audit logs:', error);
-      if (!silent) {
+      if (!suppressLoadingUI) {
         toast.error('Failed to fetch audit logs');
       }
     } finally {
-      if (!silent) {
+      if (!suppressLoadingUI) {
         setLoading(false);
       }
     }
@@ -213,10 +214,13 @@ export default function AuditLogs() {
     const sanitizeCsvValue = (value: string): string => {
       const trimmed = value.trimStart();
       const formulaUnsafe = /^[=+\-@]/.test(trimmed);
-      return formulaUnsafe ? `'${value}` : value;
+      return formulaUnsafe ? `'${trimmed}` : value;
     };
 
-    const escapeCsv = (value: string): string => `"${sanitizeCsvValue(value).replaceAll('"', '""')}"`;
+    const escapeCsv = (value: string): string => {
+      const sanitizedValue = sanitizeCsvValue(value);
+      return `"${sanitizedValue.replaceAll('"', '""')}"`;
+    };
 
     const csv = [
       ['Time', 'Role', 'Action', 'Module', 'Status', 'Message', 'Actor ID', 'IP', 'Device'].join(','),
@@ -235,9 +239,10 @@ export default function AuditLogs() {
 
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
+    const dateStr = new Date().toISOString().split('T')[0];
     const a = document.createElement('a');
     a.href = url;
-    a.download = `audit-logs-${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `audit-logs-${dateStr}.csv`;
     a.click();
     URL.revokeObjectURL(url);
     toast.success('Logs exported successfully');
@@ -386,7 +391,7 @@ export default function AuditLogs() {
           </aside>
 
           <section className="glass-card rounded-xl overflow-hidden min-h-[560px]">
-            <div className="grid grid-cols-[130px_120px_120px_140px_120px_minmax(240px,1fr)] gap-3 px-4 py-3 border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
+            <div className={cn('grid gap-3 px-4 py-3 border-b border-border text-xs uppercase tracking-wide text-muted-foreground', logGridColumns)}>
               <p>Time</p>
               <p>Role</p>
               <p>Action</p>
@@ -414,13 +419,16 @@ export default function AuditLogs() {
                       key={log.id}
                       onClick={() => setSelectedLog(log)}
                       className={cn(
-                        'w-full text-left grid grid-cols-[130px_120px_120px_140px_120px_minmax(240px,1fr)] gap-3 px-4 py-3 border-b border-border transition-colors',
+                        'w-full text-left grid gap-3 px-4 py-3 border-b border-border transition-colors',
+                        logGridColumns,
                         'hover:bg-muted/30',
                         selectedLog?.id === log.id && 'bg-muted/30',
                       )}
                     >
                       <p className="text-xs text-muted-foreground truncate">
-                        {new Date(log.occurred_at || log.created_at || '').toLocaleTimeString()}
+                        {log.occurred_at || log.created_at
+                          ? new Date(log.occurred_at || log.created_at || '').toLocaleTimeString()
+                          : 'N/A'}
                       </p>
                       <p className="text-sm text-foreground truncate">{getRole(log)}</p>
                       <p className="text-sm text-foreground uppercase truncate">{log.action}</p>
@@ -452,7 +460,7 @@ export default function AuditLogs() {
                     <p className="font-mono break-all">{selectedLog.ip_address || 'N/A'}</p>
                   </div>
                   <div className="col-span-2">
-                    <p className="text-xs text-muted-foreground uppercase">Device</p>
+                    <p className="text-xs text-muted-foreground uppercase">User Agent</p>
                     <p className="break-all text-sm text-foreground">{selectedLog.user_agent || 'Unknown'}</p>
                   </div>
                 </div>
