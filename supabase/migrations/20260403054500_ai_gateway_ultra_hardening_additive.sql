@@ -5,7 +5,7 @@ ALTER TABLE public.ai_logs ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth
 ALTER TABLE public.ai_logs ADD COLUMN IF NOT EXISTS prompt TEXT;
 ALTER TABLE public.ai_logs ADD COLUMN IF NOT EXISTS response TEXT;
 ALTER TABLE public.ai_logs ADD COLUMN IF NOT EXISTS model TEXT;
-ALTER TABLE public.ai_logs ADD COLUMN IF NOT EXISTS tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE public.ai_logs ADD COLUMN IF NOT EXISTS tokens INTEGER;
 ALTER TABLE public.ai_logs ADD COLUMN IF NOT EXISTS cost NUMERIC(12,6) NOT NULL DEFAULT 0;
 ALTER TABLE public.ai_logs ADD COLUMN IF NOT EXISTS latency INTEGER;
 ALTER TABLE public.ai_logs ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'success';
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS public.ai_code_queue (
 CREATE TABLE IF NOT EXISTS public.ai_seo_queue (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
-  model_type TEXT NOT NULL DEFAULT 'image',
+  model_type TEXT NOT NULL DEFAULT 'seo',
   status TEXT NOT NULL DEFAULT 'queued',
   prompt TEXT,
   meta JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -87,6 +87,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_gateway_cache_prompt_model_unique
 CREATE INDEX IF NOT EXISTS idx_ai_gateway_cache_expires ON public.ai_gateway_cache(expires_at);
 
 -- 5) ai circuit breakers
+-- provider expected values: openai, gemini, claude, local_model
 CREATE TABLE IF NOT EXISTS public.ai_circuit_breakers (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   provider TEXT NOT NULL UNIQUE,
@@ -118,4 +119,3 @@ CREATE TABLE IF NOT EXISTS public.ai_gateway_limits (
 
 CREATE INDEX IF NOT EXISTS idx_ai_gateway_limits_user_endpoint_window
   ON public.ai_gateway_limits(user_id, endpoint, window_start DESC);
-

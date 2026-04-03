@@ -432,10 +432,15 @@ const AI_GATEWAY_MAX_TOKENS_HARD = 8192
 const AI_GATEWAY_CACHE_TTL_SECONDS = Number(Deno.env.get('AI_GATEWAY_CACHE_TTL_SECONDS') || '86400')
 const AI_GATEWAY_MINUTE_MAX_REQUESTS = Number(Deno.env.get('AI_GATEWAY_MAX_REQUESTS_PER_MIN') || '30')
 const AI_GATEWAY_MINUTE_MAX_TOKENS = Number(Deno.env.get('AI_GATEWAY_MAX_TOKENS_PER_MIN') || '120000')
+const AI_GATEWAY_MAX_RETRIES = Number(Deno.env.get('AI_GATEWAY_MAX_RETRIES') || '2')
+const AI_GATEWAY_DEFAULT_DAILY_LIMIT = Number(Deno.env.get('AI_GATEWAY_DEFAULT_DAILY_LIMIT') || '1000')
+const AI_GATEWAY_MAX_SANITIZED_PROMPT_LENGTH = Number(Deno.env.get('AI_GATEWAY_MAX_SANITIZED_PROMPT_LENGTH') || '12000')
+const AI_GATEWAY_LOCAL_FALLBACK_PROMPT_SLICE = Number(Deno.env.get('AI_GATEWAY_LOCAL_FALLBACK_PROMPT_SLICE') || '500')
+const AI_GATEWAY_MAX_CIRCUIT_ERROR_LENGTH = Number(Deno.env.get('AI_GATEWAY_MAX_CIRCUIT_ERROR_LENGTH') || '1000')
 
-function normalizeModelType(value: unknown): 'chat' | 'code' | 'image' | 'voice' {
+function normalizeModelType(value: unknown): 'chat' | 'code' | 'image' | 'voice' | 'seo' {
   const raw = String(value || '').trim().toLowerCase()
-  if (raw === 'code' || raw === 'image' || raw === 'voice') return raw
+  if (raw === 'code' || raw === 'image' || raw === 'voice' || raw === 'seo') return raw
   return 'chat'
 }
 
@@ -451,9 +456,10 @@ function estimateTokensFromText(text: string) {
   return Math.max(1, Math.ceil(normalized.length / 4))
 }
 
-function pickAiQueueTable(modelType: 'chat' | 'code' | 'image' | 'voice') {
+function pickAiQueueTable(modelType: 'chat' | 'code' | 'image' | 'voice' | 'seo') {
   if (modelType === 'code') return 'ai_code_queue'
-  if (modelType === 'image') return 'ai_seo_queue'
+  // image + seo both use ai_seo_queue as the shared content-generation queue.
+  if (modelType === 'image' || modelType === 'seo') return 'ai_seo_queue'
   if (modelType === 'voice') return 'ai_chat_queue'
   return 'ai_chat_queue'
 }
@@ -476,7 +482,7 @@ function detectPromptRisk(input: string) {
     /jailbreak/i,
   ]
   const sensitivePatterns = [
-    /sk-[a-z0-9]{20,}/i,
+    /sk-[A-Za-z0-9_]{20,}/i,
     /\b(?:\d[ -]*?){13,19}\b/,
     /password\s*[:=]/i,
     /bearer\s+[a-z0-9\-\._~\+\/]+=*/i,
@@ -486,10 +492,10 @@ function detectPromptRisk(input: string) {
   ]
   const blocked = blockedPatterns.some((p) => p.test(lower)) || abusePatterns.some((p) => p.test(lower))
   const sanitized = text
-    .replace(/sk-[a-z0-9]{20,}/gi, '[REDACTED_API_KEY]')
+    .replace(/sk-[A-Za-z0-9_]{20,}/g, '[REDACTED_API_KEY]')
     .replace(/\b(?:\d[ -]*?){13,19}\b/g, '[REDACTED_CARD]')
     .replace(/(password\s*[:=]\s*)([^\s]+)/gi, '$1[REDACTED]')
-    .slice(0, 12000)
+    .slice(0, AI_GATEWAY_MAX_SANITIZED_PROMPT_LENGTH)
   return {
     blocked,
     flaggedSensitive: sensitivePatterns.some((p) => p.test(text)),
@@ -562,7 +568,7 @@ async function markCircuitFailure(admin: any, provider: string, errorMessage: st
       state,
       open_until: openUntil,
       last_failure_at: now.toISOString(),
-      last_error: sanitizeTextInput(errorMessage, 400),
+      last_error: sanitizeTextInput(errorMessage, AI_GATEWAY_MAX_CIRCUIT_ERROR_LENGTH),
       updated_at: now.toISOString(),
     }, { onConflict: 'provider' })
   } catch {
@@ -3092,7 +3098,7 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
                 : 'openai/gpt-5-mini')
       }
 
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < AI_GATEWAY_MAX_RETRIES; attempt++) {
         try {
           const correctedMessages = attempt === 0
             ? messages
@@ -3125,7 +3131,7 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
 
     if (!providerResponse) {
       providerName = 'local_model'
-      const localText = `Local fallback response: ${promptText.slice(0, 500)}`
+      const localText = `Local fallback response: ${promptText.slice(0, AI_GATEWAY_LOCAL_FALLBACK_PROMPT_SLICE)}`
       providerResponse = {
         response: localText,
         model: 'local_model/default',
@@ -3157,7 +3163,7 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
     const { data: dayRow } = await admin.from('ai_usage_daily').select('*')
       .eq('user_id', userId).eq('model', selectedModelId).eq('date', dailyDate).maybeSingle()
     const dailyRequests = Number(dayRow?.request_count || 0)
-    if (dailyRequests >= Number(body?.daily_limit || 1000)) {
+    if (dailyRequests >= Number(body?.daily_limit || AI_GATEWAY_DEFAULT_DAILY_LIMIT)) {
       return err('Daily request limit exceeded', 429, 'DAILY_LIMIT_EXCEEDED')
     }
 
