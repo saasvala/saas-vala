@@ -349,6 +349,14 @@ export const autoPilotApi = {
 };
 
 export const billingApi = {
+  generate: (data: {
+    client_id: string;
+    amount: number;
+    currency?: string;
+    due_date?: string;
+    note?: string;
+    auto_deduct?: boolean;
+  }) => apiCall('POST', 'billing/generate', data),
   create: (data: {
     client_id: string;
     title: string;
@@ -425,6 +433,8 @@ export const walletApi = {
   get: () => apiCall('GET', 'wallet'),
   add: (amount: number, description?: string, paymentMethod?: string, walletId?: string) =>
     apiCall('POST', 'wallet/add', { amount, description, payment_method: paymentMethod, wallet_id: walletId }),
+  export: (params?: { format?: 'csv' | 'pdf'; type?: string; source?: string; status?: string; from?: string; to?: string; search?: string }) =>
+    apiCall('GET', 'wallet/export', params),
   createRequest: (data: { amount: number; method: string; txn_id: string; proof_url?: string | null; source?: string; signature?: string; payload?: Record<string, unknown> }) =>
     apiCall('POST', 'wallet/requests', data),
   myRequests: (params?: { page?: number; limit?: number; status?: string }) =>
@@ -435,6 +445,16 @@ export const walletApi = {
     apiCall('POST', 'wallet/requests/approve', { request_id: requestId }),
   rejectRequest: (requestId: string, reason: string) =>
     apiCall('POST', 'wallet/requests/reject', { request_id: requestId, reason }),
+  adminAdd: (data: { wallet_id: string; amount: number; note?: string; source?: string }) =>
+    apiCall('POST', 'wallet/admin/add', data),
+  adminEdit: (data: { wallet_id: string; balance: number; note?: string }) =>
+    apiCall('POST', 'wallet/admin/edit', data),
+  adminDelete: (data: { wallet_id: string; note?: string }) =>
+    apiCall('POST', 'wallet/admin/delete', data),
+  adminFreeze: (data: { wallet_id: string; freeze: boolean; note?: string }) =>
+    apiCall('POST', 'wallet/admin/freeze', data),
+  reverse: (data: { transaction_id: string; note?: string }) =>
+    apiCall('POST', 'wallet/reverse', data),
   withdraw: (amount: number, description?: string, referenceId?: string, referenceType?: string, walletId?: string) =>
     apiCall('POST', 'wallet/withdraw', { amount, description, reference_id: referenceId, reference_type: referenceType, wallet_id: walletId }),
   lock: (amount: number, referenceId?: string, referenceType?: string, meta?: Record<string, unknown>) =>

@@ -1,6 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 import { walletApi } from '@/lib/api';
+import { supabase } from '@/integrations/supabase/client';
+import type { RealtimeChannel } from '@supabase/supabase-js';
 
 export interface Wallet {
   id: string;
@@ -23,6 +25,7 @@ export interface Transaction {
   reference_type: string | null;
   created_at: string;
   meta: Record<string, unknown> | null;
+  source?: string | null;
 }
 
 export function useWallet() {
@@ -34,7 +37,7 @@ export function useWallet() {
   const [activeLicenses, setActiveLicenses] = useState(0);
   const [expiringLicenses, setExpiringLicenses] = useState(0);
 
-  const fetchWallet = async () => {
+  const fetchWallet = useCallback(async () => {
     setLoading(true);
     try {
       const res = await walletApi.get();
@@ -43,18 +46,18 @@ export function useWallet() {
       console.error(e);
     }
     setLoading(false);
-  };
+  }, []);
 
-  const fetchAllWallets = async () => {
+  const fetchAllWallets = useCallback(async () => {
     try {
       const res = await walletApi.all();
       setAllWallets(res.data || []);
     } catch (e) {
       console.error(e);
     }
-  };
+  }, []);
 
-  const fetchTransactions = async (page = 1, limit = 25) => {
+  const fetchTransactions = useCallback(async (page = 1, limit = 25) => {
     if (!wallet) return;
     try {
       const res = await walletApi.transactions({ page, limit });
@@ -63,9 +66,9 @@ export function useWallet() {
     } catch (e) {
       console.error(e);
     }
-  };
+  }, [wallet]);
 
-  const fetchLicenseStats = async () => {
+  const fetchLicenseStats = useCallback(async () => {
     // License stats still fetched via keys API
     try {
       const { keysApi } = await import('@/lib/api');
@@ -81,7 +84,7 @@ export function useWallet() {
     } catch (e) {
       console.error(e);
     }
-  };
+  }, []);
 
   const addCredit = async (walletId: string, amount: number, description: string, paymentMethod?: string) => {
     try {
@@ -123,13 +126,55 @@ export function useWallet() {
     fetchWallet();
     fetchAllWallets();
     fetchLicenseStats();
-  }, []);
+  }, [fetchWallet, fetchAllWallets, fetchLicenseStats]);
 
   useEffect(() => {
     if (wallet) {
       fetchTransactions();
     }
-  }, [wallet]);
+  }, [wallet, fetchTransactions]);
+
+  useEffect(() => {
+    if (!wallet?.id) return;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(wallet.id);
+    if (!isUuid) return;
+
+    const channels: RealtimeChannel[] = [];
+
+    channels.push(
+      supabase
+        .channel(`wallet-sync-${wallet.id}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'wallets', filter: `id=eq.${wallet.id}` }, () => {
+          fetchWallet();
+          fetchAllWallets();
+        })
+        .subscribe()
+    );
+
+    channels.push(
+      supabase
+        .channel(`wallet-transactions-${wallet.id}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions', filter: `wallet_id=eq.${wallet.id}` }, () => {
+          fetchTransactions();
+          fetchWallet();
+        })
+        .subscribe()
+    );
+
+    channels.push(
+      supabase
+        .channel('wallet-admin-sync')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'wallet_requests' }, () => {
+          fetchTransactions();
+          fetchAllWallets();
+        })
+        .subscribe()
+    );
+
+    return () => {
+      channels.forEach((channel) => supabase.removeChannel(channel));
+    };
+  }, [wallet?.id, fetchTransactions, fetchWallet, fetchAllWallets]);
 
   return {
     wallet,
