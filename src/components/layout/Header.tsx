@@ -34,6 +34,17 @@ const pageTitles: Record<string, string> = {
   '/audit-logs': 'Audit Logs',
   '/system-health': 'System Health',
   '/settings': 'Settings',
+  '/support': 'Support',
+  '/support/ticket': 'Support Ticket',
+  '/feedback': 'Feedback',
+  '/announcements': 'Announcements',
+  '/dashboard/downloads': 'Download History',
+  '/onboarding': 'Onboarding',
+  '/email-logs': 'Email Logs',
+  '/retry-actions': 'Retry Actions',
+  '/archive': 'Archive',
+  '/bulk-actions': 'Bulk Actions',
+  '/tags': 'Tagging',
   '/education': 'Education Systems',
   '/role-detail': 'Role Configuration',
   '/automation': 'Auto-Pilot',
@@ -53,10 +64,16 @@ export function Header() {
   const pageTitle = pageTitles[location.pathname] || 'SaaS VALA';
   const canGoBack = location.pathname !== '/';
   const userInitials = user?.email?.slice(0, 2).toUpperCase() || 'U';
+  const broadcast = localStorage.getItem('sv_admin_broadcast') || '';
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border/30 bg-background/80 backdrop-blur-2xl px-5">
-      {/* Left */}
+    <header className="sticky top-0 z-30 border-b border-border/30 bg-background/80 backdrop-blur-2xl">
+      {broadcast && (
+        <div className="h-7 px-5 flex items-center bg-primary/10 text-primary text-xs border-b border-primary/20">
+          {broadcast}
+        </div>
+      )}
+      <div className="flex h-14 items-center justify-between px-5">
       <div className="flex items-center gap-3">
         {canGoBack && (
           <Button
@@ -176,6 +193,7 @@ export function Header() {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+      </div>
       </div>
     </header>
   );

@@ -1,6 +1,7 @@
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { OfflineRetryBanner } from "@/components/global/OfflineRetryBanner";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate, useParams } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
@@ -40,6 +41,17 @@ const Resellers = React.lazy(() => import("./pages/Resellers"));
 const Settings = React.lazy(() => import("./pages/Settings"));
 const AuditLogs = React.lazy(() => import("./pages/AuditLogs"));
 const SystemHealth = React.lazy(() => import("./pages/SystemHealth"));
+const Onboarding = React.lazy(() => import("./pages/Onboarding"));
+const Support = React.lazy(() => import("./pages/Support"));
+const SupportTicket = React.lazy(() => import("./pages/SupportTicket"));
+const Feedback = React.lazy(() => import("./pages/Feedback"));
+const Announcements = React.lazy(() => import("./pages/Announcements"));
+const Downloads = React.lazy(() => import("./pages/Downloads"));
+const EmailLogs = React.lazy(() => import("./pages/EmailLogs"));
+const RetryActions = React.lazy(() => import("./pages/RetryActions"));
+const ArchiveManager = React.lazy(() => import("./pages/ArchiveManager"));
+const BulkActions = React.lazy(() => import("./pages/BulkActions"));
+const Tags = React.lazy(() => import("./pages/Tags"));
 const NotFound = React.lazy(() => import("./pages/NotFound"));
 const ResellerDashboard = React.lazy(() => import("./pages/ResellerDashboard"));
 const Automation = React.lazy(() => import("./pages/Automation"));
@@ -303,6 +315,9 @@ function ProductEditRouteGuarded() {
 }
 
 function AppRoutes() {
+  const { user } = useAuth();
+  const setupDone = user?.id ? localStorage.getItem(`sv_onboarding_done_${user.id}`) === '1' : true;
+
   return (
     <Suspense fallback={<PageLoader />}>
       <Routes>
@@ -353,7 +368,18 @@ function AppRoutes() {
 
 
         {/* Protected routes */}
-        <Route path="/dashboard" element={<AuthGuard><Dashboard /></AuthGuard>} />
+        <Route path="/onboarding" element={<AuthGuard><Onboarding /></AuthGuard>} />
+        <Route path="/dashboard" element={<AuthGuard>{setupDone ? <Dashboard /> : <Navigate to="/onboarding" replace />}</AuthGuard>} />
+        <Route path="/support" element={<AuthGuard><Support /></AuthGuard>} />
+        <Route path="/support/ticket" element={<AuthGuard><SupportTicket /></AuthGuard>} />
+        <Route path="/feedback" element={<AuthGuard><Feedback /></AuthGuard>} />
+        <Route path="/announcements" element={<AuthGuard><Announcements /></AuthGuard>} />
+        <Route path="/dashboard/downloads" element={<AuthGuard><Downloads /></AuthGuard>} />
+        <Route path="/email-logs" element={<AuthGuard><RoleGuard role="super_admin"><EmailLogs /></RoleGuard></AuthGuard>} />
+        <Route path="/retry-actions" element={<AuthGuard><RoleGuard role="super_admin"><RetryActions /></RoleGuard></AuthGuard>} />
+        <Route path="/archive" element={<AuthGuard><RoleGuard role="super_admin"><ArchiveManager /></RoleGuard></AuthGuard>} />
+        <Route path="/bulk-actions" element={<AuthGuard><RoleGuard role="super_admin"><BulkActions /></RoleGuard></AuthGuard>} />
+        <Route path="/tags" element={<AuthGuard><RoleGuard role="super_admin"><Tags /></RoleGuard></AuthGuard>} />
         <Route path="/dashboard/*" element={<AuthGuard><Navigate to="/dashboard" replace /></AuthGuard>} />
         <Route path="/dashboard/apps" element={<AuthGuard><Navigate to="/products" replace /></AuthGuard>} />
 
@@ -486,6 +512,7 @@ const App = () => (
           <CartProvider>
             <SidebarProvider>
               <AppRoutes />
+              <OfflineRetryBanner />
             </SidebarProvider>
           </CartProvider>
         </AuthProvider>
