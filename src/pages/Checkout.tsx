@@ -31,15 +31,6 @@ export default function Checkout() {
   const { purchaseApk, processing } = useApkPurchase();
   const { trackPromoConversion } = useMarketplaceActions();
   const [submitting, setSubmitting] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<'wallet' | 'upi' | 'card' | 'crypto'>('wallet');
-
-  const payInFlightRef = useRef(false);
-  const pendingRestoreAttemptedRef = useRef(false);
-  const trackedConversionRef = useRef('');
-  const refCode = useMemo(() => new URLSearchParams(window.location.search).get('ref') || '', []);
-
-  const requestedProductId = String(searchParams.get('product_id') || '').trim();
-  const hasInvalidProductParam = Boolean(requestedProductId && !SAFE_PRODUCT_PARAM.test(requestedProductId));
 
   const selected = useMemo(() => {
     if (requestedProductId) {
@@ -48,11 +39,12 @@ export default function Checkout() {
     }
     if (items[0]) return items[0];
     return products[0] || null;
-  }, [items, products, requestedProductId]);
 
-  const payable = total > 0 ? total : selected?.price || 0;
 
   const restorePendingPayment = async () => {
+    if (restoreInFlightRef.current) return;
+    restoreInFlightRef.current = true;
+    setRestoring(true);
     try {
       const raw = sessionStorage.getItem('sv_pending_payment');
       if (!raw) {
@@ -79,6 +71,9 @@ export default function Checkout() {
       toast.success('Payment restore initiated');
     } catch {
       toast.error('Failed to restore payment');
+    } finally {
+      restoreInFlightRef.current = false;
+      setRestoring(false);
     }
   };
 
@@ -195,8 +190,8 @@ export default function Checkout() {
             <CreditCard className="h-4 w-4 mr-2" />
             {processing || submitting ? 'Processing...' : `Pay $${payable} via ${paymentMethod.toUpperCase()}`}
           </Button>
-          <Button variant="outline" className="w-full" onClick={restorePendingPayment}>
-            Retry Pending Payment
+          <Button variant="outline" className="w-full" onClick={restorePendingPayment} disabled={restoring}>
+            {restoring ? 'Restoring...' : 'Retry Pending Payment'}
           </Button>
         </section>
       </main>
