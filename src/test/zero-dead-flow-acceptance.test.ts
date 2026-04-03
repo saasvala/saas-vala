@@ -79,7 +79,7 @@ describe('ZERO DEAD FLOW acceptance gates', () => {
   test('queue retry + dead-letter semantics present for payment retries', () => {
     const source = mustRead(gatewayPath);
     expect(source.includes('paymentRetryRunAt')).toBeTruthy();
-    expect(source.includes("status: retryCount < 3 ? 'queued' : 'dead_letter'")).toBeTruthy();
+    expect(source.includes("status: retryCount < MAX_PAYMENT_RETRY_ATTEMPTS ? 'queued' : 'dead_letter'")).toBeTruthy();
     expect(source.includes("job_type: 'webhook_retry'")).toBeTruthy();
   });
 });

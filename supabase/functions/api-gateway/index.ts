@@ -104,6 +104,7 @@ const SERVER_STATUS_CACHE_TTL_MS = 30 * 1000
 const DASHBOARD_STATS_CACHE_TTL_MS = 30 * 1000
 const SEO_ANALYTICS_CACHE_TTL_MS = 60 * 1000
 const PRODUCT_LIST_TRANSLATION_LIMIT = 60
+const MAX_PAYMENT_RETRY_ATTEMPTS = 3
 const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SECONDS') || '60')
 const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
 const DEFAULT_GITHUB_ORG = Deno.env.get('GITHUB_DEFAULT_ORG') || 'saasvala'
@@ -147,6 +148,31 @@ const RESELLER_FEATURE_KEY_SET = new Set<string>([
   ...FINAL_RESELLER_GAP_FEATURE_KEYS,
   ...FINAL_ULTRA_LAYER_FEATURE_KEYS,
 ])
+
+type DomainEventType =
+  | 'product_created'
+  | 'lead_generated'
+  | 'build_completed'
+  | 'payment_success'
+  | 'payment_init'
+  | 'order_completed'
+  | 'subscription_renewed'
+  | 'subscription_activated'
+  | 'license_key_assigned'
+  | 'banner_created'
+  | 'banner_updated'
+  | 'banner_deleted'
+  | 'offer_created'
+  | 'marketplace_sync'
+
+type EnabledGateway = {
+  id: string
+  gateway_code: string
+  gateway_name: string
+  is_enabled: boolean
+  config: Record<string, unknown> | null
+  sort_order: number
+}
 
 function invalidateProductCache() {
   productListCache.data = null
@@ -355,7 +381,7 @@ async function redisSetJson(key: string, value: unknown, ttlSeconds: number) {
 
 async function emitDomainEvent(
   admin: any,
-  eventType: string,
+  eventType: DomainEventType,
   payload: Record<string, unknown>,
   tenantId?: string | null,
 ) {
@@ -379,10 +405,10 @@ async function resolveEnabledPaymentGateway(admin: any, requestedGateway?: strin
     .eq('is_enabled', true)
     .order('sort_order', { ascending: true })
 
-  if (error) return { error: error.message, gateway: null as any }
+  if (error) return { error: error.message, gateway: null as EnabledGateway | null }
 
-  const rows = Array.isArray(data) ? data : []
-  if (!rows.length) return { error: null, gateway: null as any }
+  const rows = (Array.isArray(data) ? data : []) as EnabledGateway[]
+  if (!rows.length) return { error: null, gateway: null as EnabledGateway | null }
 
   if (requested) {
     const matched = rows.find((row: any) => String(row.gateway_code || '').toLowerCase() === requested)
@@ -3363,7 +3389,7 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
       }
       await sb.from('async_jobs').insert({
         job_type: 'webhook_retry',
-        status: retryCount < 3 ? 'queued' : 'dead_letter',
+        status: retryCount < MAX_PAYMENT_RETRY_ATTEMPTS ? 'queued' : 'dead_letter',
         attempts: retryCount,
         payload: { payment_id: payment.id, event_type: body.event_type },
         run_at: paymentRetryRunAt(retryCount),

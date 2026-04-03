@@ -259,7 +259,7 @@ function hasInvalidRouteParam(params: Array<string | undefined>) {
 function CategoryRouteGuarded() {
   const { macro, sub, micro } = useParams();
   if (hasInvalidRouteParam([macro, sub, micro])) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/marketplace" replace />;
   }
   return <CategoryFlow />;
 }
@@ -268,7 +268,7 @@ function ProductRouteGuarded() {
   const { id, productId } = useParams();
   const resolved = id || productId;
   if (!resolved || hasInvalidRouteParam([resolved])) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/marketplace" replace />;
   }
   return <ProductDetail />;
 }
@@ -277,7 +277,7 @@ function AppRouteGuarded() {
   const { id, productId } = useParams();
   const resolved = id || productId;
   if (!resolved || hasInvalidRouteParam([resolved])) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/marketplace" replace />;
   }
   return (
     <AuthGuard>
