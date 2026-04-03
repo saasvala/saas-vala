@@ -92,7 +92,7 @@ export function mapDbProduct(product: any, index: number): MarketplaceProduct {
     ? product.features.slice(0, 4).map((f: any) => typeof f === 'string' ? { icon: 'CheckCircle2', text: f } : f)
     : defaultFeatures;
   const normalizedBuildStatus = String(product.build_status || '').toLowerCase();
-  const isBuildReady = normalizedBuildStatus === '' || normalizedBuildStatus === 'success';
+  const isBuildReady = !product.build_status || normalizedBuildStatus === 'success';
   const isAvailable = product.status === 'active' && product.deploy_status !== 'failed' && isBuildReady;
   return {
     id: product.id,

@@ -48,9 +48,10 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
   const { isInCart, toggleItem } = useCart();
   const inCart = isInCart(product.id);
 
-  const normalizedBuildStatus = String((product as any).build_status || '').toLowerCase();
+  const normalizedBuildStatus = String(product.build_status || '').toLowerCase();
   const isBuilding = normalizedBuildStatus === 'pending';
   const isPipeline = !product.isAvailable || product.status === 'draft' || product.status === 'upcoming' || isBuilding;
+  const downloadButtonText = downloadChecking ? '...' : isBuilding ? 'Building...' : isPipeline ? 'PIPELINE' : 'APK';
   const iconColor = catColors[product.category] || '#f97316';
   const cardRank = rank ?? index + 1;
 
@@ -299,7 +300,7 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
           <div className="flex gap-1.5">
             {apkEnabled && (
               <Button size="sm" variant="outline" className="flex-1 h-7 text-[10px] font-bold rounded-lg text-white border-0" style={{ background: 'linear-gradient(90deg,#7C3AED,#6D28D9)' }} onClick={handleDownloadApk} disabled={downloadChecking || isPipeline}>
-                <Download style={{ width: 11, height: 11 }} className="mr-1" />{downloadChecking ? '...' : isBuilding ? 'Building...' : isPipeline ? 'PIPELINE' : 'APK'}
+                <Download style={{ width: 11, height: 11 }} className="mr-1" />{downloadButtonText}
               </Button>
             )}
             <Button size="sm" variant="outline" className={cn('h-7 text-[10px] font-bold rounded-lg border-white/10 text-muted-foreground', apkEnabled ? 'flex-1' : 'w-full')} onClick={(e) => { e.stopPropagation(); setFeaturesOpen(true); }}>

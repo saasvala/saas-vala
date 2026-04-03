@@ -47,7 +47,7 @@ export default function ProductDetail() {
   }
 
   const inCart = isInCart(product.id);
-  const normalizedBuildStatus = String((product as any).build_status || '').toLowerCase();
+  const normalizedBuildStatus = String(product.build_status || '').toLowerCase();
   const isBuilding = normalizedBuildStatus === 'pending';
   const screenshots = useMemo(() => {
     const rawScreenshots = hasScreenshots(product) ? product.screenshots : undefined;

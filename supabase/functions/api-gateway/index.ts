@@ -4911,6 +4911,11 @@ function normalizeApkStoragePath(value: unknown): string | null {
 type SyncedBuildStatus = 'pending' | 'success' | 'failed'
 type ApkBuildSource = 'manual' | 'pipeline'
 
+/**
+ * Canonical build status mapper for product/apk_builds sync.
+ * finalized pipeline outputs (completed/published/ready/stored/signed/distributed) map to `success`.
+ * Unknown or empty values intentionally degrade to `pending` for safe non-downloadable behavior.
+ */
 function normalizeSyncedBuildStatus(rawStatus: unknown): SyncedBuildStatus {
   const normalized = String(rawStatus || '').toLowerCase().trim()
   if (['success', 'completed', 'published', 'ready', 'stored', 'signed', 'distributed'].includes(normalized)) return 'success'
@@ -4946,6 +4951,7 @@ async function syncProductFromApkBuild(
   const source: ApkBuildSource = String(payload.source || 'pipeline').toLowerCase() === 'manual' ? 'manual' : 'pipeline'
   const buildStatus = normalizeSyncedBuildStatus(payload.build_status)
   const incomingBuildId = String(payload.build_id || '').trim()
+  if (source === 'pipeline' && !incomingBuildId) return { error: 'build_id is required when source is pipeline', status: 422 as const }
   const buildId = incomingBuildId || crypto.randomUUID()
   const apkUrl = payload.apk_url ? String(payload.apk_url).trim() : null
   const version = String(payload.version || '').trim() || '1.0.0'
@@ -4965,6 +4971,8 @@ async function syncProductFromApkBuild(
     version,
     build_status: buildStatus,
     source,
+    // Legacy status field remains for backward compatibility with historical readers.
+    // build_status is the canonical normalized status for product/download gating.
     status: buildStatus === 'success' ? 'distributed' : buildStatus === 'failed' ? 'failed' : 'pending',
     created_at: nowIso(),
   }
@@ -4994,11 +5002,10 @@ async function syncProductFromApkBuild(
   } else if (latestResolved?.apk_url) {
     nextProductPatch.apk_url = latestResolved.apk_url
     nextProductPatch.build_status = 'success'
-    nextProductPatch.build_id = latestResolved.build_id || latestResolved.id
+    nextProductPatch.build_id = latestResolved.build_id || null
   } else {
     nextProductPatch.build_status = buildStatus
     nextProductPatch.build_id = buildId
-    if (buildStatus !== 'success') nextProductPatch.apk_url = null
   }
 
   const { error: updateError } = await sb.from('products').update(nextProductPatch).eq('id', productId)
@@ -5240,7 +5247,7 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
       product_id: productId,
       apk_url: body?.apk_url || null,
       version: body?.version || null,
-      build_status: body?.build_status || 'success',
+      build_status: body?.build_status || 'pending',
       source: body?.source || 'pipeline',
       build_id: body?.build_id || null,
     })
@@ -5248,7 +5255,7 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
     await logActivity(admin, 'apk', productId, 'build_completed', userId, {
       build_id: body?.build_id || synced.data?.build?.build_id || null,
       source: body?.source || 'pipeline',
-      build_status: body?.build_status || 'success',
+      build_status: body?.build_status || 'pending',
       apk_url: body?.apk_url || null,
       version: body?.version || null,
     })
@@ -5397,15 +5404,22 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
     if (product?.id && (!apkPath || resolvedBuildStatus !== 'success')) {
       const { data: latestSuccessBuild } = await findLatestSuccessfulApkBuild(admin, product.id)
       const latestPath = normalizeApkStoragePath(latestSuccessBuild?.apk_url)
-      if (latestSuccessBuild?.build_id || latestSuccessBuild?.id || latestPath) {
+      const hasSyncedBuildId = Boolean(latestSuccessBuild?.build_id)
+      const buildIdMismatch = product.build_id !== latestSuccessBuild?.build_id
+      const statusNotSuccess = resolvedBuildStatus !== 'success'
+      const urlMismatch = product.apk_url !== (latestSuccessBuild?.apk_url || null)
+      const needsProductSync = hasSyncedBuildId && (buildIdMismatch || statusNotSuccess || urlMismatch)
+      if (latestSuccessBuild?.build_id || latestPath) {
         apkPath = latestPath || apkPath
         resolvedBuildStatus = 'success'
-        await admin.from('products').update({
-          apk_url: latestSuccessBuild?.apk_url || product.apk_url || null,
-          build_id: latestSuccessBuild?.build_id || latestSuccessBuild?.id || null,
-          build_status: 'success',
-          updated_at: nowIso(),
-        }).eq('id', product.id)
+        if (needsProductSync) {
+          await admin.from('products').update({
+            apk_url: latestSuccessBuild?.apk_url || product.apk_url || null,
+            build_id: latestSuccessBuild?.build_id || null,
+            build_status: 'success',
+            updated_at: nowIso(),
+          }).eq('id', product.id)
+        }
       }
     }
 

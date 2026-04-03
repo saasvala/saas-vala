@@ -22,13 +22,6 @@ UPDATE public.apk_builds
 SET source = 'pipeline'
 WHERE source IS NULL;
 
-ALTER TABLE public.apk_builds
-  ALTER COLUMN build_id SET NOT NULL,
-  ALTER COLUMN build_status SET NOT NULL,
-  ALTER COLUMN source SET NOT NULL,
-  ALTER COLUMN build_status SET DEFAULT 'pending',
-  ALTER COLUMN source SET DEFAULT 'pipeline';
-
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -57,6 +50,13 @@ BEGIN
   END IF;
 END $$;
 
+ALTER TABLE public.apk_builds
+  ALTER COLUMN build_id SET NOT NULL,
+  ALTER COLUMN build_status SET NOT NULL,
+  ALTER COLUMN source SET NOT NULL,
+  ALTER COLUMN build_status SET DEFAULT 'pending',
+  ALTER COLUMN source SET DEFAULT 'pipeline';
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_apk_builds_build_id_unique
   ON public.apk_builds(build_id);
 
@@ -75,9 +75,6 @@ SET build_status = CASE
 END
 WHERE build_status IS NULL;
 
-ALTER TABLE public.products
-  ALTER COLUMN build_status SET DEFAULT 'pending';
-
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -91,6 +88,9 @@ BEGIN
       CHECK (build_status IS NULL OR build_status IN ('pending', 'success', 'failed'));
   END IF;
 END $$;
+
+ALTER TABLE public.products
+  ALTER COLUMN build_status SET DEFAULT 'pending';
 
 CREATE INDEX IF NOT EXISTS idx_products_build_status
   ON public.products(build_status);
