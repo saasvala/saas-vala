@@ -306,31 +306,30 @@ export const leadsApi = {
   list: (params?: { page?: number; limit?: number; search?: string }) =>
     apiCall('GET', 'leads', params),
   create: (data: any) => apiCall('POST', 'leads', data),
-  callTrack: (data: any) => apiCall('POST', 'lead/call-track', data),
-  whatsappTrack: (data: any) => apiCall('POST', 'lead/whatsapp-track', data),
+
 };
 
 export const seoApi = {
   analytics: () => apiCall('GET', 'seo/analytics'),
-  landingCreate: (data: any) => apiCall('POST', 'seo/landing/create', data),
+
 };
 
-export const adsApi = {
-  optimize: (data: any) => apiCall('POST', 'ads/optimize', data),
-  usage: () => apiCall('GET', 'ads/usage'),
-};
+export const contentApi = {
+  generate: (data: {
+    keyword: string
+    country?: string
+    language?: string
+    type?: 'blog' | 'landing' | 'product'
+    publish?: boolean
+  }) => apiCall('POST', 'content/generate', data),
+}
 
-export const audienceApi = {
-  discover: (data: any) => apiCall('POST', 'audience/discover', data),
-  usage: () => apiCall('GET', 'audience/usage'),
-};
+export const analyticsApi = {
+  seo: () => apiCall('GET', 'analytics/seo'),
+  leads: () => apiCall('GET', 'analytics/leads'),
+}
 
-export const videoApi = {
-  create: (data: any) => apiCall('POST', 'video/create', data),
-  usage: () => apiCall('GET', 'video/usage'),
-};
-
-export const socialApi = {
-  publish: (data: any) => apiCall('POST', 'social/publish', data),
-  usage: () => apiCall('GET', 'social/usage'),
-};
+export const marketingApi = {
+  poster: (data: { campaign_name?: string; platform?: string; content?: string; country?: string }) =>
+    apiCall('POST', 'marketing/poster', data),
+}

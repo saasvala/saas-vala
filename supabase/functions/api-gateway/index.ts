@@ -262,6 +262,46 @@ function toCsv(headers: string[], rows: Record<string, unknown>[]) {
   return [headerLine, ...lines].join('\n')
 }
 
+function safeKeywordsFromText(input: unknown) {
+  const text = String(input || '')
+  const tokens = text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 4)
+  return Array.from(new Set(tokens)).slice(0, 12)
+}
+
+function getPageTitleFromUrl(url: string) {
+  const segment = String(url || '')
+    .split('/')
+    .filter(Boolean)
+    .pop() || 'home'
+  return segment
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function buildSeoMetaForPage(url: string, fallbackName?: string) {
+  const pageName = (fallbackName || getPageTitleFromUrl(url) || 'Page').trim()
+  const metaTitle = `${pageName} | SaaS Vala`
+  const metaDescription = `Explore ${pageName} solutions with SaaS Vala. Get product details, pricing, support, and conversion-focused resources.`
+  const keywords = safeKeywordsFromText(`${pageName} saas software automation reseller lead`)
+  const schema = {
+    '@context': 'https://schema.org',
+    '@type': 'WebPage',
+    name: pageName,
+    url,
+    description: metaDescription,
+  }
+  return { metaTitle, metaDescription, keywords, schema }
+}
+
+function relationMissing(message?: string) {
+  return !!message && /relation\s+"?.+"?\s+does not exist/i.test(message)
+}
+
 async function getResellerProfileForUser(sb: any, userId: string) {
   const { data } = await sb
     .from('resellers')
@@ -3714,8 +3754,72 @@ async function handleSeoLeads(method: string, pathParts: string[], body: any, us
     return json({ data }, 201)
   }
 
+  // POST /leads/qualify
+  if (method === 'POST' && segment === 'leads' && pathParts[1] === 'qualify') {
+    const text = `${body?.name || ''} ${body?.email || ''} ${body?.phone || ''} ${body?.notes || ''}`.toLowerCase()
+    let score = 50
+    if (String(body?.email || '').includes('@')) score += 20
+    if ((String(body?.phone || '').replace(/\D/g, '').length) >= 8) score += 15
+    if (String(body?.name || '').trim().length >= 2) score += 10
+    if (/test|fake|dummy|spam|asdf/.test(text)) score -= 40
+    const finalScore = Math.max(0, Math.min(100, score))
+    const isSpam = finalScore < 35
+    const quality = finalScore >= 75 ? 'high' : finalScore >= 50 ? 'medium' : 'low'
+    return json({
+      data: {
+        score: finalScore,
+        is_spam: isSpam,
+        quality,
+        recommended_status: isSpam ? 'lost' : 'qualified',
+      },
+    })
+  }
+
   // GET /leads
   if (method === 'GET' && segment === 'leads') {
+    if (pathParts[1] === 'export') {
+      const countryFilter = sanitizeTextInput(body?.country, 128)
+      const resellerFilter = sanitizeTextInput(body?.reseller_id, 128)
+
+      let query = sb
+        .from('leads')
+        .select('id,name,email,phone,company,source,status,assigned_to,created_at,meta')
+        .order('created_at', { ascending: false })
+
+      if (resellerFilter) {
+        query = query.eq('assigned_to', resellerFilter)
+      }
+
+      const { data, error } = await query.limit(5000)
+      if (error) return err(error.message)
+
+      const rows = (data || [])
+        .map((lead: any) => {
+          const meta = lead?.meta && typeof lead.meta === 'object' ? lead.meta : {}
+          return {
+            id: lead.id || '',
+            name: lead.name || '',
+            email: lead.email || '',
+            phone: lead.phone || '',
+            company: lead.company || '',
+            country: String((meta as Record<string, unknown>)?.country || ''),
+            source: lead.source || '',
+            status: lead.status || '',
+            assigned_to: lead.assigned_to || '',
+            created_at: lead.created_at || '',
+          }
+        })
+        .filter((row) => !countryFilter || row.country.toLowerCase() === countryFilter.toLowerCase())
+
+      const headers = ['id', 'name', 'email', 'phone', 'company', 'country', 'source', 'status', 'assigned_to', 'created_at']
+      const csv = toCsv(headers, rows)
+      return json({
+        filename: `leads-export-${new Date().toISOString().slice(0, 10)}.csv`,
+        csv,
+        count: rows.length,
+      })
+    }
+
     const page = Number(body?.page || 1)
     const limit = Number(body?.limit || 25)
     const search = body?.search || ''
@@ -3850,38 +3954,7 @@ async function handleSeoLeads(method: string, pathParts: string[], body: any, us
     return json({ data })
   }
 
-  // POST /seo/landing/create
-  if (method === 'POST' && segment === 'seo' && pathParts[1] === 'landing' && pathParts[2] === 'create') {
-    const missing = validateRequired(body, ['keyword'])
-    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
-    const keyword = String(body.keyword || '').trim()
-    const country = String(body.country || body.region || 'global').trim().toLowerCase()
-    const baseSlugSource = String(body.slug || `${keyword}-${country}`)
-    const slug = baseSlugSource
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 120)
-    const urlPath = `/landing/${country}/${slug}`
-    const defaultTitle = country === 'global'
-      ? `${keyword} Landing Page`
-      : `${keyword} in ${country.toUpperCase()}`
-    const { data, error } = await admin.from('seo_landing_pages').insert({
-      keyword,
-      country,
-      slug,
-      url_path: urlPath,
-      title: body.title || defaultTitle,
-      content: body.content || null,
-      status: body.status || 'draft',
-      is_fast_page: body.is_fast_page !== false,
-      created_by: userId,
-      reseller_id: resellerId,
-      meta: body.meta || {},
-    }).select().single()
-    if (error) return err(error.message)
-    await logActivity(admin, 'seo_landing_page', data.id, 'created', userId, { keyword, country })
-    return json({ data }, 201)
+
   }
 
   return err('Not found', 404)
@@ -4129,15 +4202,7 @@ Deno.serve(async (req) => {
       case 'leads':
       case 'lead':
       case 'seo':
-        return await handleSeoLeads(req.method, [module, ...subParts], body, userId, sb, req)
-      case 'ads':
-        return await handleAiModule(req.method, subParts, body, userId, sb, 'ads')
-      case 'audience':
-        return await handleAiModule(req.method, subParts, body, userId, sb, 'audience')
-      case 'video':
-        return await handleAiModule(req.method, subParts, body, userId, sb, 'video')
-      case 'social':
-        return await handleAiModule(req.method, subParts, body, userId, sb, 'social')
+
       default:
         return err(`Unknown module: ${module}`, 404)
     }
