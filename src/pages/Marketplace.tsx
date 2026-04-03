@@ -35,12 +35,14 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatUserTime, getTypoSuggestions } from '@/lib/edgeGuards';
+import { executeButtonAction, registerKnownRoutes, resolveSafeRoute } from '@/lib/buttonEngine';
 
 interface Product {
   id: string; title: string; subtitle: string; image: string;
   status: 'upcoming' | 'live' | 'bestseller' | 'draft'; price: number;
 }
 interface SearchResultRow { id: string }
+interface ProductSearchResponse { data?: SearchResultRow[] }
 
 const bankDetails = {
   accountName: 'SOFTWARE VALA', bankName: 'INDIAN BANK',
@@ -85,6 +87,20 @@ export default function Marketplace() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResultRow[] | null>(null);
   const [currencyRatesReady, setCurrencyRatesReady] = useState(false);
+
+  useEffect(() => {
+    registerKnownRoutes([
+      '/',
+      '/marketplace',
+      '/search',
+      '/checkout',
+      '/cart',
+      '/subscription',
+      '/auth',
+      '/product/:id',
+      '/category/:macro/:sub/:micro',
+    ]);
+  }, []);
 
   const queryCountry = (searchParams.get('country') || '').toUpperCase()
   const queryLang = (searchParams.get('lang') || '').toLowerCase()
@@ -182,9 +198,22 @@ export default function Marketplace() {
 
   const handleBuyNow = async (product: Product) => {
     if (!user) { toast.error('Please sign in to purchase'); return; }
-    const fraud = await checkUserStatus(user.id, user.email || '');
-    if (fraud.isBlocked) { toast.error(fraud.message); return; }
-    navigate(`/checkout?product_id=${encodeURIComponent(product.id)}`);
+    try {
+      await executeButtonAction<void>({
+        config: { action: 'BUY_NOW', route: '/checkout', api: '/payment/intent', debounceMs: 150, throttleMs: 200, idempotent: true, retries: 1, retryBackoffMs: 1000 },
+        run: async () => {
+          const fraud = await checkUserStatus(user.id, user.email || '');
+          if (fraud.isBlocked) {
+            toast.error(fraud.message);
+            return;
+          }
+          navigate(`${resolveSafeRoute('/checkout', '/')}?product_id=${encodeURIComponent(product.id)}`);
+        },
+        validateResponse: false,
+      });
+    } catch {
+      toast.error('Buy Now failed, please retry');
+    }
   };
 
   const handleWalletPayment = async () => {
@@ -280,8 +309,16 @@ export default function Marketplace() {
       }
       try {
         setSearchLoading(true);
-        const res = await marketplaceApi.productSearch(searchQuery.trim(), filters);
-        setSearchResults(Array.isArray((res as any)?.data) ? (res as any).data : []);
+        const res = await executeButtonAction<ProductSearchResponse>({
+          config: { action: 'SEARCH_SUBMIT', route: '/search', api: '/product/search', debounceMs: 150, throttleMs: 200, idempotent: false, retries: 1, retryBackoffMs: 1000 },
+          run: async () => marketplaceApi.productSearch(searchQuery.trim(), filters),
+        });
+        if (!res) {
+          setSearchResults([]);
+          toast.error('Search failed');
+          return;
+        }
+        setSearchResults(Array.isArray(res?.data) ? res.data : []);
       } catch (_e) {
         setSearchResults([]);
       } finally {

@@ -21,6 +21,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import saasValaLogo from '@/assets/saas-vala-logo.jpg';
 import { AVAILABLE_CURRENCIES, AVAILABLE_LANGUAGES, DEFAULT_LOCALE, getStoredLocale, storeLocale } from '@/lib/locale';
+import { createPressHandlers, executeButtonAction, getButtonInteractionClassName } from '@/lib/buttonEngine';
 
 export function MarketplaceHeader() {
   const navigate = useNavigate();
@@ -56,10 +57,14 @@ export function MarketplaceHeader() {
   }, [])
 
   const handleSearch = () => {
-    if (searchQuery.trim()) {
-      // Scroll to products and filter — dispatch custom event
-      window.dispatchEvent(new CustomEvent('marketplace-search', { detail: searchQuery.trim() }));
-    }
+    if (!searchQuery.trim()) return;
+    void executeButtonAction<void>({
+      config: { action: 'SEARCH_SUBMIT', route: '/search', api: '/product/search', debounceMs: 150, throttleMs: 200, idempotent: false },
+      run: () => {
+        window.dispatchEvent(new CustomEvent('marketplace-search', { detail: searchQuery.trim() }));
+      },
+      validateResponse: false,
+    });
   };
 
   return (
@@ -97,8 +102,8 @@ export function MarketplaceHeader() {
             />
             {searchQuery && (
               <button
-                onClick={() => { setSearchQuery(''); window.dispatchEvent(new CustomEvent('marketplace-search', { detail: '' })); }}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                {...createPressHandlers('header-clear-search', () => { setSearchQuery(''); window.dispatchEvent(new CustomEvent('marketplace-search', { detail: '' })); })}
+                className={getButtonInteractionClassName("absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground")}
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -124,8 +129,8 @@ export function MarketplaceHeader() {
           <Button
             variant="ghost"
             size="icon"
-            className="md:hidden h-9 w-9"
-            onClick={() => setSearchOpen(!searchOpen)}
+            className={getButtonInteractionClassName("md:hidden h-9 w-9")}
+            {...createPressHandlers('toggle-mobile-search', () => setSearchOpen(!searchOpen))}
           >
             <Search className="h-4 w-4" />
           </Button>
