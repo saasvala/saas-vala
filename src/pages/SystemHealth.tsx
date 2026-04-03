@@ -81,7 +81,9 @@ export default function SystemHealth() {
   const [healthChecks, setHealthChecks] = useState<HealthCheck[]>(buildCheckingState());
   const [healthPercentage, setHealthPercentage] = useState(0);
   const service = useMemo(() => healthService(5000), []);
+  const hasLoadedRef = useRef(false);
   const hadErrorsRef = useRef(false);
+  const hadFetchErrorRef = useRef(false);
 
   const applySnapshot = (raw: unknown) => {
     const snapshot = unwrapHealthPayload(raw);
@@ -122,12 +124,16 @@ export default function SystemHealth() {
   useEffect(() => {
     const unsubscribeUpdate = service.onUpdate((result) => {
       applySnapshot(result);
+      hadFetchErrorRef.current = false;
       setLoading(false);
     });
     const unsubscribeError = service.onError((error) => {
       console.error('System health fetch failed:', error);
       setLoading(false);
-      toast.error('Failed to fetch system health');
+      if (!hadFetchErrorRef.current) {
+        toast.error('Failed to fetch system health');
+      }
+      hadFetchErrorRef.current = true;
     });
     service.start();
     return () => {
@@ -147,7 +153,10 @@ export default function SystemHealth() {
   const hasErrors = healthChecks.some((c) => c.status === 'error');
 
   useEffect(() => {
-    if (!loading && hasErrors && !hadErrorsRef.current) {
+    if (!loading && !hasLoadedRef.current) {
+      hasLoadedRef.current = true;
+    }
+    if (!loading && hasLoadedRef.current && hasErrors && !hadErrorsRef.current) {
       toast.error('System health alert: one or more modules are in error state');
     }
     hadErrorsRef.current = hasErrors;

@@ -6,7 +6,7 @@ type HealthUpdateListener = (payload: unknown) => void;
 type HealthErrorListener = (error: unknown) => void;
 
 export function healthService(pollIntervalMs = HEALTH_POLL_INTERVAL_MS) {
-  let timer: number | null = null;
+  let timer: ReturnType<typeof setInterval> | null = null;
   let inFlight = false;
   const updateListeners = new Set<HealthUpdateListener>();
   const errorListeners = new Set<HealthErrorListener>();
