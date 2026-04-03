@@ -343,22 +343,16 @@ export default function MarketplaceAdmin() {
   const location = useLocation();
   const { user } = useAuth();
   const path = location.pathname.toLowerCase();
-  const initialTab =
-    path.endsWith('/products')
-      ? 'products'
-      : path.endsWith('/offers')
-      ? 'offers'
-      : path.endsWith('/banners')
-      ? 'settings'
-      : path.endsWith('/categories')
-      ? 'settings'
-      : path.endsWith('/languages')
-      ? 'offers'
-      : path.endsWith('/pricing')
-      ? 'payments'
-      : path.endsWith('/analytics')
-      ? 'payments'
-      : 'settings';
+  const pathTabMappings: Array<{ suffix: string; tab: string }> = [
+    { suffix: '/products', tab: 'products' },
+    { suffix: '/offers', tab: 'offers' },
+    { suffix: '/banners', tab: 'settings' },
+    { suffix: '/categories', tab: 'settings' },
+    { suffix: '/languages', tab: 'offers' },
+    { suffix: '/pricing', tab: 'payments' },
+    { suffix: '/analytics', tab: 'payments' },
+  ];
+  const initialTab = pathTabMappings.find(({ suffix }) => path.endsWith(suffix))?.tab || 'settings';
 
   const [products, setProducts] = useState<Product[]>([]);
   const [productCatalog, setProductCatalog] = useState<Array<{ id: string; name: string; status: string; apk_enabled: boolean }>>([]);

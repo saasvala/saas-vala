@@ -2102,7 +2102,10 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
   return err('Not found', 404)
 }
 
-function parseAliasFilters(raw: unknown): Record<string, string> {
+const DEFAULT_ALIAS_MAX_COUPON_USES = 999999
+const MAX_ANALYTICS_RECORDS = 100000
+
+function parseQueryFilters(raw: unknown): Record<string, string> {
   if (!raw) return {}
   if (typeof raw === 'object') {
     return Object.entries(raw as Record<string, unknown>).reduce<Record<string, string>>((acc, [k, v]) => {
@@ -2115,7 +2118,7 @@ function parseAliasFilters(raw: unknown): Record<string, string> {
   if (!text) return {}
   try {
     const parsed = JSON.parse(text)
-    if (parsed && typeof parsed === 'object') return parseAliasFilters(parsed)
+    if (parsed && typeof parsed === 'object') return parseQueryFilters(parsed)
   } catch {
     // no-op
   }
@@ -2126,7 +2129,7 @@ function parseAliasFilters(raw: unknown): Record<string, string> {
   }, {})
 }
 
-function mapBannerRowToAlias(row: any) {
+function mapBannerRowToResponse(row: any) {
   return {
     id: row.id,
     title: row.title,
@@ -2168,14 +2171,14 @@ async function handleBannerAliases(method: string, pathParts: string[], body: an
     const { data, error } = await sb.from('marketplace_banners').insert(payload).select('*').single()
     if (error) return err(error.message)
     await logActivity(admin, 'banner', data.id, 'created', userId, payload)
-    return json({ data: mapBannerRowToAlias(data) }, 201)
+    return json({ data: mapBannerRowToResponse(data) }, 201)
   }
 
   // GET /banner/list
   if (method === 'GET' && action === 'list') {
     const { data, error } = await sb.from('marketplace_banners').select('*').order('sort_order', { ascending: true })
     if (error) return err(error.message)
-    return json({ data: (data || []).map(mapBannerRowToAlias) })
+    return json({ data: (data || []).map(mapBannerRowToResponse) })
   }
 
   // PUT /banner/update
@@ -2201,7 +2204,7 @@ async function handleBannerAliases(method: string, pathParts: string[], body: an
     const { data, error } = await sb.from('marketplace_banners').update(updates).eq('id', id).select('*').single()
     if (error) return err(error.message)
     await logActivity(admin, 'banner', id, 'updated', userId, updates)
-    return json({ data: mapBannerRowToAlias(data) })
+    return json({ data: mapBannerRowToResponse(data) })
   }
 
   // DELETE /banner/delete
@@ -2227,14 +2230,14 @@ async function handleOfferAliases(method: string, pathParts: string[], body: any
     if (!productId) return err('product_id is required', 422, 'VALIDATION_ERROR')
     const discount = toPositiveNumber(body.discount ?? body.discount_percent, 0)
     if (discount <= 0) return err('discount is required', 422, 'VALIDATION_ERROR')
-    const code = String(body.code || `OFF-${Date.now()}`).toUpperCase()
+    const code = String(body.code || `OFF-${crypto.randomUUID().slice(0, 8)}`).toUpperCase()
     const payload = {
       code,
       description: `product:${productId}`,
       discount_type: 'percent',
       discount_value: discount,
       min_order: 0,
-      max_uses: toPositiveNumber(body.max_uses, 999999),
+      max_uses: toPositiveNumber(body.max_uses, DEFAULT_ALIAS_MAX_COUPON_USES),
       is_active: String(body.status || 'active').toLowerCase() !== 'inactive',
       start_date: body.start_date || null,
       end_date: body.end_date || null,
@@ -2299,7 +2302,7 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
     const { data, error } = await sb.from('products').insert(payload).select('*').single()
     if (error) return err(error.message)
     invalidateProductCache()
-    await logActivity(admin, 'product', data.id, 'created_alias', userId, payload)
+    await logActivity(admin, 'product', data.id, 'created', userId, payload)
     return json({ data }, 201)
   }
 
@@ -2330,14 +2333,14 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
     const { data, error } = await sb.from('products').update(updates).eq('id', id).select('*').single()
     if (error) return err(error.message)
     invalidateProductCache()
-    await logActivity(admin, 'product', id, 'updated_alias', userId, updates)
+    await logActivity(admin, 'product', id, 'updated', userId, updates)
     return json({ data })
   }
 
   // GET /product/search?q=&filter=
   if (method === 'GET' && action === 'search') {
     const q = sanitizeSearchTerm(String(body.q || '').trim())
-    const filters = parseAliasFilters(body.filter)
+    const filters = parseQueryFilters(body.filter)
     let query = sb
       .from('products')
       .select('id, name, slug, description, short_description, price, status, business_type, features, apk_url, discount_percent, rating, tags, created_at, marketplace_visible')
@@ -2403,7 +2406,7 @@ async function handleCategoryAliases(method: string, pathParts: string[], body: 
     }
     const { data, error } = await sb.from('categories').insert(payload).select('*').single()
     if (error) return err(error.message)
-    await logActivity(admin, 'category', data.id, 'created_alias', userId, payload)
+    await logActivity(admin, 'category', data.id, 'created', userId, payload)
     return json({ data }, 201)
   }
 
@@ -2439,14 +2442,14 @@ async function handleAnalyticsAliases(method: string, pathParts: string[], body:
       .from('marketplace_orders')
       .select('product_id, product_name, status, amount, final_amount, created_at')
       .order('created_at', { ascending: false })
-      .limit(100000)
+      .limit(MAX_ANALYTICS_RECORDS)
     if (error) return err(error.message)
 
     const rows = data || []
     const completed = rows.filter((row: any) => row.status === 'completed')
     const totalSales = completed.length
     const revenue = completed.reduce((sum: number, row: any) => sum + Number(row.final_amount ?? row.amount ?? 0), 0)
-    const conversionRate = rows.length > 0 ? Number(((totalSales / rows.length) * 100).toFixed(2)) : 0
+    const orderCompletionRate = rows.length > 0 ? Number(((totalSales / rows.length) * 100).toFixed(2)) : 0
 
     const counts = new Map<string, { product_id: string | null; product_name: string | null; count: number }>()
     completed.forEach((row: any) => {
@@ -2463,7 +2466,8 @@ async function handleAnalyticsAliases(method: string, pathParts: string[], body:
         revenue: Number(revenue.toFixed(2)),
         top_selling: ranked.slice(0, 10),
         low_selling: [...ranked].sort((a, b) => a.count - b.count).slice(0, 10),
-        conversion_rate: conversionRate,
+        conversion_rate: orderCompletionRate,
+        conversion_basis: 'completed_orders / total_marketplace_orders',
       },
     })
   }
