@@ -6,6 +6,10 @@ const serviceRoleKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
 const apiBase = getEnv('API_TEST_BASE_URL', supabaseUrl ? `${supabaseUrl}/functions/v1/api-gateway` : '');
 const retryBudget = Number(getEnv('SELF_HEAL_RETRY_BUDGET', '3')) || 3;
 
+// Deterministic health trigger mapping:
+// - action: primary automated remediation
+// - script: script expected to execute the action
+// - fallback: queue/manual path when remediation fails
 const HEALTH_TRIGGER_FIX_MAP = {
   api_probe_failure: { action: 'retry_api', script: 'self-heal.mjs', fallback: 'queue_manual_review' },
   queue_lag_high: { action: 'queue_drain_check', script: 'self-heal.mjs', fallback: 'queue_manual_review' },

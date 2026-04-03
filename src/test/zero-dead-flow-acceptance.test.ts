@@ -96,6 +96,6 @@ describe('ZERO DEAD FLOW acceptance gates', () => {
     expect(source.includes('SUPPORTED_API_VERSIONS')).toBeTruthy();
     expect(source.includes('UNSUPPORTED_API_VERSION')).toBeTruthy();
     expect(source.includes('ROUTE_NOT_FOUND')).toBeTruthy();
-    expect(source.includes('safe_fallback: true')).toBeTruthy();
+    expect(source.includes('is_graceful_not_found: true')).toBeTruthy();
   });
 });

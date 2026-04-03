@@ -360,7 +360,7 @@ function readClientIp(req?: Request) {
   return req.headers.get('x-real-ip') || 'unknown'
 }
 
-function readDeviceFingerprint(req: Request, body: any) {
+function extractDeviceFingerprint(req: Request, body: any) {
   const headerFingerprint = String(req.headers.get('x-device-fingerprint') || req.headers.get('x-device-id') || '').trim()
   const bodyFingerprint = String(body?.device_fingerprint || body?.deviceFingerprint || '').trim()
   const fingerprint = headerFingerprint || bodyFingerprint
@@ -382,6 +382,7 @@ function requiresDeviceFingerprint(endpointKey: string, method: string) {
   ].some((prefix) => endpointKey.startsWith(prefix))
 }
 
+// Writes security telemetry without breaking request flow if log persistence fails.
 async function writeSecurityLogSafe(
   admin: any,
   params: {
@@ -952,7 +953,7 @@ async function enforceSessionBinding(
   method: string,
 ) {
   const ipAddress = readClientIp(req)
-  const deviceFingerprint = readDeviceFingerprint(req, body)
+  const deviceFingerprint = extractDeviceFingerprint(req, body)
   const sessionToken = String(
     req.headers.get('x-session-token') ||
     req.headers.get('x-session-id') ||
@@ -1009,11 +1010,12 @@ async function enforceSessionBinding(
   }
 
   const storedIp = String(session.ip_address || '').trim()
+  const storedDevice = String(session.device_type || '').trim()
   const ipMismatch = !!storedIp && storedIp !== 'unknown' && ipAddress !== 'unknown' && storedIp !== ipAddress
   const deviceMismatch =
     !!deviceFingerprint &&
-    !!String(session.device_type || '').trim() &&
-    String(session.device_type || '').trim() !== deviceFingerprint
+    !!storedDevice &&
+    storedDevice !== deviceFingerprint
 
   if (ipMismatch || deviceMismatch) {
     await writeSecurityLogSafe(admin, {
@@ -9760,7 +9762,7 @@ Deno.serve(async (req) => {
           module: module || null,
           endpoint: endpointKey,
           version: requestedVersion,
-          safe_fallback: true,
+          is_graceful_not_found: true,
         })
         break
     }

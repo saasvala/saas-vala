@@ -41,7 +41,7 @@ async function checkOnce() {
     queryCount(client, client.from('transactions').select('wallet_id', { count: 'exact', head: true }).eq('status', 'completed').eq('type', 'debit')),
   ]);
 
-  const ledgerDebitMismatch = Math.max(0, Math.abs(debitLedgerCount - completedDebitTransactions));
+  const ledgerDebitMismatch = Math.abs(debitLedgerCount - completedDebitTransactions);
   const autoCorrections = [];
   if (ledgerDebitMismatch > 0) {
     await client.from('system_monitor_queue').insert({
