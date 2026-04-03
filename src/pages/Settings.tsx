@@ -27,6 +27,7 @@ import { toast } from 'sonner';
 import { supabase } from '@/integrations/supabase/client';
 import { writeAuditEvent } from '@/observability/auditClient';
 import { useTheme } from 'next-themes';
+import { sessionApi, type SessionDevice } from '@/lib/api';
 
 function ChangePasswordForm() {
   const [newPassword, setNewPassword] = useState('');
@@ -136,11 +137,7 @@ export default function Settings() {
   const [emailNotifications, setEmailNotifications] = useState(true);
   const [pushNotifications, setPushNotifications] = useState(true);
   const { theme, setTheme } = useTheme();
-  const [activeDevices, setActiveDevices] = useState([
-    { id: 'dev-1', name: 'Chrome on Windows', lastSeen: new Date().toISOString(), current: true },
-    { id: 'dev-2', name: 'Safari on iPhone', lastSeen: new Date(Date.now() - 1000 * 60 * 38).toISOString(), current: false },
-    { id: 'dev-3', name: 'Edge on Laptop', lastSeen: new Date(Date.now() - 1000 * 60 * 60 * 4).toISOString(), current: false },
-  ]);
+  const [activeDevices, setActiveDevices] = useState<SessionDevice[]>([]);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -159,6 +156,18 @@ export default function Settings() {
       });
     }
   }, [profile]);
+
+  useEffect(() => {
+    const loadDevices = async () => {
+      try {
+        const rows = await sessionApi.listDevices();
+        setActiveDevices(rows);
+      } catch (err: any) {
+        toast.error(err?.message || 'Failed to load active devices');
+      }
+    };
+    void loadDevices();
+  }, []);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -201,8 +210,14 @@ export default function Settings() {
     }
   };
 
-  const handleForceLogout = () => {
-    toast.success('All other sessions have been terminated');
+  const handleForceLogout = async () => {
+    try {
+      await sessionApi.revokeOtherDevices();
+      setActiveDevices((prev) => prev.filter((d) => d.current));
+      toast.success('All other sessions have been terminated');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to terminate other sessions');
+    }
   };
 
   const handleHardLock = () => {
@@ -385,7 +400,15 @@ export default function Settings() {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => setActiveDevices((prev) => prev.filter((d) => d.id !== device.id))}
+                          onClick={async () => {
+                            try {
+                              await sessionApi.revokeDevice(device.id);
+                              setActiveDevices((prev) => prev.filter((d) => d.id !== device.id));
+                              toast.success('Device revoked');
+                            } catch (err: any) {
+                              toast.error(err?.message || 'Failed to revoke device');
+                            }
+                          }}
                         >
                           Revoke
                         </Button>

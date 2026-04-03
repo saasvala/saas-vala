@@ -523,6 +523,60 @@ export const feedbackApi = {
     apiCall('POST', 'feedback', data),
 };
 
+export type SessionDevice = {
+  id: string;
+  name: string;
+  lastSeen: string;
+  current: boolean;
+};
+
+export const sessionApi = {
+  listDevices: async (): Promise<SessionDevice[]> => {
+    const { data, error } = await supabase
+      .from('user_sessions_secure')
+      .select('id, device_name, browser, os, device_type, last_active_at, created_at, is_current')
+      .order('is_current', { ascending: false })
+      .order('last_active_at', { ascending: false });
+
+    if (error) {
+      throw new ApiError(error.message, 500, 'DB_ERROR', error);
+    }
+
+    return (data ?? [])
+      .filter((row) => Boolean(row.id))
+      .map((row) => {
+        const parts = [row.device_name, row.browser, row.os].filter(Boolean);
+        return {
+          id: row.id as string,
+          name: parts.length > 0 ? parts.join(' • ') : row.device_type || 'Unknown device',
+          lastSeen: row.last_active_at || row.created_at || new Date().toISOString(),
+          current: Boolean(row.is_current),
+        };
+      });
+  },
+  revokeDevice: async (deviceId: string) => {
+    const { error } = await supabase
+      .from('user_sessions')
+      .delete()
+      .eq('id', deviceId)
+      .eq('is_current', false);
+    if (error) {
+      throw new ApiError(error.message, 500, 'DB_ERROR', error);
+    }
+    return { success: true };
+  },
+  revokeOtherDevices: async () => {
+    const { error } = await supabase
+      .from('user_sessions')
+      .delete()
+      .eq('is_current', false);
+    if (error) {
+      throw new ApiError(error.message, 500, 'DB_ERROR', error);
+    }
+    return { success: true };
+  },
+};
+
 export const seoApi = {
   scan: (data?: { urls?: string[]; product_id?: string; mode?: 'quick' | 'full' }) =>
     apiCall('POST', 'seo/scan', data),
