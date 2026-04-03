@@ -10,3 +10,4 @@ export * from '@/services/keyService';
 export * from '@/services/serverService';
 export * from '@/services/billingService';
 export * from '@/services/aiService';
+export * from '@/services/healthService';
