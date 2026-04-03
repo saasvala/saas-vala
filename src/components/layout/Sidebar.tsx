@@ -31,6 +31,7 @@ import {
   RefreshCw,
   Archive,
   Tags,
+  ListChecks,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import saasValaLogo from '@/assets/saas-vala-logo.jpg';
@@ -66,7 +67,7 @@ const navItems: NavItem[] = [
   { title: 'Email Logs', icon: Mail, href: '/email-logs', adminOnly: true, section: 'admin' },
   { title: 'Retry Actions', icon: RefreshCw, href: '/retry-actions', adminOnly: true, section: 'admin' },
   { title: 'Archive', icon: Archive, href: '/archive', adminOnly: true, section: 'admin' },
-  { title: 'Bulk Actions', icon: RefreshCw, href: '/bulk-actions', adminOnly: true, section: 'admin' },
+  { title: 'Bulk Actions', icon: ListChecks, href: '/bulk-actions', adminOnly: true, section: 'admin' },
   { title: 'Tagging', icon: Tags, href: '/tags', adminOnly: true, section: 'admin' },
   { title: 'Settings', icon: Settings, href: '/settings', adminOnly: true, section: 'admin' },
 
