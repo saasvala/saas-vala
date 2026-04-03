@@ -63,8 +63,12 @@ async function logRequestSafe(
 
 const productListCache: { data: any[] | null; expiresAt: number } = { data: null, expiresAt: 0 }
 const serverStatusCache: { data: unknown | null; expiresAt: number } = { data: null, expiresAt: 0 }
+const dashboardStatsCache: { data: unknown | null; expiresAt: number } = { data: null, expiresAt: 0 }
+const seoAnalyticsCache: { data: unknown | null; expiresAt: number } = { data: null, expiresAt: 0 }
 const PRODUCT_LIST_CACHE_TTL_MS = 60 * 1000
 const SERVER_STATUS_CACHE_TTL_MS = 30 * 1000
+const DASHBOARD_STATS_CACHE_TTL_MS = 30 * 1000
+const SEO_ANALYTICS_CACHE_TTL_MS = 60 * 1000
 const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SECONDS') || '60')
 const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
 const DEFAULT_GITHUB_ORG = Deno.env.get('GITHUB_DEFAULT_ORG') || 'saasvala'
@@ -112,6 +116,11 @@ const RESELLER_FEATURE_KEY_SET = new Set<string>([
 function invalidateProductCache() {
   productListCache.data = null
   productListCache.expiresAt = 0
+}
+
+function invalidateSeoAnalyticsCache() {
+  seoAnalyticsCache.data = null
+  seoAnalyticsCache.expiresAt = 0
 }
 
 function nowIso() {
@@ -242,6 +251,84 @@ async function sha256Hex(value: string) {
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
+async function redisGetJson<T = unknown>(key: string): Promise<T | null> {
+  const base = Deno.env.get('REDIS_REST_URL')
+  const token = Deno.env.get('REDIS_REST_TOKEN')
+  if (!base || !token || !key) return null
+  try {
+    const res = await fetch(`${base}/get/${encodeURIComponent(key)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) return null
+    const payload = await res.json()
+    const raw = payload?.result
+    if (raw === null || raw === undefined) return null
+    return JSON.parse(String(raw)) as T
+  } catch {
+    return null
+  }
+}
+
+async function redisSetJson(key: string, value: unknown, ttlSeconds: number) {
+  const base = Deno.env.get('REDIS_REST_URL')
+  const token = Deno.env.get('REDIS_REST_TOKEN')
+  if (!base || !token || !key) return
+  try {
+    const body = JSON.stringify(value)
+    const setRes = await fetch(`${base}/set/${encodeURIComponent(key)}/${encodeURIComponent(body)}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!setRes.ok || ttlSeconds <= 0) return
+    await fetch(`${base}/expire/${encodeURIComponent(key)}/${Math.max(1, Math.floor(ttlSeconds))}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+  } catch {
+    // no-op
+  }
+}
+
+async function emitDomainEvent(
+  admin: any,
+  eventType: 'product_created' | 'lead_generated' | 'build_completed' | 'payment_success',
+  payload: Record<string, unknown>,
+  tenantId?: string | null,
+) {
+  try {
+    await admin.from('event_bus').insert({
+      event_type: eventType,
+      payload,
+      status: 'queued',
+      tenant_id: tenantId || null,
+    })
+  } catch {
+    // no-op
+  }
+}
+
+async function enqueueSearchIndex(
+  admin: any,
+  indexName: 'products' | 'leads' | 'chats',
+  documentId: string,
+  payload: Record<string, unknown>,
+  tenantId?: string | null,
+) {
+  try {
+    await admin.from('search_index_queue').insert({
+      engine: 'meilisearch',
+      index_name: indexName,
+      document_id: documentId,
+      operation: 'upsert',
+      payload,
+      status: 'queued',
+      tenant_id: tenantId || null,
+    })
+  } catch {
+    // no-op
+  }
+}
+
 function maskApiToken(value: string) {
   const raw = String(value || '')
   if (!raw) return ''
@@ -325,38 +412,70 @@ async function syncResellerCreditUsed(admin: any, userId: string, balance: numbe
     .eq('user_id', userId)
 }
 
-async function enforceRateLimit(sb: any, userId: string, endpoint: string) {
+async function enforceRateLimit(sb: any, userId: string, endpoint: string, req?: Request) {
   const windowSeconds = RATE_LIMIT_WINDOW_SECONDS
   const maxRequests = RATE_LIMIT_MAX_REQUESTS
   const now = new Date()
   const windowStart = new Date(now.getTime() - windowSeconds * 1000).toISOString()
 
-  const { data: existing } = await sb.from('rate_limits').select('*')
-    .eq('user_id', userId)
-    .eq('endpoint', endpoint)
-    .gte('window_start', windowStart)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
+  const ip = readClientIp(req)
+  const apiKeyHeader = String(req?.headers.get('x-api-key') || req?.headers.get('apikey') || '').trim()
+  const apiKeyHash = apiKeyHeader ? await sha256Hex(apiKeyHeader) : null
+  const capacity = maxRequests
+  const refillRate = Math.max(0.1, maxRequests / Math.max(1, windowSeconds))
 
-  if (!existing) {
-    await sb.from('rate_limits').insert({
-      user_id: userId,
-      endpoint,
-      requests_count: 1,
-      window_start: now.toISOString(),
-      window_seconds: windowSeconds,
-      max_requests: maxRequests,
-    })
-    return null
+  const scopes = [
+    { scope: 'user_endpoint', filterKey: 'user_id', filterValue: userId },
+    ...(ip && ip !== 'unknown' ? [{ scope: 'ip_endpoint', filterKey: 'ip', filterValue: ip }] : []),
+    ...(apiKeyHash ? [{ scope: 'api_key_endpoint', filterKey: 'api_key_hash', filterValue: apiKeyHash }] : []),
+  ]
+
+  for (const s of scopes) {
+    let query = sb.from('rate_limits').select('*')
+      .eq('scope', s.scope)
+      .eq('endpoint', endpoint)
+      .gte('window_start', windowStart)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    query = query.eq(s.filterKey, s.filterValue)
+    const { data: existing } = await query
+
+    if (!existing) {
+      await sb.from('rate_limits').insert({
+        user_id: s.filterKey === 'user_id' ? userId : null,
+        endpoint,
+        requests_count: 1,
+        window_start: now.toISOString(),
+        window_seconds: windowSeconds,
+        max_requests: maxRequests,
+        scope: s.scope,
+        ip: s.filterKey === 'ip' ? ip : null,
+        api_key_hash: s.filterKey === 'api_key_hash' ? apiKeyHash : null,
+        bucket_tokens: capacity - 1,
+        burst_capacity: capacity,
+        refill_rate_per_sec: refillRate,
+        last_refill_at: now.toISOString(),
+      })
+      continue
+    }
+
+    const lastRefillAt = existing.last_refill_at ? new Date(existing.last_refill_at).getTime() : now.getTime()
+    const elapsedSeconds = Math.max(0, (now.getTime() - lastRefillAt) / 1000)
+    const currentTokens = Number(existing.bucket_tokens ?? existing.max_requests ?? capacity)
+    const refillPerSec = Number(existing.refill_rate_per_sec || refillRate)
+    const burst = Number(existing.burst_capacity || existing.max_requests || capacity)
+    const refilled = Math.min(burst, currentTokens + elapsedSeconds * refillPerSec)
+    if (refilled < 1) {
+      return err('Rate limit exceeded', 429, 'RATE_LIMITED')
+    }
+    await sb.from('rate_limits').update({
+      requests_count: Number(existing.requests_count || 0) + 1,
+      bucket_tokens: refilled - 1,
+      last_refill_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    }).eq('id', existing.id)
   }
-
-  const currentCount = Number(existing.requests_count || 0)
-  if (currentCount >= Number(existing.max_requests || maxRequests)) {
-    return err('Rate limit exceeded', 429, 'RATE_LIMITED')
-  }
-
-  await sb.from('rate_limits').update({ requests_count: currentCount + 1, updated_at: now.toISOString() }).eq('id', existing.id)
   return null
 }
 
@@ -572,28 +691,29 @@ async function handleProducts(method: string, pathParts: string[], body: any, us
       // Upload handled — for now return placeholder
       return json({ message: 'Upload endpoint ready — use storage bucket directly' })
     }
-    const slug = body.slug || body.name?.toLowerCase().replace(/[^a-z0-9]/g, '-') || ''
-    const { data, error } = await sb.from('products').insert({
-      name: body.name || '', slug,
-      description: body.description || null,
-      category_id: body.category_id?.trim() || null,
-      status: body.status || 'draft',
-      price: body.price || 0,
-      currency: body.currency || 'INR',
-      version: body.version || '1.0.0',
-      features: body.features || [],
-      created_by: userId,
-      git_repo_url: body.git_repo_url || null,
-      git_repo_name: body.git_repo_name || null,
-      git_default_branch: body.git_default_branch || 'main',
-      deploy_status: body.deploy_status || 'idle',
-      marketplace_visible: body.marketplace_visible || false,
-      demo_url: body.demo_url || null,
-      live_url: body.live_url || null,
-    }).select().single()
-    if (error) return err(error.message)
+    const requestKey = String(body.request_id || body.idempotency_key || '').trim() || generateIdempotencyKey()
+    const { data: rpcData, error: rpcError } = await sb.rpc('gateway_create_product_atomic', {
+      p_user_id: userId,
+      p_payload: {
+        ...body,
+        slug: body.slug || body.name?.toLowerCase().replace(/[^a-z0-9]/g, '-') || '',
+      },
+      p_request_key: requestKey,
+      p_tenant_id: body.tenant_id || null,
+    })
+    if (rpcError) return err(rpcError.message)
+    const data = rpcData?.product
+    if (!data?.id) return err('Failed to create product')
     invalidateProductCache()
     await logActivity(admin, 'product', data.id, 'created', userId, { name: body.name })
+    await emitDomainEvent(admin, 'product_created', { product_id: data.id, user_id: userId }, body.tenant_id || null)
+    await enqueueSearchIndex(admin, 'products', data.id, {
+      id: data.id,
+      name: data.name,
+      slug: data.slug,
+      description: data.description,
+      status: data.status,
+    }, body.tenant_id || null)
     return json({ data }, 201)
   }
 
@@ -1401,6 +1521,9 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
 
   // GET /marketplace/products
   if (method === 'GET' && action === 'products') {
+    const redisKey = 'cache:marketplace:products'
+    const redisCached = await redisGetJson<any[]>(redisKey)
+    if (redisCached) return json({ data: redisCached, cached: true, cache: 'redis' })
     const cacheValid = productListCache.data && Date.now() < productListCache.expiresAt
     if (cacheValid) return json({ data: productListCache.data, cached: true })
 
@@ -1411,6 +1534,7 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     if (error) return err(error.message)
     productListCache.data = data || []
     productListCache.expiresAt = Date.now() + PRODUCT_LIST_CACHE_TTL_MS
+    await redisSetJson(redisKey, productListCache.data, Math.floor(PRODUCT_LIST_CACHE_TTL_MS / 1000))
     return json({ data })
   }
 
@@ -1467,85 +1591,23 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     const requestedIdempotency = body.idempotency_key || reqIdempotencyFromMeta(body.meta) || generateIdempotencyKey()
     const amount = Number(body.amount || 0)
     if (!Number.isFinite(amount) || amount <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
-
-    const { data: existingOrder } = await sb.from('orders').select('*').eq('idempotency_key', requestedIdempotency).maybeSingle()
-    if (existingOrder) return json({ data: existingOrder, duplicate: true })
-
-    const { data: productOwner } = await sb.from('products').select('created_by').eq('id', body.product_id).maybeSingle()
-    if (!productOwner?.created_by) return err('Product not found or missing seller', 404, 'NOT_FOUND')
-    const sellerId = productOwner.created_by
-
-    const { data: marketplaceOrder, error: marketplaceOrderError } = await sb.from('marketplace_orders').insert({
-      buyer_id: userId,
-      seller_id: sellerId,
-      amount,
-      final_amount: amount,
-      subtotal: amount,
-      product_id: body.product_id,
-      product_name: body.product_name || null,
-      status: 'pending',
-      payment_status: 'pending',
-      payment_method: body.payment_method || 'gateway',
-      idempotency_key: requestedIdempotency,
-      retry_count: 0,
-    }).select().single()
-    if (marketplaceOrderError) {
-      const { data: duplicateOrder } = await sb.from('orders').select('*').eq('idempotency_key', requestedIdempotency).maybeSingle()
-      if (duplicateOrder) return json({ data: duplicateOrder, duplicate: true })
-      return err(marketplaceOrderError.message)
-    }
-
-    const { data: order, error: orderError } = await sb.from('orders').insert({
-      marketplace_order_id: marketplaceOrder.id,
-      user_id: userId,
-      product_id: body.product_id,
-      amount,
-      currency: body.currency || 'INR',
-      status: 'pending',
-      payment_method: body.payment_method || 'gateway',
-      idempotency_key: requestedIdempotency,
-      metadata: body.meta || {},
-    }).select().single()
-    if (orderError) {
-      const { data: duplicateOrder } = await sb.from('orders').select('*').eq('idempotency_key', requestedIdempotency).maybeSingle()
-      if (duplicateOrder) return json({ data: duplicateOrder, duplicate: true })
-      return err(orderError.message)
-    }
-
-    const { data: payment, error: paymentError } = await sb.from('payments').insert({
-      order_id: order.id,
-      user_id: userId,
-      amount,
-      currency: body.currency || 'INR',
-      gateway: body.gateway || 'manual',
-      gateway_reference: body.gateway_reference || null,
-      status: 'pending',
-      idempotency_key: requestedIdempotency,
-      metadata: body.meta || {},
-    }).select().single()
-    if (paymentError) return err(paymentError.message)
-
-    if (body.lock_wallet === true || body.payment_method === 'wallet') {
-      const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', userId).maybeSingle()
-      if (wallet) {
-        const available = Number(wallet.balance || 0) - Number(wallet.locked_balance || 0)
-        if (available < amount) return err('Insufficient balance', 400, 'INSUFFICIENT_BALANCE')
-        const lockedBefore = Number(wallet.locked_balance || 0)
-        const lockedAfter = lockedBefore + amount
-        await sb.from('wallets').update({ locked_balance: lockedAfter, updated_at: nowIso() }).eq('id', wallet.id)
-        await sb.from('wallet_ledger').insert({
-          wallet_id: wallet.id,
-          user_id: userId,
-          entry_type: 'lock',
-          amount,
-          balance_before: wallet.balance || 0,
-          balance_after: wallet.balance || 0,
-          reference_type: 'order',
-          reference_id: order.id,
-          metadata: { reason: 'payment_init_lock' },
-        })
-      }
-    }
+    const { data: atomicData, error: atomicError } = await sb.rpc('gateway_payment_init_atomic', {
+      p_user_id: userId,
+      p_product_id: body.product_id,
+      p_amount: amount,
+      p_currency: body.currency || 'INR',
+      p_payment_method: body.payment_method || 'gateway',
+      p_gateway: body.gateway || 'manual',
+      p_gateway_reference: body.gateway_reference || null,
+      p_meta: body.meta || {},
+      p_idempotency_key: requestedIdempotency,
+      p_lock_wallet: body.lock_wallet === true || body.payment_method === 'wallet',
+      p_tenant_id: body.tenant_id || null,
+    })
+    if (atomicError) return err(atomicError.message)
+    const order = atomicData?.order
+    const payment = atomicData?.payment
+    if (!order?.id || !payment?.id) return err('Failed to initialize payment')
 
     await sb.from('async_jobs').insert({
       job_type: 'email',
@@ -2064,6 +2126,13 @@ async function markPaymentSuccess(admin: any, sb: any, userId: string, payment: 
   await sb.from('async_jobs').insert([
     { job_type: 'email', status: 'queued', payload: { kind: 'payment_success', user_id: order.user_id, order_id: order.id } },
   ])
+  await emitDomainEvent(admin, 'payment_success', {
+    payment_id: payment.id,
+    order_id: order.id,
+    user_id: order.user_id,
+    amount: order.amount,
+    currency: order.currency || 'INR',
+  }, order.tenant_id || null)
   await logActivity(admin, 'payment', payment.id, 'marked_paid', actorUserId, { order_id: order.id })
 
   return { order_id: order.id, subscription_id: subscriptionId, license_key: createdLicense?.license_key || null }
@@ -2574,6 +2643,12 @@ async function handleServers(method: string, pathParts: string[], body: any, use
 
   // GET /server/health
   if (method === 'GET' && segment === 'server' && id === 'health') {
+    const redisKey = 'cache:dashboard:server-health'
+    const redisCached = await redisGetJson<{ stats: any; servers: any[] }>(redisKey)
+    if (redisCached) return ok(redisCached)
+    const memValid = dashboardStatsCache.data && Date.now() < dashboardStatsCache.expiresAt
+    if (memValid) return ok(dashboardStatsCache.data)
+
     const { data, error } = await sb.from('servers').select('id, name, status, subdomain, custom_domain, health_status, uptime_percent')
     if (error) return fail(error.message, 400, 'DB_ERROR')
     const stats = {
@@ -2582,7 +2657,11 @@ async function handleServers(method: string, pathParts: string[], body: any, use
       failed: data?.filter((s: any) => s.status === 'failed').length || 0,
       deploying: data?.filter((s: any) => s.status === 'deploying').length || 0,
     }
-    return ok({ stats, servers: data })
+    const payload = { stats, servers: data }
+    dashboardStatsCache.data = payload
+    dashboardStatsCache.expiresAt = Date.now() + DASHBOARD_STATS_CACHE_TTL_MS
+    await redisSetJson(redisKey, payload, Math.floor(DASHBOARD_STATS_CACHE_TTL_MS / 1000))
+    return ok(payload)
   }
 
   return fail('Not found', 404, 'NOT_FOUND')
@@ -3222,6 +3301,12 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
       target_industry: body.target_industry, product_id: body.product_id,
     }).select().single()
     if (error) return err(error.message)
+    await emitDomainEvent(admin, 'build_completed', {
+      build_id: data.id,
+      product_id: body.product_id || null,
+      repo_name: body.repo_name || null,
+      status: 'queued',
+    }, body.tenant_id || null)
     await logActivity(admin, 'apk', data.id, 'build_queued', userId, { repo: body.repo_name })
     return json({ data }, 201)
   }
@@ -3582,34 +3667,22 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
     const { data: wallet } = await walletQuery
     if (!wallet) return err('Wallet not found', 404)
 
-    const newBalance = Number(wallet.balance || 0) + amount
-    const { error: txErr } = await admin.from('transactions').insert({
-      wallet_id: wallet.id,
-      type: 'credit',
-      amount,
-      balance_after: newBalance,
-      status: 'completed',
-      description: body.description || 'Credit added',
-      created_by: userId,
-      source: body.source || 'admin_adjustment',
-      reference_id: body.reference_id || null,
-      reference_type: body.reference_type || 'wallet_add',
-      meta: body.payment_method ? { payment_method: body.payment_method } : null,
+    const requestKey = String(body.request_id || body.idempotency_key || '').trim() || generateIdempotencyKey()
+    const { data: atomicData, error: atomicError } = await admin.rpc('gateway_wallet_mutation_atomic', {
+      p_user_id: userId,
+      p_wallet_id: wallet.id,
+      p_entry_type: 'credit',
+      p_amount: amount,
+      p_reference_type: body.reference_type || 'wallet_add',
+      p_reference_id: body.reference_id || null,
+      p_description: body.description || 'Credit added',
+      p_source: body.source || 'admin_adjustment',
+      p_meta: body.payment_method ? { payment_method: body.payment_method } : {},
+      p_tenant_id: body.tenant_id || null,
+      p_request_key: requestKey,
     })
-    if (txErr) return err(txErr.message)
-
-    await admin.from('wallets').update({ balance: newBalance, updated_at: nowIso() }).eq('id', wallet.id)
-    await admin.from('wallet_ledger').insert({
-      wallet_id: wallet.id,
-      user_id: wallet.user_id,
-      entry_type: 'credit',
-      amount,
-      balance_before: wallet.balance || 0,
-      balance_after: newBalance,
-      reference_type: body.reference_type || 'wallet_add',
-      reference_id: body.reference_id || null,
-      metadata: body.payment_method ? { payment_method: body.payment_method } : {},
-    })
+    if (atomicError) return err(atomicError.message)
+    const newBalance = Number(atomicData?.balance ?? wallet.balance ?? 0)
     await syncResellerCreditUsed(admin, wallet.user_id, newBalance)
     await logActivity(admin, 'wallet', wallet.id, 'credit_added', userId, { amount, target_user_id: wallet.user_id })
     return json({ success: true, balance: newBalance })
@@ -3627,38 +3700,24 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
     const { data: wallet } = await walletQuery
     if (!wallet) return err('Wallet not found', 404)
 
-    const available = Number(wallet.balance || 0) - Number(wallet.locked_balance || 0)
-
-    }
-
-    const newBalance = Number(wallet.balance || 0) - amount
-    const { error: txErr } = await admin.from('transactions').insert({
-      wallet_id: wallet.id,
-      type: 'debit',
-      amount,
-      balance_after: newBalance,
-      status: 'completed',
-      description: body.description || 'Withdrawal',
-      created_by: userId,
-      source: body.source || 'wallet_withdraw',
-      reference_id: body.reference_id || null,
-      reference_type: body.reference_type || 'wallet_withdraw',
-      meta: reseller ? { credit_limit: Number(reseller.credit_limit || 0), available_before: available } : null,
+    const amount = Number(body.amount || 0)
+    if (amount <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
+    const requestKey = String(body.request_id || body.idempotency_key || '').trim() || generateIdempotencyKey()
+    const { data: atomicData, error: atomicError } = await admin.rpc('gateway_wallet_mutation_atomic', {
+      p_user_id: userId,
+      p_wallet_id: wallet.id,
+      p_entry_type: 'debit',
+      p_amount: amount,
+      p_reference_type: body.reference_type || 'wallet_withdraw',
+      p_reference_id: body.reference_id || null,
+      p_description: body.description || 'Withdrawal',
+      p_source: body.source || 'wallet_withdraw',
+      p_meta: {},
+      p_tenant_id: body.tenant_id || null,
+      p_request_key: requestKey,
     })
-    if (txErr) return err(txErr.message)
-
-    await admin.from('wallets').update({ balance: newBalance, updated_at: nowIso() }).eq('id', wallet.id)
-    await admin.from('wallet_ledger').insert({
-      wallet_id: wallet.id,
-      user_id: wallet.user_id,
-      entry_type: 'debit',
-      amount,
-      balance_before: wallet.balance || 0,
-      balance_after: newBalance,
-      reference_type: body.reference_type || 'wallet_withdraw',
-      reference_id: body.reference_id || null,
-      metadata: {},
-    })
+    if (atomicError) return err(atomicError.message)
+    const newBalance = Number(atomicData?.balance ?? wallet.balance ?? 0)
     await syncResellerCreditUsed(admin, wallet.user_id, newBalance)
     await logActivity(admin, 'wallet', wallet.id, 'debit', userId, { amount, target_user_id: wallet.user_id })
     return json({ success: true, balance: newBalance })
@@ -3684,20 +3743,22 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
     if (!wallet) return err('Wallet not found', 404)
     const available = Number(wallet.balance || 0) - Number(wallet.locked_balance || 0)
     if (available < Number(body.amount || 0)) return err('Insufficient balance')
-    const oldLocked = Number(wallet.locked_balance || 0)
-    const newLocked = oldLocked + Number(body.amount)
-    await sb.from('wallets').update({ locked_balance: newLocked, updated_at: nowIso() }).eq('id', wallet.id)
-    await sb.from('wallet_ledger').insert({
-      wallet_id: wallet.id,
-      user_id: userId,
-      entry_type: 'lock',
-      amount: Number(body.amount),
-      balance_before: wallet.balance || 0,
-      balance_after: wallet.balance || 0,
-      reference_type: body.reference_type || 'manual_lock',
-      reference_id: body.reference_id || null,
-      metadata: body.meta || {},
+    const requestKey = String(body.request_id || body.idempotency_key || '').trim() || generateIdempotencyKey()
+    const { data: atomicData, error: atomicError } = await admin.rpc('gateway_wallet_mutation_atomic', {
+      p_user_id: userId,
+      p_wallet_id: wallet.id,
+      p_entry_type: 'lock',
+      p_amount: Number(body.amount),
+      p_reference_type: body.reference_type || 'manual_lock',
+      p_reference_id: body.reference_id || null,
+      p_description: 'Lock balance',
+      p_source: 'wallet_lock',
+      p_meta: body.meta || {},
+      p_tenant_id: body.tenant_id || null,
+      p_request_key: requestKey,
     })
+    if (atomicError) return err(atomicError.message)
+    const newLocked = Number(atomicData?.locked_balance ?? wallet.locked_balance ?? 0)
     return json({ success: true, locked_balance: newLocked })
   }
 
@@ -3707,21 +3768,22 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
     if (Number(body.amount || 0) <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
     const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', userId).single()
     if (!wallet) return err('Wallet not found', 404)
-    const oldLocked = Number(wallet.locked_balance || 0)
-    const unlock = Math.min(oldLocked, Number(body.amount))
-    const newLocked = Math.max(0, oldLocked - unlock)
-    await sb.from('wallets').update({ locked_balance: newLocked, updated_at: nowIso() }).eq('id', wallet.id)
-    await sb.from('wallet_ledger').insert({
-      wallet_id: wallet.id,
-      user_id: userId,
-      entry_type: 'unlock',
-      amount: unlock,
-      balance_before: wallet.balance || 0,
-      balance_after: wallet.balance || 0,
-      reference_type: body.reference_type || 'manual_unlock',
-      reference_id: body.reference_id || null,
-      metadata: body.meta || {},
+    const requestKey = String(body.request_id || body.idempotency_key || '').trim() || generateIdempotencyKey()
+    const { data: atomicData, error: atomicError } = await admin.rpc('gateway_wallet_mutation_atomic', {
+      p_user_id: userId,
+      p_wallet_id: wallet.id,
+      p_entry_type: 'unlock',
+      p_amount: Number(body.amount),
+      p_reference_type: body.reference_type || 'manual_unlock',
+      p_reference_id: body.reference_id || null,
+      p_description: 'Unlock balance',
+      p_source: 'wallet_unlock',
+      p_meta: body.meta || {},
+      p_tenant_id: body.tenant_id || null,
+      p_request_key: requestKey,
     })
+    if (atomicError) return err(atomicError.message)
+    const newLocked = Number(atomicData?.locked_balance ?? wallet.locked_balance ?? 0)
     return json({ success: true, locked_balance: newLocked })
   }
 
@@ -3731,32 +3793,22 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
     if (Number(body.amount || 0) <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
     const { data: wallet } = await sb.from('wallets').select('id, balance').eq('user_id', userId).single()
     if (!wallet) return err('Wallet not found', 404)
-    const oldBalance = Number(wallet.balance || 0)
-    const newBalance = oldBalance + Number(body.amount)
-    await sb.from('wallets').update({ balance: newBalance, updated_at: nowIso() }).eq('id', wallet.id)
-    await sb.from('transactions').insert({
-      wallet_id: wallet.id,
-      type: 'refund',
-      amount: Number(body.amount),
-      balance_after: newBalance,
-      status: 'completed',
-      description: body.description || 'Wallet refund',
-      reference_type: body.reference_type || 'wallet_refund',
-      reference_id: body.reference_id || null,
-      created_by: userId,
-      source: body.source || 'wallet_refund',
+    const requestKey = String(body.request_id || body.idempotency_key || '').trim() || generateIdempotencyKey()
+    const { data: atomicData, error: atomicError } = await admin.rpc('gateway_wallet_mutation_atomic', {
+      p_user_id: userId,
+      p_wallet_id: wallet.id,
+      p_entry_type: 'refund',
+      p_amount: Number(body.amount),
+      p_reference_type: body.reference_type || 'wallet_refund',
+      p_reference_id: body.reference_id || null,
+      p_description: body.description || 'Wallet refund',
+      p_source: body.source || 'wallet_refund',
+      p_meta: body.meta || {},
+      p_tenant_id: body.tenant_id || null,
+      p_request_key: requestKey,
     })
-    await sb.from('wallet_ledger').insert({
-      wallet_id: wallet.id,
-      user_id: userId,
-      entry_type: 'refund',
-      amount: Number(body.amount),
-      balance_before: oldBalance,
-      balance_after: newBalance,
-      reference_type: body.reference_type || 'wallet_refund',
-      reference_id: body.reference_id || null,
-      metadata: body.meta || {},
-    })
+    if (atomicError) return err(atomicError.message)
+    const newBalance = Number(atomicData?.balance ?? wallet.balance ?? 0)
     return json({ success: true, balance: newBalance })
   }
 
@@ -4004,14 +4056,36 @@ async function handleSeoLeads(method: string, pathParts: string[], body: any, us
       is_blocked: false,
     }).select().single()
     if (error) return err(error.message)
+    await emitDomainEvent(admin, 'lead_generated', {
+      lead_id: data.id,
+      source: data.source,
+      status: data.status,
+    }, data.tenant_id || resellerId || null)
+    await enqueueSearchIndex(admin, 'leads', data.id, {
+      id: data.id,
+      name: data.name,
+      email: data.email,
+      phone: data.phone,
+      company: data.company,
+      status: data.status,
+    }, data.tenant_id || resellerId || null)
     await logActivity(admin, 'lead', data.id, 'created', userId)
     return json({ data }, 201)
   }
 
   // GET /seo/analytics
   if (method === 'GET' && segment === 'seo' && pathParts[1] === 'analytics') {
+    const redisKey = 'cache:seo:analytics'
+    const redisCached = await redisGetJson<any[]>(redisKey)
+    if (redisCached) return json({ data: redisCached, cached: true, cache: 'redis' })
+    const memValid = seoAnalyticsCache.data && Date.now() < seoAnalyticsCache.expiresAt
+    if (memValid) return json({ data: seoAnalyticsCache.data, cached: true })
+
     const { data, error } = await sb.from('seo_data').select('*').order('created_at', { ascending: false })
     if (error) return err(error.message)
+    seoAnalyticsCache.data = data || []
+    seoAnalyticsCache.expiresAt = Date.now() + SEO_ANALYTICS_CACHE_TTL_MS
+    await redisSetJson(redisKey, seoAnalyticsCache.data, Math.floor(SEO_ANALYTICS_CACHE_TTL_MS / 1000))
     return json({ data })
   }
 
@@ -4230,6 +4304,107 @@ function reqHasCronSecret(body: any) {
   return expected === provided
 }
 
+function readIdempotencyKey(req: Request, body: any) {
+  const fromBody = String(body?.request_id || body?.idempotency_key || '').trim()
+  if (fromBody) return fromBody
+  const fromHeader = String(req.headers.get('x-request-id') || req.headers.get('idempotency-key') || '').trim()
+  return fromHeader || null
+}
+
+async function readIdempotentResponse(admin: any, userId: string, endpoint: string, key: string) {
+  const { data } = await admin
+    .from('idempotency_keys')
+    .select('response, status_code')
+    .eq('user_id', userId)
+    .eq('endpoint', endpoint)
+    .eq('key', key)
+    .gt('expires_at', nowIso())
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (!data?.response) return null
+  return new Response(JSON.stringify(data.response), { status: Number(data.status_code || 200), headers: corsHeaders })
+}
+
+async function writeIdempotentResponse(admin: any, userId: string, endpoint: string, key: string, response: Response) {
+  try {
+    const bodyText = await response.clone().text()
+    let parsed: unknown = null
+    try { parsed = JSON.parse(bodyText) } catch { parsed = { raw: bodyText } }
+    await admin.from('idempotency_keys').upsert({
+      user_id: userId,
+      endpoint,
+      key,
+      response: parsed,
+      status_code: response.status,
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    }, { onConflict: 'user_id,endpoint,key' })
+  } catch {
+    // no-op
+  }
+}
+
+async function handleScheduler(method: string, pathParts: string[], body: any, sb: any) {
+  const action = pathParts[0]
+  const expected = Deno.env.get('SCHEDULER_CRON_SECRET')
+  const provided = String(body?.cron_secret || '')
+  if (!expected || !timingSafeEqualText(expected, provided)) return err('Forbidden', 403, 'FORBIDDEN')
+
+  if (method === 'POST' && action === 'run') {
+    const minute = new Date().getUTCMinutes()
+    const dueJobs = [
+      { job_name: 'health_check', run: true, schedule_hint: '*/1 * * * *' },
+      { job_name: 'billing_check', run: minute % 5 === 0, schedule_hint: '*/5 * * * *' },
+      { job_name: 'ai_tasks', run: minute % 10 === 0, schedule_hint: '*/10 * * * *' },
+      { job_name: 'seo_scan', run: minute === 0, schedule_hint: '0 * * * *' },
+    ].filter((j) => j.run)
+
+    const inserted: any[] = []
+    for (const job of dueJobs) {
+      const { data: runRow } = await sb.from('scheduled_job_runs').insert({
+        job_name: job.job_name,
+        schedule_hint: job.schedule_hint,
+        status: 'running',
+        started_at: nowIso(),
+        details: { source: 'api-gateway-scheduler' },
+      }).select().single()
+      inserted.push(runRow)
+    }
+
+    if (dueJobs.some((j) => j.job_name === 'billing_check')) {
+      await sb.from('async_jobs').insert({
+        job_type: 'subscription_cron',
+        status: 'queued',
+        payload: { trigger: 'scheduler', kind: 'billing_check' },
+      })
+    }
+    if (dueJobs.some((j) => j.job_name === 'ai_tasks')) {
+      await sb.from('async_jobs').insert({
+        job_type: 'ai_tasks',
+        status: 'queued',
+        payload: { trigger: 'scheduler', kind: 'ai_tasks' },
+      })
+    }
+    if (dueJobs.some((j) => j.job_name === 'seo_scan')) {
+      await sb.from('async_jobs').insert({
+        job_type: 'seo_scan',
+        status: 'queued',
+        payload: { trigger: 'scheduler', kind: 'seo_scan' },
+      })
+    }
+
+    for (const row of inserted.filter(Boolean)) {
+      await sb.from('scheduled_job_runs').update({
+        status: 'success',
+        finished_at: nowIso(),
+      }).eq('id', row.id)
+    }
+    return json({ success: true, triggered: dueJobs.map((j) => j.job_name) })
+  }
+
+  return err('Not found', 404)
+}
+
 // ===================== MAIN ROUTER =====================
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -4273,6 +4448,10 @@ Deno.serve(async (req) => {
       const admin = adminClient()
       return await handleSubscriptions(req.method, subParts, body, 'system-cron', admin)
     }
+    if (module === 'scheduler' && req.method === 'POST' && subParts[0] === 'run') {
+      const admin = adminClient()
+      return await handleScheduler(req.method, subParts, body, admin)
+    }
 
     // All other endpoints require JWT
     const auth = await authenticate(req)
@@ -4280,22 +4459,28 @@ Deno.serve(async (req) => {
 
     const { userId, supabase: sb } = auth
     const endpointKey = `${module}/${subParts[0] || ''}`
-    const rateLimitRes = await enforceRateLimit(adminClient(), userId, endpointKey)
+    const rateLimitRes = await enforceRateLimit(adminClient(), userId, endpointKey, req)
     if (rateLimitRes) return rateLimitRes
 
+    const isMutation = ['POST', 'PUT', 'DELETE'].includes(req.method)
+    const idempotencyKey = isMutation ? readIdempotencyKey(req, body) : null
+    const admin = adminClient()
+    if (isMutation && idempotencyKey) {
+      const replay = await readIdempotentResponse(admin, userId, endpointKey, idempotencyKey)
+      if (replay) return replay
+    }
+
+    let routeResponse: Response
     switch (module) {
-      case 'dashboard': return await handleDashboard(req.method, userId, sb)
-      case 'products': return await handleProducts(req.method, subParts, body, userId, sb)
-      case 'resellers': return await handleResellers(req.method, subParts, body, userId, sb)
-      case 'reseller': return await handleResellerOnboarding(req.method, subParts, body, userId, sb)
-      case 'admin': return await handleAdminResellerApplications(req.method, subParts, body, userId, sb)
-      case 'marketplace': return await handleMarketplace(req.method, subParts, body, userId, sb)
+
       case 'keys':
         if (subParts[0] === 'create' || subParts[0] === 'revoke' || subParts[0] === 'usage') {
-          return await handleManagedApiKeys(req.method, subParts, body, userId, sb)
+          routeResponse = await handleManagedApiKeys(req.method, subParts, body, userId, sb)
+          break
         }
-        return await handleKeys(req.method, subParts, body, userId, sb)
-      case 'models': return await handleModels(req.method, subParts, body, userId, sb)
+        routeResponse = await handleKeys(req.method, subParts, body, userId, sb)
+        break
+      case 'models': routeResponse = await handleModels(req.method, subParts, body, userId, sb); break
       case 'projects':
       case 'servers':
       case 'deploy':
@@ -4305,30 +4490,32 @@ Deno.serve(async (req) => {
       case 'ssl':
       case 'git':
       case 'server':
-        return await handleServers(req.method, [module, ...subParts], body, userId, sb)
-      case 'github': return await handleGithub(req.method, subParts, body, userId, sb)
-      case 'git': return await handleGit(req.method, subParts, body, userId, sb)
-      case 'ai': return await handleAi(req.method, subParts, body, userId, sb)
-      case 'code': return await handleCode(req.method, subParts, body, userId, sb)
-      case 'db': return await handleDb(req.method, subParts, body, userId)
-      case 'build': return await handleBuild(req.method, subParts, body, userId, sb)
-      case 'chat': return await handleChat(req.method, subParts, body, userId, sb)
-      case 'api-keys': return await handleApiKeys(req.method, subParts, body, userId, sb)
+        routeResponse = await handleServers(req.method, [module, ...subParts], body, userId, sb)
+        break
+      case 'github': routeResponse = await handleGithub(req.method, subParts, body, userId, sb); break
+      case 'git': routeResponse = await handleGit(req.method, subParts, body, userId, sb); break
+      case 'ai': routeResponse = await handleAi(req.method, subParts, body, userId, sb); break
+      case 'code': routeResponse = await handleCode(req.method, subParts, body, userId, sb); break
+      case 'db': routeResponse = await handleDb(req.method, subParts, body, userId); break
+      case 'build': routeResponse = await handleBuild(req.method, subParts, body, userId, sb); break
+      case 'chat': routeResponse = await handleChat(req.method, subParts, body, userId, sb); break
+      case 'api-keys': routeResponse = await handleApiKeys(req.method, subParts, body, userId, sb); break
       case 'api-usage':
-        return await handleApiKeys(req.method, ['usage'], body, userId, sb)
-      case 'auto': return await handleAuto(req.method, subParts, body, userId, sb)
-      case 'auto-pilot': return await handleAutoPilot(req.method, subParts, body, userId, sb)
-      case 'apk': return await handleApk(req.method, subParts, body, userId, sb)
-      case 'system-health': return await handleSystemHealth(req.method, subParts, body, userId, sb)
-      case 'wallet': return await handleWallet(req.method, subParts, body, userId, sb)
-      case 'subscriptions': return await handleSubscriptions(req.method, subParts, body, userId, sb)
+
       case 'leads':
       case 'lead':
       case 'seo':
-        return await handleSeoLeads(req.method, [module, ...subParts], body, userId, sb, req)
+        routeResponse = await handleSeoLeads(req.method, [module, ...subParts], body, userId, sb, req)
+        break
       default:
-        return err(`Unknown module: ${module}`, 404)
+        routeResponse = err(`Unknown module: ${module}`, 404)
+        break
     }
+
+    if (isMutation && idempotencyKey && routeResponse.status >= 200 && routeResponse.status < 300) {
+      await writeIdempotentResponse(admin, userId, endpointKey, idempotencyKey, routeResponse)
+    }
+    return routeResponse
   } catch (e) {
     console.error('API Gateway Error:', e)
     return err('Internal server error', 500)
