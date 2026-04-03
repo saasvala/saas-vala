@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, createContext, useContext, ReactNode } fro
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
 import { writeAuditEvent } from '@/observability/auditClient';
+import { savePreLogoutState, savePostLoginRedirect } from '@/lib/sessionState';
 
 type AppRole = 'super_admin' | 'reseller';
 
@@ -247,6 +248,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signOut = async () => {
+    savePreLogoutState(window.location.pathname, window.location.search, window.location.hash);
+    savePostLoginRedirect('/login');
     await supabase.auth.signOut();
     setUser(null);
     setSession(null);

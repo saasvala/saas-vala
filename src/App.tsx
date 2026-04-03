@@ -1,6 +1,7 @@
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { OfflineRetryBanner } from "@/components/global/OfflineRetryBanner";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate, useParams } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
@@ -237,7 +238,7 @@ function ProductRouteGuarded() {
   const { id, productId } = useParams();
   const resolved = id || productId;
   if (!resolved || hasInvalidRouteParam([resolved])) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/marketplace" replace />;
   }
   return <ProductDetail />;
 }
@@ -455,6 +456,7 @@ const App = () => (
           <CartProvider>
             <SidebarProvider>
               <AppRoutes />
+              <OfflineRetryBanner />
             </SidebarProvider>
           </CartProvider>
         </AuthProvider>

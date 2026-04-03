@@ -35,6 +35,12 @@ export default function ProductDetail() {
     try { localStorage.setItem('sv_last_promo_ref', refCode); } catch {}
   }, [refCode, trackPromoClick]);
 
+  useEffect(() => {
+    if (!loading && id && !product) {
+      navigate('/marketplace', { replace: true });
+    }
+  }, [loading, id, product, navigate]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-background">
@@ -53,6 +59,21 @@ export default function ProductDetail() {
         <main className="pt-20 px-4 md:px-8 space-y-4">
           <p className="text-sm text-muted-foreground">Product not found.</p>
           <Button onClick={() => navigate('/')}>Go Marketplace</Button>
+        </main>
+      </div>
+    );
+  }
+
+  if (product.status === 'draft' || product.isAvailable === false) {
+    return (
+      <div className="min-h-screen bg-background">
+        <MarketplaceHeader />
+        <main className="pt-20 px-4 md:px-8 space-y-4">
+          <p className="text-sm text-muted-foreground">This product is unavailable right now.</p>
+          <div className="flex gap-2">
+            <Button onClick={() => navigate('/marketplace')}>Go Marketplace</Button>
+            <Button variant="outline" onClick={() => navigate('/subscription')}>View Subscription</Button>
+          </div>
         </main>
       </div>
     );

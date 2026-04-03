@@ -1,4 +1,5 @@
 import { supabase } from '@/integrations/supabase/client';
+import { savePostLoginRedirect, savePreLogoutState } from './sessionState';
 
 const API_BASE = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v1`;
 
@@ -83,6 +84,13 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
         ? errorPayload
         : errorPayload?.message || data?.message || `API error: ${res.status}`;
     const code = errorPayload?.code || data?.code;
+    if (res.status === 401 || code === 'TOKEN_EXPIRED') {
+      savePreLogoutState(window.location.pathname, window.location.search, window.location.hash);
+      savePostLoginRedirect('/login');
+      if (window.location.pathname !== '/auth') {
+        window.location.assign('/login');
+      }
+    }
     throw new ApiError(message, res.status, code, data);
   }
 
