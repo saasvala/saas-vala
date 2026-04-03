@@ -4226,7 +4226,7 @@ async function writeIdempotentResponse(admin: any, userId: string, endpoint: str
 
 async function handleScheduler(method: string, pathParts: string[], body: any, sb: any) {
   const action = pathParts[0]
-  const expected = Deno.env.get('SCHEDULER_CRON_SECRET') || Deno.env.get('SUBSCRIPTION_CRON_SECRET')
+  const expected = Deno.env.get('SCHEDULER_CRON_SECRET')
   const provided = String(body?.cron_secret || '')
   if (!expected || !timingSafeEqualText(expected, provided)) return err('Forbidden', 403, 'FORBIDDEN')
 
@@ -4401,7 +4401,7 @@ Deno.serve(async (req) => {
         break
     }
 
-    if (isMutation && idempotencyKey && routeResponse.status < 500) {
+    if (isMutation && idempotencyKey && routeResponse.status >= 200 && routeResponse.status < 300) {
       await writeIdempotentResponse(admin, userId, endpointKey, idempotencyKey, routeResponse)
     }
     return routeResponse
