@@ -270,6 +270,7 @@ function AppRoutes() {
     <Suspense fallback={<PageLoader />}>
       <Routes>
         <Route path="/auth" element={<Auth />} />
+        <Route path="/auth/login" element={<Navigate to="/auth" replace />} />
         <Route path="/ref/:code" element={<ReferralRedirect />} />
         <Route path="/" element={<Marketplace />} />
         <Route path="/marketplace" element={<Marketplace />} />
@@ -324,6 +325,7 @@ function AppRoutes() {
         <Route path="/app/:id" element={<AppRouteGuarded />} />
         <Route path="/app/:productId" element={<AppRouteGuarded />} />
         <Route path="/products" element={<AuthGuard><Products /></AuthGuard>} />
+        <Route path="/products/:id" element={<ProductRouteGuarded />} />
         <Route path="/products/create" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/add-product" replace /></RoleGuard></AuthGuard>} />
         <Route path="/products/update/:id" element={<ProductEditRouteGuarded />} />
         <Route path="/products/edit/:id" element={<ProductEditRouteGuarded />} />
@@ -339,13 +341,19 @@ function AppRoutes() {
         <Route path="/vala-builder" element={<AuthGuard><ValaBuilder /></AuthGuard>} />
         <Route path="/builder" element={<AuthGuard><Navigate to="/vala-builder" replace /></AuthGuard>} />
         <Route path="/auto-pilot" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/auto-pilot/new-request" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/auto-pilot/generate" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/auto-pilot/queue" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot" replace /></RoleGuard></AuthGuard>} />
         <Route path="/auto-pilot/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
         <Route path="/auto-pilot/system-monitor" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/apk/build" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot/apk-pipeline" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/apk/status/:id" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot/apk-pipeline" replace /></RoleGuard></AuthGuard>} />
         <Route path="/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot/apk-pipeline" replace /></RoleGuard></AuthGuard>} />
         <Route path="/system-monitor" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot/system-monitor" replace /></RoleGuard></AuthGuard>} />
         <Route path="/ai" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/ai/chat" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/chat" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
+        <Route path="/chat/:id" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/ai-chat" element={<AuthGuard><AiChat /></AuthGuard>} />
         <Route path="/chat" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/chat/history" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
@@ -353,10 +361,13 @@ function AppRoutes() {
         <Route path="/marketplace-admin" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/marketplace" replace /></RoleGuard></AuthGuard>} />
         <Route path="/ai/apis" element={<AuthGuard><Navigate to="/ai-apis" replace /></AuthGuard>} />
         <Route path="/ai-apis" element={<AuthGuard><AiApis /></AuthGuard>} />
+        <Route path="/ai-apis/usage" element={<AuthGuard><Navigate to="/ai-apis" replace /></AuthGuard>} />
         <Route path="/wallet" element={<AuthGuard><Wallet /></AuthGuard>} />
         <Route path="/billing/credits" element={<AuthGuard><Navigate to="/wallet" replace /></AuthGuard>} />
         <Route path="/reseller" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard" replace /></RoleGuard></AuthGuard>} />
         <Route path="/seo-leads" element={<AuthGuard><SeoLeads /></AuthGuard>} />
+        <Route path="/seo/scan" element={<AuthGuard><Navigate to="/seo-leads" replace /></AuthGuard>} />
+        <Route path="/seo/leads" element={<AuthGuard><Navigate to="/seo-leads" replace /></AuthGuard>} />
         <Route path="/reseller-dashboard" element={<AuthGuard><RoleGuard role="reseller"><ResellerDashboard /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/dashboard" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard" replace /></RoleGuard></AuthGuard>} />
 
@@ -381,6 +392,7 @@ function AppRoutes() {
 
         <Route path="/admin/add-product" element={<AuthGuard><RoleGuard role="super_admin"><AddProduct /></RoleGuard></AuthGuard>} />
         <Route path="/admin/marketplace" element={<AuthGuard><RoleGuard role="super_admin"><MarketplaceAdmin /></RoleGuard></AuthGuard>} />
+        <Route path="/marketplace/product/:id" element={<ProductRouteGuarded />} />
         <Route path="/logout" element={<Logout />} />
         <Route path="/404" element={<NotFound />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />

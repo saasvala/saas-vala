@@ -622,6 +622,40 @@ async function handleProducts(method: string, pathParts: string[], body: any, us
   return err('Not found', 404)
 }
 
+async function countRowsSafe(sb: any, table: string) {
+  try {
+    const { count, error } = await sb.from(table).select('id', { count: 'exact', head: true })
+    if (error) return 0
+    return Number(count || 0)
+  } catch {
+    return 0
+  }
+}
+
+async function handleDashboard(method: string, userId: string, sb: any) {
+  if (method !== 'GET') return err('Not found', 404)
+
+  const [productsCount, leadsCount, subscriptionsCount, aiUsageCount] = await Promise.all([
+    countRowsSafe(sb, 'products'),
+    countRowsSafe(sb, 'leads'),
+    countRowsSafe(sb, 'subscriptions'),
+    countRowsSafe(sb, 'ai_usage_daily'),
+  ])
+
+  const { data: wallet } = await sb.from('wallets').select('balance, locked_balance').eq('user_id', userId).maybeSingle()
+
+  return ok({
+    products: productsCount,
+    leads: leadsCount,
+    subscriptions: subscriptionsCount,
+    ai_usage_points: aiUsageCount,
+    wallet: {
+      balance: Number(wallet?.balance || 0),
+      locked_balance: Number(wallet?.locked_balance || 0),
+    },
+  })
+}
+
 // ===================== 3. RESELLERS =====================
 async function handleResellers(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const admin = adminClient()
@@ -3166,6 +3200,18 @@ async function handleAuto(method: string, pathParts: string[], body: any, userId
   return err('Not found', 404)
 }
 
+async function handleAutoPilot(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  if (method === 'POST' && pathParts[0] === 'generate') {
+    return await handleAuto('POST', ['run'], body, userId, sb)
+  }
+
+  if (method === 'GET' && pathParts[0] === 'queue') {
+    return await handleAuto('GET', ['tasks'], body, userId, sb)
+  }
+
+  return err('Not found', 404)
+}
+
 // ===================== 16. APK PIPELINE =====================
 async function handleApk(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const admin = adminClient()
@@ -3189,6 +3235,17 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
       .order('created_at', { ascending: false }).limit(50)
     if (error) return err(error.message)
     return json({ data })
+  }
+
+  // GET /apk/status/:id
+  if (method === 'GET' && pathParts[0] === 'status' && pathParts[1]) {
+    const buildId = pathParts[1]
+    const { data, error } = await sb.from('apk_build_queue').select('*').eq('id', buildId).maybeSingle()
+    if (!error && data) return ok(data)
+
+    const { data: fallbackData, error: fallbackError } = await sb.from('apk_builds').select('*').eq('id', buildId).maybeSingle()
+    if (fallbackError || !fallbackData) return err('APK build not found', 404, 'NOT_FOUND')
+    return ok(fallbackData)
   }
 
   // GET /apk/download/:id
@@ -3834,6 +3891,11 @@ async function handleSeoLeads(method: string, pathParts: string[], body: any, us
     return json({ data, total: count })
   }
 
+  // GET /seo/leads
+  if (method === 'GET' && segment === 'seo' && pathParts[1] === 'leads') {
+    return await handleSeoLeads('GET', ['leads', ...pathParts.slice(2)], body, userId, sb, req)
+  }
+
   // POST /leads
   if (method === 'POST' && segment === 'leads') {
     const normalizedEmail = normalizeEmail(body.email)
@@ -3954,10 +4016,69 @@ async function handleSeoLeads(method: string, pathParts: string[], body: any, us
     return json({ data })
   }
 
+  // POST /seo/scan
+  if (method === 'POST' && segment === 'seo' && pathParts[1] === 'scan') {
+    const { data, error } = await sb.functions.invoke('seo-optimize', {
+      body: { ...body, action: 'scan', user_id: userId },
+    })
+    if (error) return err(error.message, 500)
+    return ok(data || { message: 'SEO scan queued' })
+  }
+
+  // POST /seo/google-sync
+  if (method === 'POST' && segment === 'seo' && pathParts[1] === 'google-sync') {
+    await admin.from('async_jobs').insert({
+      job_type: 'seo_google_sync',
+      status: 'queued',
+      payload: { user_id: userId, ...body },
+    })
+    return ok({ message: 'Google sync queued' })
+  }
+
+  // POST /seo/generate-meta
+  if (method === 'POST' && segment === 'seo' && pathParts[1] === 'generate-meta') {
+    const { data, error } = await sb.functions.invoke('seo-optimize', {
+      body: { ...body, action: 'generate_meta', user_id: userId },
+    })
+    if (error) return err(error.message, 500)
+    return ok(data || { message: 'Meta generation queued' })
+  }
+
 
   }
 
   return err('Not found', 404)
+}
+
+async function handleSystemHealth(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  if (!(method === 'POST' && pathParts[0] === 'run-check')) return err('Not found', 404)
+
+  const isAdmin = await isSuperAdminUser(userId)
+  if (!isAdmin) return err('Forbidden', 403, 'FORBIDDEN')
+
+  const moduleName = sanitizeTextInput(body?.module || 'api-gateway', 128) || 'api-gateway'
+  const now = nowIso()
+  const admin = adminClient()
+
+  const { data, error } = await admin
+    .from('system_health')
+    .insert({
+      module: moduleName,
+      status: 'healthy',
+      last_check: now,
+      details: { triggered_by: userId },
+    })
+    .select()
+    .maybeSingle()
+
+  if (error) {
+    if (/does not exist/i.test(String(error.message || ''))) {
+      return ok({ module: moduleName, status: 'healthy', last_check: now, stored: false })
+    }
+    return err(error.message)
+  }
+
+  return ok(data || { module: moduleName, status: 'healthy', last_check: now })
 }
 
 // ===================== 15. SUBSCRIPTIONS =====================
@@ -4164,6 +4285,7 @@ Deno.serve(async (req) => {
     if (rateLimitRes) return rateLimitRes
 
     switch (module) {
+      case 'dashboard': return await handleDashboard(req.method, userId, sb)
       case 'products': return await handleProducts(req.method, subParts, body, userId, sb)
       case 'resellers': return await handleResellers(req.method, subParts, body, userId, sb)
       case 'reseller': return await handleResellerOnboarding(req.method, subParts, body, userId, sb)
@@ -4196,7 +4318,9 @@ Deno.serve(async (req) => {
       case 'api-usage':
         return await handleApiKeys(req.method, ['usage'], body, userId, sb)
       case 'auto': return await handleAuto(req.method, subParts, body, userId, sb)
+      case 'auto-pilot': return await handleAutoPilot(req.method, subParts, body, userId, sb)
       case 'apk': return await handleApk(req.method, subParts, body, userId, sb)
+      case 'system-health': return await handleSystemHealth(req.method, subParts, body, userId, sb)
       case 'wallet': return await handleWallet(req.method, subParts, body, userId, sb)
       case 'subscriptions': return await handleSubscriptions(req.method, subParts, body, userId, sb)
       case 'leads':

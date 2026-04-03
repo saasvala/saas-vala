@@ -242,7 +242,9 @@ export const apiKeysApi = {
 // ===================== AUTO-PILOT =====================
 export const autoApi = {
   run: (data?: any) => apiCall('POST', 'auto/run', data),
+  generate: (data?: any) => apiCall('POST', 'auto-pilot/generate', data),
   tasks: () => apiCall('GET', 'auto/tasks'),
+  queue: () => apiCall('GET', 'auto-pilot/queue'),
   update: (id: string, data: any) => apiCall('PUT', `auto/${id}`, data),
 };
 
@@ -266,6 +268,7 @@ export const socialApi = {
 export const apkApi = {
   build: (data: any) => apiCall('POST', 'apk/build', data),
   history: () => apiCall('GET', 'apk/history'),
+  status: (id: string) => apiCall('GET', `apk/status/${id}`),
   download: (id: string) => apiCall('GET', `apk/download/${id}`),
 };
 
@@ -321,14 +324,32 @@ export const subscriptionsApi = {
 export const leadsApi = {
   list: (params?: { page?: number; limit?: number; search?: string }) =>
     apiCall('GET', 'leads', params),
+  seoLeads: (params?: { page?: number; limit?: number; search?: string }) =>
+    apiCall('GET', 'seo/leads', params),
   create: (data: any) => apiCall('POST', 'leads', data),
   export: (params?: { format?: 'csv' | 'json' }) => apiCall('GET', 'leads/export', params),
 
 };
 
 export const seoApi = {
+  scan: (data?: { urls?: string[]; product_id?: string; mode?: 'quick' | 'full' }) =>
+    apiCall('POST', 'seo/scan', data),
+  leads: (params?: { page?: number; limit?: number; search?: string }) =>
+    apiCall('GET', 'seo/leads', params),
+  googleSync: (data?: Record<string, unknown>) =>
+    apiCall('POST', 'seo/google-sync', data),
+  generateMeta: (data?: { product_id?: string; urls?: string[] }) =>
+    apiCall('POST', 'seo/generate-meta', data),
   analytics: () => apiCall('GET', 'seo/analytics'),
 
+};
+
+export const dashboardApi = {
+  get: () => apiCall('GET', 'dashboard'),
+};
+
+export const systemHealthApi = {
+  runCheck: (data?: { module?: string }) => apiCall('POST', 'system-health/run-check', data),
 };
 
 export const contentApi = {
