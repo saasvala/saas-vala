@@ -14,6 +14,7 @@ import type { MarketplaceProduct } from '@/hooks/useMarketplaceProducts';
 import { apkApi } from '@/lib/api';
 import { useNavigate } from 'react-router-dom';
 import { useMarketplaceActions } from '@/hooks/useMarketplaceActions';
+import { useButtonEngine } from '@/hooks/useButtonEngine';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -52,7 +53,10 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
     isFavorited: isFavoritedServer,
     toggleFavorite: toggleFavoriteServer,
     addToCart: addToCartServer,
+    refreshCart,
+    refreshFavorites,
   } = useMarketplaceActions();
+  const { runAction, isProcessing } = useButtonEngine();
   const inCart = isInCart(product.id);
   const favoriteActive = useMemo(() => favorited || isFavoritedServer(product.id), [favorited, isFavoritedServer, product.id]);
 
@@ -91,22 +95,40 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
 
   const handleFavorite = useCallback(async () => {
     if (!user) { toast.error('Sign in to add to favorites'); return; }
-    try {
-      const active = await toggleFavoriteServer(product.id, product.title);
-      setFavorited(active);
-      toast.success(active ? '❤️ Added to favorites!' : 'Removed from favorites');
-    } catch {
-      toast.error('Favorite update failed');
+    const result = await runAction(
+      { action: `FAVORITE_${product.id}`, button: 'Favorite', route: `/product/${product.id}`, api: 'marketplace/favorite/toggle', debounce: 150, idempotent: true, retries: 0 },
+      async () => {
+        const active = await toggleFavoriteServer(product.id, product.title);
+        setFavorited(active);
+        await refreshFavorites();
+        return { active };
+      },
+    );
+    if (result.ok && result.response) {
+      toast.success(result.response.active ? '❤️ Added to favorites!' : 'Removed from favorites');
+      return;
     }
-  }, [user, toggleFavoriteServer, product.id, product.title]);
+    if (!result.skipped) toast.error(result.error?.message || 'Favorite update failed');
+  }, [user, runAction, toggleFavoriteServer, product.id, product.title, refreshFavorites]);
 
   const handleAddToCart = useCallback(async () => {
-    toggleItem({ id: product.id, title: product.title, subtitle: product.subtitle || '', image: product.image || '', price, category: product.category });
-    if (!inCart && user) {
-      try { await addToCartServer(product.id, 1); } catch {}
+    const result = await runAction(
+      { action: `CART_${product.id}`, button: 'Add to Cart', route: `/product/${product.id}`, api: 'marketplace/cart/add', debounce: 150, idempotent: true, retries: 0 },
+      async () => {
+        toggleItem({ id: product.id, title: product.title, subtitle: product.subtitle || '', image: product.image || '', price, category: product.category });
+        if (!inCart && user) {
+          await addToCartServer(product.id, 1);
+          await refreshCart();
+        }
+        return { inCartAfter: !inCart };
+      },
+    );
+    if (!result.ok && !result.skipped) {
+      toast.error(result.error?.message || 'Cart update failed');
+      return;
     }
     toast.success(inCart ? 'Removed from cart' : `🛒 Added to cart!`);
-  }, [product, inCart, toggleItem, price, user, addToCartServer]);
+  }, [runAction, product, inCart, toggleItem, price, user, addToCartServer, refreshCart]);
 
   const handleNotifyMe = useCallback(() => {
     if (!user) { toast.error('Sign in to get notified'); return; }
@@ -124,58 +146,69 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
     }
   }, [getDemoUrl]);
 
+  const handleBuyNow = useCallback(async () => {
+    const result = await runAction(
+      { action: `BUY_${product.id}`, button: 'Buy Now', route: `/checkout?product_id=${encodeURIComponent(product.id)}`, api: 'payment/create', debounce: 150, idempotent: true, retries: 0 },
+      async () => {
+        await Promise.resolve(onBuyNow(product));
+        return { queued: true };
+      },
+    );
+    if (!result.ok && !result.skipped) toast.error(result.error?.message || 'Unable to continue');
+  }, [runAction, onBuyNow, product]);
+
   const handleDownloadApk = useCallback(async () => {
     if (!apkEnabled) { toast.info('APK download is currently disabled for this product.'); return; }
     if (!user) { toast.error('Please sign in to download APK'); return; }
     setDownloadChecking(true);
-    try {
-      const { data: licenseRecord } = await supabase
-        .from('license_keys').select('license_key, status, expires_at, meta')
-        .eq('created_by', user.id).eq('status', 'active').limit(50);
-      const match = licenseRecord?.find((l: any) => {
-        const m = l.meta as any;
-        return m?.product_id === product.id || m?.product_title === product.title;
-      });
-      if (!match?.license_key) {
-        toast.error('Please purchase first', { action: { label: 'BUY NOW', onClick: () => onBuyNow(product) } });
-        setDownloadChecking(false); return;
-      }
-      if (match.expires_at && new Date(match.expires_at) < new Date()) {
-        toast.error('License expired. Please renew.'); setDownloadChecking(false); return;
-      }
-      const isUuid = /^[0-9a-f]{8}-/.test(product.id);
+    const result = await runAction(
+      { action: `DOWNLOAD_${product.id}`, button: 'Download', route: `/product/${product.id}`, api: `apk/download/${product.id}`, debounce: 150, idempotent: true, retries: 1 },
+      async () => {
+        const { data: licenseRecord } = await supabase
+          .from('license_keys').select('license_key, status, expires_at, meta')
+          .eq('created_by', user.id).eq('status', 'active').limit(50);
+        const match = licenseRecord?.find((l: any) => {
+          const m = l.meta as any;
+          return m?.product_id === product.id || m?.product_title === product.title;
+        });
+        if (!match?.license_key) throw new Error('Please purchase first');
+        if (match.expires_at && new Date(match.expires_at) < new Date()) throw new Error('License expired. Please renew.');
+        const isUuid = /^[0-9a-f]{8}-/.test(product.id);
         if (isUuid) {
-        try {
-          const data = await apkApi.download(product.id);
-          if (data?.allowed && (data?.download_url || data?.url)) {
-            window.open(data.download_url || data.url, '_blank');
-            setDownloadChecking(false);
-            return;
-          }
-          if (!data?.allowed) {
-            toast.error(data?.message || 'Please purchase first');
-            setDownloadChecking(false);
-            return;
-          }
-        } catch (_apiError) {
-          // fallback to edge function invoke for compatibility
-          const { data, error } = await supabase.functions.invoke('download-apk', {
-            body: { product_id: product.id, license_key: match.license_key },
-          });
-          if (!error && (data?.success || data?.allowed) && (data?.download_url || data?.url)) {
-            window.open(data.download_url || data.url, '_blank');
-            setDownloadChecking(false);
-            return;
+          try {
+            const data = await apkApi.download(product.id);
+            if (data?.allowed && (data?.download_url || data?.url)) {
+              window.open(data.download_url || data.url, '_blank');
+              return { downloaded: true };
+            }
+            if (!data?.allowed) throw new Error(data?.message || 'Please purchase first');
+          } catch (_apiError) {
+            const { data, error } = await supabase.functions.invoke('download-apk', {
+              body: { product_id: product.id, license_key: match.license_key },
+            });
+            if (!error && (data?.success || data?.allowed) && (data?.download_url || data?.url)) {
+              window.open(data.download_url || data.url, '_blank');
+              return { downloaded: true };
+            }
           }
         }
+        toast.success(`✅ License Key: ${match.license_key}`, {
+          duration: 10000,
+          action: { label: 'Copy', onClick: () => navigator.clipboard.writeText(match.license_key) },
+        });
+        return { downloaded: false };
+      },
+    );
+    if (!result.ok && !result.skipped) {
+      const message = result.error?.message || 'APK download will be available soon.';
+      if (message.includes('Please purchase first')) {
+        toast.error(message, { action: { label: 'BUY NOW', onClick: () => { void handleBuyNow(); } } });
+      } else {
+        toast.error(message);
       }
-      toast.success(`✅ License Key: ${match.license_key}`, {
-        duration: 10000,
-        action: { label: 'Copy', onClick: () => navigator.clipboard.writeText(match.license_key) },
-      });
-    } catch { toast.info('APK download will be available soon.'); }
+    }
     setDownloadChecking(false);
-  }, [user, product, onBuyNow, apkEnabled]);
+  }, [runAction, user, product, onBuyNow, apkEnabled]);
 
   const demoUrl = getDemoUrl();
   const displayTags = (() => {
@@ -197,13 +230,15 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
           width: 280,
           background: 'rgba(255,255,255,0.03)',
           border: `1px solid ${CARD_BASE_BORDER}`,
-          transition: `transform ${CARD_HOVER_TRANSITION_SECONDS}s ease, box-shadow ${CARD_HOVER_TRANSITION_SECONDS}s ease, border-color ${CARD_HOVER_TRANSITION_SECONDS}s ease`,
+          transition: `transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease`,
+          pointerEvents: 'auto',
         }}
         onClick={() => navigate(`/product/${encodeURIComponent(product.id)}`)}
+        onTouchStart={() => undefined}
         onMouseEnter={e => { e.currentTarget.style.transform = `scale(${CARD_HOVER_SCALE})`; e.currentTarget.style.boxShadow = CARD_HOVER_SHADOW; e.currentTarget.style.borderColor = CARD_HOVER_BORDER; }}
         onMouseLeave={e => { e.currentTarget.style.transform = ''; e.currentTarget.style.boxShadow = ''; e.currentTarget.style.borderColor = CARD_BASE_BORDER; }}
       >
-        <div className="absolute top-2 left-2 right-2 z-10 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="absolute top-2 left-2 right-2 z-10 flex items-center gap-1 opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity">
           <Button
             size="sm"
             variant="secondary"
@@ -215,7 +250,7 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
           <Button
             size="sm"
             className="h-6 text-[10px] px-2"
-            onClick={(e) => { e.stopPropagation(); onBuyNow(product); }}
+            onClick={(e) => { e.stopPropagation(); void handleBuyNow(); }}
           >
             Buy Now
           </Button>
@@ -224,7 +259,7 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
             variant="outline"
             className="h-6 text-[10px] px-2 border-white/20 text-white"
             onClick={(e) => { e.stopPropagation(); void handleDownloadApk(); }}
-            disabled={downloadChecking || isPipeline || !apkEnabled}
+            disabled={downloadChecking || isPipeline || !apkEnabled || isProcessing(`DOWNLOAD_${product.id}`)}
           >
             Download
           </Button>
@@ -294,35 +329,35 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
               <Button size="sm" className={cn('flex-1 h-8 text-[10px] font-bold rounded-lg', notified ? 'bg-emerald-600' : 'bg-amber-500 text-black hover:bg-amber-400')} onClick={handleNotifyMe}>
                 <Bell style={{ width: 12, height: 12 }} className="mr-1" />{notified ? 'NOTIFIED' : 'NOTIFY ME'}
               </Button>
-              <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => { void handleFavorite(); }}>
+              <Button size="sm" variant="ghost" className="h-8 w-8 p-0 min-w-[44px] min-h-[44px]" onTouchStart={() => undefined} onClick={() => { void handleFavorite(); }} disabled={isProcessing(`FAVORITE_${product.id}`)}>
                 <Heart style={{ width: 14, height: 14 }} className={favoriteActive ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
               </Button>
             </div>
           ) : (
             <>
               <div className="flex gap-1.5">
-                <Button size="sm" variant="outline" className="flex-1 h-8 text-[10px] font-bold rounded-lg border-white/10 text-foreground/70 hover:border-white/20" onClick={(e) => { e.stopPropagation(); handleDemo(); }}>
+                <Button size="sm" variant="outline" className="flex-1 h-8 text-[10px] font-bold rounded-lg border-white/10 text-foreground/70 hover:border-white/20 min-h-[44px]" onTouchStart={() => undefined} onClick={(e) => { e.stopPropagation(); handleDemo(); }}>
                   <Play style={{ width: 11, height: 11 }} className="mr-1" />{hasDemoAvailable ? 'DEMO' : 'VIEW'}
                 </Button>
-                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); void handleFavorite(); }}>
+                <Button size="sm" variant="ghost" className="h-8 w-8 p-0 min-w-[44px] min-h-[44px]" onTouchStart={() => undefined} onClick={(e) => { e.stopPropagation(); void handleFavorite(); }} disabled={isProcessing(`FAVORITE_${product.id}`)}>
                   <Heart style={{ width: 14, height: 14 }} className={favoriteActive ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
                 </Button>
-                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); void handleAddToCart(); }}>
+                <Button size="sm" variant="ghost" className="h-8 w-8 p-0 min-w-[44px] min-h-[44px]" onTouchStart={() => undefined} onClick={(e) => { e.stopPropagation(); void handleAddToCart(); }} disabled={isProcessing(`CART_${product.id}`)}>
                   <ShoppingCart style={{ width: 14, height: 14 }} className={inCart ? 'text-primary' : 'text-muted-foreground'} />
                 </Button>
               </div>
-              <Button size="sm" className="w-full h-9 text-[11px] font-black rounded-lg text-white border-0" style={{ background: 'linear-gradient(90deg,#2563EB,#1D4ED8)' }} onClick={(e) => { e.stopPropagation(); onBuyNow(product); }}>
+              <Button size="sm" className="w-full h-9 text-[11px] font-black rounded-lg text-white border-0 min-h-[44px]" style={{ background: 'linear-gradient(90deg,#2563EB,#1D4ED8)' }} onTouchStart={() => undefined} onClick={(e) => { e.stopPropagation(); void handleBuyNow(); }} disabled={isProcessing(`BUY_${product.id}`)}>
                 <Package style={{ width: 13, height: 13 }} className="mr-1" /> BUY NOW — {localizedPrice}
               </Button>
             </>
           )}
           <div className="flex gap-1.5">
             {apkEnabled && (
-              <Button size="sm" variant="outline" className="flex-1 h-7 text-[10px] font-bold rounded-lg text-white border-0" style={{ background: 'linear-gradient(90deg,#7C3AED,#6D28D9)' }} onClick={handleDownloadApk} disabled={downloadChecking || isPipeline}>
+              <Button size="sm" variant="outline" className="flex-1 h-7 text-[10px] font-bold rounded-lg text-white border-0 min-h-[44px]" style={{ background: 'linear-gradient(90deg,#7C3AED,#6D28D9)' }} onTouchStart={() => undefined} onClick={handleDownloadApk} disabled={downloadChecking || isPipeline || isProcessing(`DOWNLOAD_${product.id}`)}>
                 <Download style={{ width: 11, height: 11 }} className="mr-1" />{downloadButtonText}
               </Button>
             )}
-            <Button size="sm" variant="outline" className={cn('h-7 text-[10px] font-bold rounded-lg border-white/10 text-muted-foreground', apkEnabled ? 'flex-1' : 'w-full')} onClick={(e) => { e.stopPropagation(); setFeaturesOpen(true); }}>
+            <Button size="sm" variant="outline" className={cn('h-7 text-[10px] font-bold rounded-lg border-white/10 text-muted-foreground min-h-[44px]', apkEnabled ? 'flex-1' : 'w-full')} onTouchStart={() => undefined} onClick={(e) => { e.stopPropagation(); setFeaturesOpen(true); }}>
               <Info style={{ width: 11, height: 11 }} className="mr-1" /> FEATURES
             </Button>
           </div>
@@ -379,7 +414,7 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
                 </ul>
               </div>
               <div className="flex gap-2">
-                <Button className="flex-1 h-10 text-xs font-black" onClick={() => { setFeaturesOpen(false); onBuyNow(product); }}>
+                <Button className="flex-1 h-10 text-xs font-black" onClick={() => { setFeaturesOpen(false); void handleBuyNow(); }}>
                   <ShoppingCart style={{ width: 14, height: 14 }} className="mr-1" /> BUY — {localizedPrice}
                 </Button>
                 <Button variant="outline" className="flex-1 h-10 text-xs font-bold" onClick={() => { setFeaturesOpen(false); handleDemo(); }}>
