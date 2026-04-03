@@ -201,7 +201,7 @@ interface Product {
             .from('wallets')
             .update({
               balance: restoredBalance,
-              version: walletVersionBefore + 2,
+              version: walletVersionBefore + 1,
               updated_at: new Date().toISOString(),
             })
             .eq('id', walletId);
