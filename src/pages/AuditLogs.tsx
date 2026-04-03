@@ -29,8 +29,10 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import {
   createManualAuditLog,
+  exportAuditLogs,
   getAuditStats,
   listAuditLogsApi,
+  type AuditStats,
   subscribeAuditLogsRealtime,
 } from '@/observability/auditClient';
 import type { Database } from '@/integrations/supabase/types';
@@ -41,6 +43,10 @@ type AuditStatus = 'success' | 'error' | 'warning';
 type TimeRange = '15m' | '1h' | '24h' | '7d' | '30d' | 'all';
 type DateFilter = 'today' | '7d' | '30d' | 'all';
 type PageSize = 25 | 50 | 100;
+
+interface PageRequestState {
+  hasMore: boolean;
+}
 
 interface EnrichedAuditLog {
   id: string;
@@ -132,6 +138,15 @@ function isInDateFilter(dateIso: string, filter: DateFilter): boolean {
   return now.getTime() - time.getTime() <= 30 * 24 * 60 * 60 * 1000;
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
 export default function AuditLogs() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -148,6 +163,7 @@ export default function AuditLogs() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<PageSize>(50);
   const [stats, setStats] = useState({ total_logs: 0, creates: 0, updates: 0, deletes: 0 });
+  const [pageState, setPageState] = useState<PageRequestState>({ hasMore: false });
 
   const fetchLogs = useCallback(async (showLoader = true) => {
     if (showLoader) {
@@ -168,7 +184,9 @@ export default function AuditLogs() {
         pageSize,
       });
       if (error) throw error;
-      setLogs((data || []) as AuditLog[]);
+      const rows = (data || []) as AuditLog[];
+      setLogs(rows);
+      setPageState({ hasMore: rows.length === pageSize });
     } catch (error) {
       console.error('Error fetching audit logs:', error);
       toast.error('Failed to fetch audit logs');
@@ -205,7 +223,7 @@ export default function AuditLogs() {
     const loadStats = async () => {
       const { data, error } = await getAuditStats();
       if (error) return;
-      const first = (data?.[0] || null) as { total_logs?: number; creates?: number; updates?: number; deletes?: number } | null;
+      const first = (data?.[0] || null) as AuditStats | null;
       if (!first) return;
       setStats({
         total_logs: Number(first.total_logs || 0),
@@ -299,14 +317,6 @@ export default function AuditLogs() {
     return <CircleAlert className="h-4 w-4 text-amber-400" />;
   };
 
-  const activeShareLogs = useMemo(() => {
-    if (selectedLogId) {
-      const one = filteredLogs.find((x) => x.id === selectedLogId);
-      return one ? [one] : [];
-    }
-    return filteredLogs.slice(0, 100);
-  }, [filteredLogs, selectedLogId]);
-
   const buildCsv = (rows: EnrichedAuditLog[]) => {
     const header = ['ID', 'User ID', 'Role', 'Action', 'Module', 'Event', 'Status', 'IP', 'Device', 'Time'];
     const body = rows.map((row) => [
@@ -347,7 +357,7 @@ export default function AuditLogs() {
         <td>${row.action}</td>
         <td>${row.module}</td>
         <td>${row.status}</td>
-        <td>${(row.message || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</td>
+        <td>${escapeHtml(row.message || '')}</td>
       </tr>
     `).join('');
 
@@ -378,18 +388,47 @@ export default function AuditLogs() {
     toast.success('Export PDF ready');
   };
 
-  const shareLogs = (platform: 'whatsapp' | 'telegram') => {
-    if (activeShareLogs.length === 0) {
+  const shareLogs = async (platform: 'whatsapp' | 'telegram') => {
+    if (filteredLogs.length === 0) {
       toast.error('No logs selected for sharing');
       return;
     }
-    const csv = buildCsv(activeShareLogs);
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const link = URL.createObjectURL(blob);
-    const text = encodeURIComponent(`Audit logs export: ${link}`);
+    const { data, error } = await exportAuditLogs(
+      'csv',
+      {
+        tableName: moduleFilter !== 'all' ? moduleFilter : null,
+        action: actionFilter !== 'all' ? actionFilter : null,
+        userId: userFilter.trim() || null,
+        query: searchQuery.trim() || null,
+      },
+      5000,
+    );
+
+    if (error) {
+      toast.error('Failed to prepare share export');
+      return;
+    }
+
+    const shareRows = ((data || []) as AuditLog[]).map((log) => {
+      const metadata = toObject(log.metadata);
+      return {
+        id: log.id,
+        raw: log,
+        time: log.occurred_at || log.created_at || new Date().toISOString(),
+        role: stringFrom(metadata, ['role', 'user_role', 'actor_role', 'userRole', 'actorRole']) || (log.is_system ? 'system' : 'user'),
+        action: log.action,
+        module: log.target_table || log.table_name || log.entity || stringFrom(metadata, ['module', 'service']) || 'system',
+        status: toStatus(log, metadata),
+        message: stringFrom(metadata, ['message', 'description', 'event_message']) || `${log.event_type || 'event'} on ${log.target_table || log.table_name || 'system'}`,
+      } as EnrichedAuditLog;
+    });
+
+    const csv = buildCsv(shareRows.slice(0, 1000));
+    const dataUrl = `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
+    const text = encodeURIComponent(`Audit logs export: ${dataUrl}`);
     const shareUrl = platform === 'whatsapp'
       ? `https://wa.me/?text=${text}`
-      : `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent('Audit logs export')}`;
+      : `https://t.me/share/url?url=${encodeURIComponent(dataUrl)}&text=${encodeURIComponent('Audit logs export')}`;
     window.open(shareUrl, '_blank', 'noopener,noreferrer');
     toast.success(`Share link opened on ${platform === 'whatsapp' ? 'WhatsApp' : 'Telegram'}`);
   };
@@ -400,7 +439,9 @@ export default function AuditLogs() {
     const actionInput = window.prompt('Action (create/update/delete/login/logout/read)', 'create');
     const statusInput = window.prompt('Status (success/fail)', 'success');
     const note = window.prompt('Message', 'Manual audit log');
-    const action = (actionInput || 'read') as AuditAction;
+    const validActions: AuditAction[] = ['create', 'read', 'update', 'delete', 'login', 'logout', 'activate', 'suspend'];
+    const actionRaw = String(actionInput || 'read').toLowerCase();
+    const action = (validActions.includes(actionRaw as AuditAction) ? actionRaw : 'read') as AuditAction;
     const status = statusInput === 'fail' ? 'fail' : 'success';
     const { error } = await createManualAuditLog({
       role: 'admin',
@@ -775,7 +816,7 @@ export default function AuditLogs() {
                     Prev Page
                   </Button>
                   <span className="text-xs text-muted-foreground">Page {page}</span>
-                  <Button variant="outline" onClick={() => setPage((p) => p + 1)} disabled={logs.length < pageSize}>
+                  <Button variant="outline" onClick={() => setPage((p) => p + 1)} disabled={!pageState.hasMore}>
                     Next Page
                   </Button>
                 </div>

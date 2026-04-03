@@ -242,6 +242,7 @@ BEGIN
     AND (
       p_q IS NULL
       OR COALESCE(a.actor_id::text, '') ILIKE '%' || p_q || '%'
+      OR COALESCE(a.user_id::text, '') ILIKE '%' || p_q || '%'
       OR COALESCE(a.action::text, '') ILIKE '%' || p_q || '%'
       OR COALESCE(a.target_table, a.table_name, '') ILIKE '%' || p_q || '%'
       OR COALESCE(a.event_type, '') ILIKE '%' || p_q || '%'
