@@ -12,10 +12,11 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { ArrowLeft, Search, Bell, User, Settings, LogOut, ShoppingCart, Sparkles } from 'lucide-react';
+import { ArrowLeft, Search, Bell, User, Settings, LogOut, ShoppingCart, Sparkles, Moon, Sun, Monitor } from 'lucide-react';
 import { WalletHeaderButton } from '@/components/wallet/WalletHeaderButton';
 import { useCart } from '@/hooks/useCart';
 import { motion } from 'framer-motion';
+import { useTheme } from 'next-themes';
 
 const pageTitles: Record<string, string> = {
   '/': 'Marketplace',
@@ -60,6 +61,7 @@ export function Header() {
   const location = useLocation();
   const { user, role, signOut, isSuperAdmin } = useAuth();
   const { count: cartCount } = useCart();
+  const { theme, setTheme } = useTheme();
 
   const pageTitle = pageTitles[location.pathname] || 'SaaS VALA';
   const canGoBack = location.pathname !== '/';
@@ -182,6 +184,19 @@ export function Header() {
             <DropdownMenuItem className="cursor-pointer text-sm py-2" onClick={() => navigate('/settings')}>
               <Settings className="mr-2 h-3.5 w-3.5" />
               Settings
+            </DropdownMenuItem>
+            <DropdownMenuSeparator className="bg-border/30" />
+            <DropdownMenuItem className="cursor-pointer text-sm py-2" onClick={() => setTheme('light')}>
+              <Sun className="mr-2 h-3.5 w-3.5" />
+              {theme === 'light' ? 'Light (Active)' : 'Switch to Light'}
+            </DropdownMenuItem>
+            <DropdownMenuItem className="cursor-pointer text-sm py-2" onClick={() => setTheme('dark')}>
+              <Moon className="mr-2 h-3.5 w-3.5" />
+              {theme === 'dark' ? 'Dark (Active)' : 'Switch to Dark'}
+            </DropdownMenuItem>
+            <DropdownMenuItem className="cursor-pointer text-sm py-2" onClick={() => setTheme('system')}>
+              <Monitor className="mr-2 h-3.5 w-3.5" />
+              {theme === 'system' ? 'System (Active)' : 'Use System Theme'}
             </DropdownMenuItem>
             <DropdownMenuSeparator className="bg-border/30" />
             <DropdownMenuItem

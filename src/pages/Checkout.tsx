@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ArrowLeft, CreditCard } from 'lucide-react';
 import { useCart } from '@/hooks/useCart';
 import { useMarketplaceProducts } from '@/hooks/useMarketplaceProducts';
@@ -19,13 +20,7 @@ export default function Checkout() {
   const { purchaseApk, processing } = useApkPurchase();
   const { trackPromoConversion } = useMarketplaceActions();
   const [submitting, setSubmitting] = useState(false);
-  const payInFlightRef = useRef(false);
-  const pendingRestoreAttemptedRef = useRef(false);
-  const hasInvalidProductParam = useMemo(() => {
-    const productId = searchParams.get('product_id');
-    if (!productId) return false;
-    return !products.some((p) => String(p.id) === String(productId));
-  }, [products, searchParams]);
+
 
   const selected = useMemo(() => {
     const productId = searchParams.get('product_id');
@@ -49,33 +44,7 @@ export default function Checkout() {
     }
     payInFlightRef.current = true;
     setSubmitting(true);
-    try {
-      const result = await purchaseApk({
-        id: selected.id,
-        title: selected.title,
-        subtitle: selected.subtitle || '',
-        image: selected.image || '',
-        status: 'live',
-        price: selected.price,
-      });
-      if (result.success) {
-        try {
-          sessionStorage.removeItem('sv_pending_payment');
-        } catch {}
-        const promoRef = (() => {
-          try { return localStorage.getItem('sv_last_promo_ref') || ''; } catch { return ''; }
-        })();
-        if (promoRef) {
-          void trackPromoConversion(promoRef, selected.price || 0).catch(() => undefined);
-        }
-        clearCart();
-        const next = new URLSearchParams();
-        if (result.transactionId) next.set('tx', result.transactionId);
-        if (result.licenseKey) next.set('key', result.licenseKey);
-        if (selected.id) next.set('product', selected.id);
-        navigate(`/success${next.toString() ? `?${next.toString()}` : ''}`);
-      } else {
-        toast.error(result.error || 'Payment failed');
+
       }
     } finally {
       payInFlightRef.current = false;
@@ -153,9 +122,24 @@ export default function Checkout() {
             <span className="text-2xl font-black text-primary">${payable}</span>
           </div>
 
+          <div className="space-y-1">
+            <span className="text-sm text-muted-foreground">Payment Method</span>
+            <Select value={paymentMethod} onValueChange={(v) => setPaymentMethod(v as typeof paymentMethod)}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select payment method" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="wallet">Wallet</SelectItem>
+                <SelectItem value="upi">UPI</SelectItem>
+                <SelectItem value="card">Card</SelectItem>
+                <SelectItem value="crypto">Crypto</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
           <Button className="w-full" onClick={onPay} disabled={processing || submitting || !selected}>
             <CreditCard className="h-4 w-4 mr-2" />
-            {processing || submitting ? 'Processing...' : `Pay $${payable}`}
+            {processing || submitting ? 'Processing...' : `Pay $${payable} via ${paymentMethod.toUpperCase()}`}
           </Button>
           <Button variant="outline" className="w-full" onClick={restorePendingPayment}>
             Retry Pending Payment

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { productsApi } from '@/lib/api';
 import type { Json } from '@/integrations/supabase/types';
+import { supabase } from '@/integrations/supabase/client';
 
 export interface Product {
   id: string;
@@ -47,8 +48,15 @@ export function useProducts() {
       const res = await productsApi.list();
       setProducts((res.data || []) as Product[]);
     } catch (e: any) {
-      toast.error('Failed to fetch products');
-      console.error(e);
+      try {
+        const { data, error } = await supabase.from('products').select('*').order('created_at', { ascending: false });
+        if (error) throw error;
+        setProducts((data || []) as Product[]);
+      } catch (fallbackError) {
+        toast.error('Failed to fetch products');
+        console.error(e);
+        console.error(fallbackError);
+      }
     }
     setLoading(false);
   };
@@ -58,7 +66,16 @@ export function useProducts() {
       const res = await productsApi.categories();
       setCategories((res.data || []) as Category[]);
     } catch (e) {
-      console.error(e);
+      try {
+        const { data } = await supabase
+          .from('categories')
+          .select('id, name, slug, level, parent_id, description, is_active')
+          .order('name', { ascending: true });
+        setCategories((data || []) as Category[]);
+      } catch (fallbackError) {
+        console.error(e);
+        console.error(fallbackError);
+      }
     }
   };
 
@@ -69,8 +86,14 @@ export function useProducts() {
       await fetchProducts();
       return res.data;
     } catch (e: any) {
-      toast.error('Failed to create product');
-      throw e;
+      const { data, error } = await supabase.from('products').insert(product as Record<string, unknown>).select().single();
+      if (error) {
+        toast.error('Failed to create product');
+        throw e;
+      }
+      toast.success('Product created');
+      await fetchProducts();
+      return data;
     }
   };
 
@@ -80,8 +103,16 @@ export function useProducts() {
       toast.success('Product updated');
       await fetchProducts();
     } catch (e: any) {
-      toast.error('Failed to update product');
-      throw e;
+      const { error } = await supabase
+        .from('products')
+        .update(updates as Record<string, unknown>)
+        .eq('id', id);
+      if (error) {
+        toast.error('Failed to update product');
+        throw e;
+      }
+      toast.success('Product updated');
+      await fetchProducts();
     }
   };
 
@@ -91,8 +122,13 @@ export function useProducts() {
       toast.success('Product deleted');
       await fetchProducts();
     } catch (e: any) {
-      toast.error('Failed to delete product');
-      throw e;
+      const { error } = await supabase.from('products').delete().eq('id', id);
+      if (error) {
+        toast.error('Failed to delete product');
+        throw e;
+      }
+      toast.success('Product deleted');
+      await fetchProducts();
     }
   };
 

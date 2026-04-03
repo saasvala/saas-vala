@@ -116,6 +116,30 @@ export function useServers() {
       toast.success('Deployment triggered');
       await fetchServers();
       await fetchDeployments(id);
+      let attempts = 0;
+      const maxAttempts = 20;
+      while (attempts < maxAttempts) {
+        attempts += 1;
+        const status = await serversApi.deployStatusList(id);
+        const rows = Array.isArray((status as any)?.data) ? (status as any).data : [];
+        const latest = rows[0];
+        if (!latest) break;
+        const state = String(latest.status || '');
+        if (state === 'success' || state === 'rolled_back' || state === 'failed' || state === 'cancelled') {
+          await fetchServers();
+          await fetchDeployments(id);
+          if (state === 'success' || state === 'rolled_back') {
+            toast.success(`Deployment ${state}`);
+          } else {
+            toast.error(`Deployment ${state}`);
+          }
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+      await fetchServers();
+      await fetchDeployments(id);
+      toast.info('Deployment queued, status will keep updating');
     } catch (e: any) {
       toast.error('Failed to trigger deployment');
       throw e;
