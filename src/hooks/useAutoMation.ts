@@ -837,7 +837,7 @@ export function useAutomation() {
 
       for (const sub of dueSubscriptions) {
         const nextDue = dueDateFromCycle(sub.billing_cycle || 'monthly');
-        await handleAddBilling({
+        const created = await handleAddBilling({
           user_id: sub.user_id,
           service_name: sub.plan_name,
           amount: Number(sub.amount || 0),
@@ -846,6 +846,21 @@ export function useAutomation() {
           due_date: nextDue,
           notes: `Auto-renew for subscription ${sub.id}`,
         });
+        if (!created) {
+          const graceUntil = new Date();
+          graceUntil.setDate(graceUntil.getDate() + 7);
+          await supabase
+            .from('subscriptions')
+            .update({ status: 'grace_period', current_period_end: graceUntil.toISOString() })
+            .eq('id', sub.id);
+          await notifyUsers(
+            [sub.user_id],
+            'Renewal Failed - Grace Period',
+            `Renewal for ${sub.plan_name} failed. Grace period active until ${graceUntil.toLocaleDateString()}.`,
+            '/subscription'
+          );
+          continue;
+        }
 
         await notifyUsers(
           [sub.user_id],

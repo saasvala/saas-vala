@@ -34,6 +34,7 @@ import {
   ShoppingCart, CreditCard, Wallet, Loader2, ChevronDown, ChevronUp, Copy, Key, Download
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatUserTime, getTypoSuggestions, normalizeLanguage } from '@/lib/edgeGuards';
 
 interface Product {
   id: string; title: string; subtitle: string; image: string;
@@ -297,6 +298,11 @@ export default function Marketplace() {
     return products.filter((p) => ids.has(String(p.id)));
   }, [products, searchResults]);
 
+  const typoSuggestions = useMemo(() => {
+    if (!searchQuery.trim() || filteredProducts.length > 0) return [];
+    return getTypoSuggestions(searchQuery.trim(), products.map((p) => p.title));
+  }, [searchQuery, filteredProducts.length, products]);
+
   const trendingProducts = useMemo(
     () => filteredProducts.filter((p: any) => p.trending || p.rating >= TRENDING_RATING_THRESHOLD).slice(0, 30),
     [filteredProducts]
@@ -358,13 +364,27 @@ export default function Marketplace() {
             </Select>
           </div>
           {(searchLoading || !currencyRatesReady) && <p className="mt-2 text-xs text-muted-foreground">Searching...</p>}
+          {!searchLoading && searchQuery.trim() && filteredProducts.length === 0 && (
+            <div className="mt-2 rounded-md border border-border/60 p-2 text-xs text-muted-foreground">
+              <p>No products found for "{searchQuery.trim()}".</p>
+              {typoSuggestions.length > 0 && (
+                <p className="mt-1">Did you mean: {typoSuggestions.join(', ')}</p>
+              )}
+            </div>
+          )}
         </section>
 
         <section className="py-2">
           <SectionHeader icon="🔥" title="Trending" subtitle="Most demanded products right now" badge="TRENDING" badgeVariant="trending" totalCount={trendingProducts.length} />
           <SectionSlider>
             {trendingProducts.map((product, i) => (
-              <MarketplaceProductCard key={`trending-${product.id}`} product={product as any} index={i} onBuyNow={handleBuyNow} rank={i + 1} />
+              <MarketplaceProductCard
+                key={`trending-${product.id}`}
+                product={{ ...(product as any), language: normalizeLanguage((product as any).language), createdAtLabel: formatUserTime((product as any).createdAt) }}
+                index={i}
+                onBuyNow={handleBuyNow}
+                rank={i + 1}
+              />
             ))}
           </SectionSlider>
         </section>

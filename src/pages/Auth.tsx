@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { motion, AnimatePresence } from 'framer-motion';
 import saasValaLogo from '@/assets/saas-vala-logo.jpg';
 import { useResellerApplications } from '@/hooks/useResellerApplications';
+import { consumePostLoginRedirect } from '@/lib/sessionState';
  
  const loginSchema = z.object({
    email: z.string().email('Please enter a valid email address'),
@@ -72,9 +73,14 @@ export default function Auth() {
    // Redirect based on role after login
   useEffect(() => {
     if (user && role && !loading) {
-       if (role === 'super_admin') {
-         navigate('/dashboard', { replace: true });
-       } else if (role === 'reseller') {
+       const redirectPath = consumePostLoginRedirect();
+       if (redirectPath) {
+         navigate(redirectPath, { replace: true });
+         return;
+       }
+        if (role === 'super_admin') {
+          navigate('/dashboard', { replace: true });
+        } else if (role === 'reseller') {
          navigate('/reseller-dashboard', { replace: true });
        } else {
          navigate('/', { replace: true });

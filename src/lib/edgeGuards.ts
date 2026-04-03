@@ -50,3 +50,15 @@ export function formatUserTime(iso?: string | null, locale?: string) {
   }
 }
 
+export function isExpiredSignedUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    const exp = parsed.searchParams.get('expires');
+    if (!exp) return false;
+    const expiresAt = Number(exp);
+    if (!Number.isFinite(expiresAt)) return false;
+    return expiresAt <= Math.floor(Date.now() / 1000);
+  } catch {
+    return false;
+  }
+}

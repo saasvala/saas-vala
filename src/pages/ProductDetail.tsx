@@ -5,9 +5,12 @@ import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, ShoppingCart, CreditCard, ExternalLink, Download } from 'lucide-react';
 import { MarketplaceHeader } from '@/components/marketplace/MarketplaceHeader';
 import { useMarketplaceProducts } from '@/hooks/useMarketplaceProducts';
+import { useMarketplaceActions } from '@/hooks/useMarketplaceActions';
 import { useCart } from '@/hooks/useCart';
 import { useAuth } from '@/hooks/useAuth';
 import { apkApi } from '@/lib/api';
+import { formatLocalizedPrice } from '@/lib/locale';
+import { isExpiredSignedUrl } from '@/lib/edgeGuards';
 import { toast } from 'sonner';
 
 
@@ -24,6 +27,10 @@ export default function ProductDetail() {
   const { trackPromoClick, addToCart: addToCartServer } = useMarketplaceActions();
 
   const product = useMemo(() => products.find((item) => item.id === id), [products, id]);
+  const productMeta = product as unknown as { deleted_at?: string | null; expires_at?: string | null; status?: string };
+  const isDeleted = Boolean(productMeta?.deleted_at) || String(productMeta?.status || '').toLowerCase() === 'deleted';
+  const isExpired = Boolean(productMeta?.expires_at) && new Date(String(productMeta.expires_at)) <= new Date();
+  const needsSubscriptionRedirect = !isDeleted && (product?.isAvailable === false || isExpired);
   const refCode = useMemo(() => new URLSearchParams(window.location.search).get('ref') || '', []);
   const trackedPromoRef = useRef('');
 
@@ -36,10 +43,15 @@ export default function ProductDetail() {
   }, [refCode, trackPromoClick]);
 
   useEffect(() => {
-    if (!loading && id && !product) {
+    if (loading) return;
+    if (id && !product) {
       navigate('/marketplace', { replace: true });
+      return;
     }
-  }, [loading, id, product, navigate]);
+    if (product && needsSubscriptionRedirect && product.status !== 'draft') {
+      navigate('/subscription', { replace: true });
+    }
+  }, [loading, id, product, needsSubscriptionRedirect, navigate]);
 
   if (loading) {
     return (
@@ -64,12 +76,12 @@ export default function ProductDetail() {
     );
   }
 
-  if (product.status === 'draft' || product.isAvailable === false) {
+  if (isDeleted || product.status === 'draft') {
     return (
       <div className="min-h-screen bg-background">
         <MarketplaceHeader />
         <main className="pt-20 px-4 md:px-8 space-y-4">
-          <p className="text-sm text-muted-foreground">This product is unavailable right now.</p>
+          <p className="text-sm text-muted-foreground">This product is no longer available.</p>
           <div className="flex gap-2">
             <Button onClick={() => navigate('/marketplace')}>Go Marketplace</Button>
             <Button variant="outline" onClick={() => navigate('/subscription')}>View Subscription</Button>
@@ -80,15 +92,16 @@ export default function ProductDetail() {
   }
 
   const inCart = isInCart(product.id);
-
-  const screenshots = useMemo(() => {
-    const rawScreenshots = hasScreenshots(product) ? product.screenshots : undefined;
+  const localizedPrice = formatLocalizedPrice(product.price, product.currency);
+  const isBuilding = ['building', 'queued', 'pending'].includes(String(product.build_status || '').toLowerCase());
+  const rawScreenshots = hasScreenshots(product) ? product.screenshots : undefined;
+  const screenshots = (() => {
     if (Array.isArray(rawScreenshots)) {
       const unique = rawScreenshots.filter((shot: unknown) => typeof shot === 'string' && shot.trim());
       return Array.from(new Set(unique));
     }
     return product.image ? [product.image] : [];
-  }, [product]);
+  })();
 
   const handleBuyNow = () => {
     if (!user) {
@@ -116,7 +129,12 @@ export default function ProductDetail() {
     try {
       const res = await apkApi.download(product.id);
       if (res?.allowed && (res?.download_url || res?.url)) {
-        window.open(res.download_url || res.url, '_blank');
+        const link = String(res.download_url || res.url || '');
+        if (!link || isExpiredSignedUrl(link)) {
+          toast.error('Download link expired. Please retry.');
+          return;
+        }
+        window.open(link, '_blank');
         return;
       }
       toast.error(res?.message || 'Please purchase first');

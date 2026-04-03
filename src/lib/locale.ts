@@ -51,7 +51,9 @@ function normalizeCountry(value: unknown) {
 
 function normalizeLanguage(value: unknown) {
   const lang = String(value || '').trim().toLowerCase().slice(0, 3)
-  return lang || DEFAULT_LOCALE.language
+  const supported = new Set(AVAILABLE_LANGUAGES.map((item) => item.code))
+  if (!lang) return DEFAULT_LOCALE.language
+  return supported.has(lang) ? lang : DEFAULT_LOCALE.language
 }
 
 function normalizeCurrency(value: unknown) {
