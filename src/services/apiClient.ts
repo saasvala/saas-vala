@@ -3,7 +3,7 @@ import { supabase } from '@/integrations/supabase/client';
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_RETRIES = 2;
 const RETRY_DELAY_BASE_MS = 250;
-const API_BASE = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway`;
+const API_BASE = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v1`;
 
 export type ApiClientOptions = {
   timeoutMs?: number;
