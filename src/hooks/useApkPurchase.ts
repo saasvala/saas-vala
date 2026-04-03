@@ -78,7 +78,10 @@ export function useApkPurchase() {
         throw new Error((verifyRes as any)?.error || 'Payment verification failed');
       }
 
-      const transactionId = String((verifyRes as any)?.result?.order_id || paymentId);
+      const transactionId = String((verifyRes as any)?.result?.order_id || '');
+      if (!transactionId) {
+        throw new Error('Payment verification did not return an order id');
+      }
 
       // Step 4: Generate secure crypto-random license key
       const licenseKey = generateSecureLicenseKey();

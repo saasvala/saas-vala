@@ -2051,8 +2051,6 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     const { data: payment, error } = await sb.from('payments').select('*').eq('id', body.payment_id).maybeSingle()
     if (error) return err(error.message)
     if (!payment) return err('Payment not found', 404, 'NOT_FOUND')
-    if (String(payment.status || '').toLowerCase() === 'success') return json({ success: true, duplicate: true, result: { order_id: payment.order_id } })
-
     const expectedAmount = Number(payment.amount || 0)
     const providedAmount = Number(body.amount || 0)
     if (!Number.isFinite(providedAmount) || providedAmount <= 0 || providedAmount !== expectedAmount) {
@@ -2066,13 +2064,13 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     }
     if (isWalletPayment) {
       const { data: orderRow } = await sb.from('orders').select('user_id,amount').eq('id', payment.order_id).maybeSingle()
-      if (!orderRow?.user_id) return err('Order not found', 404, 'NOT_FOUND')
+      if (!orderRow) return err('Order not found', 404, 'NOT_FOUND')
+      if (!orderRow.user_id) return err('Invalid order: missing user_id', 422, 'VALIDATION_ERROR')
       const { data: wallet } = await sb.from('wallets').select('locked_balance').eq('user_id', orderRow.user_id).maybeSingle()
       const locked = Number(wallet?.locked_balance || 0)
       const required = Number(orderRow.amount || 0)
-      if (!wallet || locked < required) {
-        return err('Wallet lock not found for payment verification', 422, 'VALIDATION_ERROR')
-      }
+      if (!wallet) return err('Wallet not found for payment verification', 404, 'NOT_FOUND')
+      if (locked < required) return err('Insufficient locked balance for payment verification', 422, 'VALIDATION_ERROR')
     }
     if (transactionId) {
       const { data: duplicateGatewayPayment } = await sb.from('payments')
@@ -2610,10 +2608,63 @@ async function markPaymentSuccess(admin: any, sb: any, userId: string, payment: 
   const { data: order } = await sb.from('orders').select('*').eq('id', payment.order_id).maybeSingle()
   if (!order) return null
 
-  if (order.status === 'success') return { order, alreadyProcessed: true }
-
   const paidAt = nowIso()
   const actorUserId = order.user_id || userId
+
+  const settleWalletLock = async () => {
+    const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', order.user_id).maybeSingle()
+    if (!wallet) return
+
+    const locked = Number(wallet.locked_balance || 0)
+    const gateway = String(payment.gateway || '').toLowerCase()
+    if (locked <= 0) return
+
+    const orderAmount = Number(order.amount || 0)
+    const unlockAmount = Math.min(locked, orderAmount)
+    const isWalletGateway = gateway === 'wallet'
+    const oldBalance = Number(wallet.balance || 0)
+    const finalBalance = isWalletGateway ? Math.max(0, oldBalance - unlockAmount) : oldBalance
+    const nextLocked = Math.max(0, locked - unlockAmount)
+    const ledgerEntryType = isWalletGateway ? 'debit' : 'unlock'
+    const ledgerReason = isWalletGateway ? 'payment_success_wallet_debit' : 'payment_success_unlock'
+
+    await sb.from('wallets').update({
+      balance: finalBalance,
+      locked_balance: nextLocked,
+      updated_at: paidAt,
+    }).eq('id', wallet.id)
+
+    if (isWalletGateway) {
+      await sb.from('transactions').insert({
+        wallet_id: wallet.id,
+        type: 'debit',
+        amount: unlockAmount,
+        balance_after: finalBalance,
+        status: 'completed',
+        description: 'Payment settled from wallet',
+        reference_type: 'order_payment',
+        reference_id: order.id,
+        created_by: actorUserId,
+      })
+    }
+
+    await sb.from('wallet_ledger').insert({
+      wallet_id: wallet.id,
+      user_id: order.user_id,
+      entry_type: ledgerEntryType,
+      amount: unlockAmount,
+      balance_before: oldBalance,
+      balance_after: finalBalance,
+      reference_type: 'order',
+      reference_id: order.id,
+      metadata: { reason: ledgerReason },
+    })
+  }
+
+  if (order.status === 'success') {
+    await settleWalletLock()
+    return { order, alreadyProcessed: true }
+  }
 
   await sb.from('payments').update({
     status: 'success',
@@ -2684,51 +2735,7 @@ async function markPaymentSuccess(admin: any, sb: any, userId: string, payment: 
     subscriptionId = newSubscription?.id || null
   }
 
-  const { data: wallet } = await sb.from('wallets').select('id, balance, locked_balance').eq('user_id', order.user_id).maybeSingle()
-  if (wallet) {
-    const locked = Number(wallet.locked_balance || 0)
-    const gateway = String(payment.gateway || '').toLowerCase()
-    if (locked > 0) {
-      const orderAmount = Number(order.amount || 0)
-      const unlockAmount = Math.min(locked, orderAmount)
-      const isWalletGateway = gateway === 'wallet'
-      const oldBalance = Number(wallet.balance || 0)
-      const finalBalance = isWalletGateway ? Math.max(0, oldBalance - unlockAmount) : oldBalance
-      const nextLocked = Math.max(0, locked - unlockAmount)
-
-      await sb.from('wallets').update({
-        balance: finalBalance,
-        locked_balance: nextLocked,
-        updated_at: paidAt,
-      }).eq('id', wallet.id)
-
-      if (isWalletGateway) {
-        await sb.from('transactions').insert({
-          wallet_id: wallet.id,
-          type: 'debit',
-          amount: unlockAmount,
-          balance_after: finalBalance,
-          status: 'completed',
-          description: 'Payment settled from wallet',
-          reference_type: 'order_payment',
-          reference_id: order.id,
-          created_by: actorUserId,
-        })
-      }
-
-      await sb.from('wallet_ledger').insert({
-        wallet_id: wallet.id,
-        user_id: order.user_id,
-        entry_type: gateway === 'wallet' ? 'debit' : 'unlock',
-        amount: unlockAmount,
-        balance_before: oldBalance,
-        balance_after: finalBalance,
-        reference_type: 'order',
-        reference_id: order.id,
-        metadata: { reason: gateway === 'wallet' ? 'payment_success_wallet_debit' : 'payment_success_unlock' },
-      })
-    }
-  }
+  await settleWalletLock()
 
   // Referral flow: user_signup(ref_code) -> map_referrer -> user_purchase -> commission_create -> credit_wallet
   const { data: referral } = await admin

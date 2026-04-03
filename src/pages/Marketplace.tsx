@@ -155,9 +155,10 @@ export default function Marketplace() {
       toast.success('🎉 Payment successful!');
     } catch (error: any) {
       toast.error(error?.message || 'Submission failed');
+    } finally {
       paymentLockRef.current = false;
+      setPaymentSubmitting(false);
     }
-    setPaymentSubmitting(false);
   };
 
   const handleCopy = (text: string, label: string) => {
