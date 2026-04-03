@@ -61,7 +61,7 @@ const actionColors: Record<AuditAction, string> = {
   suspend: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
 };
 
-const LIVE_REFRESH_MS = 8000;
+const LIVE_REFRESH_INTERVAL_MS = 8000;
 
 function toObject(value: unknown): Record<string, unknown> {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -94,7 +94,7 @@ function toStatus(log: AuditLog, metadata: Record<string, unknown>): AuditStatus
   return 'success';
 }
 
-function isInWindow(dateIso: string, range: TimeRange): boolean {
+function isWithinTimeRange(dateIso: string, range: TimeRange): boolean {
   if (range === 'all') return true;
   const now = Date.now();
   const time = new Date(dateIso).getTime();
@@ -134,10 +134,16 @@ export default function AuditLogs() {
   const [statusFilter, setStatusFilter] = useState<'all' | AuditStatus>('all');
   const [dateFilter, setDateFilter] = useState<DateFilter>('all');
   const [selectedLogId, setSelectedLogId] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const fetchLogs = useCallback(async (showLoader = true) => {
     if (showLoader) {
       setLoading(true);
+    } else {
+      if (isRefreshing || loading) {
+        return;
+      }
+      setIsRefreshing(true);
     }
     try {
       const { data, error } = await listAuditLogs({ limit: 500 });
@@ -149,9 +155,11 @@ export default function AuditLogs() {
     } finally {
       if (showLoader) {
         setLoading(false);
+      } else {
+        setIsRefreshing(false);
       }
     }
-  }, []);
+  }, [isRefreshing, loading]);
 
   useEffect(() => {
     fetchLogs();
@@ -160,7 +168,7 @@ export default function AuditLogs() {
   useEffect(() => {
     const interval = window.setInterval(() => {
       fetchLogs(false);
-    }, LIVE_REFRESH_MS);
+    }, LIVE_REFRESH_INTERVAL_MS);
     return () => window.clearInterval(interval);
   }, [fetchLogs]);
 
@@ -187,7 +195,7 @@ export default function AuditLogs() {
   const filteredLogs = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return enrichedLogs.filter((log) => {
-      if (!isInWindow(log.time, timeRange)) return false;
+      if (!isWithinTimeRange(log.time, timeRange)) return false;
       if (!isInDateFilter(log.time, dateFilter)) return false;
       if (roleFilter !== 'all' && log.role !== roleFilter) return false;
       if (actionFilter !== 'all' && log.action !== actionFilter) return false;
@@ -269,17 +277,6 @@ export default function AuditLogs() {
                   <SelectItem value="7d">7d</SelectItem>
                   <SelectItem value="30d">30d</SelectItem>
                   <SelectItem value="all">All</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as 'all' | AuditStatus)}>
-                <SelectTrigger className="w-[140px]">
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Status</SelectItem>
-                  <SelectItem value="success">Success</SelectItem>
-                  <SelectItem value="warning">Warning</SelectItem>
-                  <SelectItem value="error">Error</SelectItem>
                 </SelectContent>
               </Select>
             </div>
