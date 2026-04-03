@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, ShoppingCart, CreditCard, ExternalLink, Download } from 'lucide-react';
 import { MarketplaceHeader } from '@/components/marketplace/MarketplaceHeader';
 import { useMarketplaceProducts } from '@/hooks/useMarketplaceProducts';
+import type { MarketplaceProduct } from '@/hooks/useMarketplaceProducts';
 import { useMarketplaceActions } from '@/hooks/useMarketplaceActions';
 import { useCart } from '@/hooks/useCart';
 import { useAuth } from '@/hooks/useAuth';
@@ -18,6 +19,8 @@ function hasScreenshots(value: unknown): value is { screenshots?: unknown[] } {
   return typeof value === 'object' && value !== null && 'screenshots' in value;
 }
 
+type ProductDetailMeta = MarketplaceProduct & { deleted_at?: string | null; expires_at?: string | null };
+
 export default function ProductDetail() {
   const navigate = useNavigate();
   const { id } = useParams();
@@ -27,7 +30,7 @@ export default function ProductDetail() {
   const { trackPromoClick, addToCart: addToCartServer } = useMarketplaceActions();
 
   const product = useMemo(() => products.find((item) => item.id === id), [products, id]);
-  const productMeta = product as unknown as { deleted_at?: string | null; expires_at?: string | null; status?: string };
+  const productMeta = product as ProductDetailMeta | undefined;
   const isDeleted = Boolean(productMeta?.deleted_at) || String(productMeta?.status || '').toLowerCase() === 'deleted';
   const isExpired = Boolean(productMeta?.expires_at) && new Date(String(productMeta.expires_at)) <= new Date();
   const needsSubscriptionRedirect = !isDeleted && (product?.isAvailable === false || isExpired);
@@ -83,7 +86,7 @@ export default function ProductDetail() {
         <main className="pt-20 px-4 md:px-8 space-y-4">
           <p className="text-sm text-muted-foreground">This product is no longer available.</p>
           <div className="flex gap-2">
-            <Button onClick={() => navigate('/marketplace')}>Go Marketplace</Button>
+            <Button onClick={() => navigate('/marketplace')}>Go to Marketplace</Button>
             <Button variant="outline" onClick={() => navigate('/subscription')}>View Subscription</Button>
           </div>
         </main>
@@ -94,14 +97,14 @@ export default function ProductDetail() {
   const inCart = isInCart(product.id);
   const localizedPrice = formatLocalizedPrice(product.price, product.currency);
   const isBuilding = ['building', 'queued', 'pending'].includes(String(product.build_status || '').toLowerCase());
-  const rawScreenshots = hasScreenshots(product) ? product.screenshots : undefined;
-  const screenshots = (() => {
+  const screenshots = useMemo(() => {
+    const rawScreenshots = hasScreenshots(product) ? product.screenshots : undefined;
     if (Array.isArray(rawScreenshots)) {
       const unique = rawScreenshots.filter((shot: unknown) => typeof shot === 'string' && shot.trim());
       return Array.from(new Set(unique));
     }
     return product.image ? [product.image] : [];
-  })();
+  }, [product]);
 
   const handleBuyNow = () => {
     if (!user) {

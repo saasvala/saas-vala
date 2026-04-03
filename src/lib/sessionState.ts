@@ -32,4 +32,3 @@ export function consumePostLoginRedirect() {
     return null;
   }
 }
-

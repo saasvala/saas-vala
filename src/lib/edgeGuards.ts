@@ -27,11 +27,6 @@ export function getTypoSuggestions(query: string, options: string[], limit = 3) 
     .map((row) => row.item);
 }
 
-export function normalizeLanguage(lang?: string | null) {
-  const value = String(lang || '').trim().toLowerCase();
-  return value || 'en';
-}
-
 export function formatUserTime(iso?: string | null, locale?: string) {
   if (!iso) return '';
   const date = new Date(iso);

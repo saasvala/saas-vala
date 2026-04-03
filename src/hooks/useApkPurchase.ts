@@ -178,16 +178,6 @@ export function useApkPurchase() {
         downloadUrl: `/download/apk/${product.id}?key=${finalLicenseKey}`
       };
     } catch (error: any) {
-      if (paymentId) {
-        try {
-          await marketplaceApi.retryPayment(paymentId);
-        } catch {}
-      }
-      if (transactionId && paymentId) {
-        try {
-          await marketplaceApi.refundPayment(paymentId);
-        } catch {}
-      }
       setProcessing(false);
       inFlightRef.current.delete(lockKey);
       const errorMessage = error.message || 'Purchase failed';

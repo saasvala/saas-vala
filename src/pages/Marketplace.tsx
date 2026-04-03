@@ -34,7 +34,7 @@ import {
   ShoppingCart, CreditCard, Wallet, Loader2, ChevronDown, ChevronUp, Copy, Key, Download
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { formatUserTime, getTypoSuggestions, normalizeLanguage } from '@/lib/edgeGuards';
+import { formatUserTime, getTypoSuggestions } from '@/lib/edgeGuards';
 
 interface Product {
   id: string; title: string; subtitle: string; image: string;
@@ -302,10 +302,18 @@ export default function Marketplace() {
     if (!searchQuery.trim() || filteredProducts.length > 0) return [];
     return getTypoSuggestions(searchQuery.trim(), products.map((p) => p.title));
   }, [searchQuery, filteredProducts.length, products]);
-
   const trendingProducts = useMemo(
     () => filteredProducts.filter((p: any) => p.trending || p.rating >= TRENDING_RATING_THRESHOLD).slice(0, 30),
     [filteredProducts]
+  );
+  const trendingCards = useMemo(
+    () =>
+      trendingProducts.map((product) => ({
+        ...(product as any),
+        language: String((product as any).language || '').trim().toLowerCase() || 'en',
+        createdAtLabel: formatUserTime((product as any).createdAt),
+      })),
+    [trendingProducts],
   );
   const newLaunchProducts = useMemo(() => {
     return [...filteredProducts]
@@ -377,10 +385,10 @@ export default function Marketplace() {
         <section className="py-2">
           <SectionHeader icon="🔥" title="Trending" subtitle="Most demanded products right now" badge="TRENDING" badgeVariant="trending" totalCount={trendingProducts.length} />
           <SectionSlider>
-            {trendingProducts.map((product, i) => (
+            {trendingCards.map((product, i) => (
               <MarketplaceProductCard
                 key={`trending-${product.id}`}
-                product={{ ...(product as any), language: normalizeLanguage((product as any).language), createdAtLabel: formatUserTime((product as any).createdAt) }}
+                product={product}
                 index={i}
                 onBuyNow={handleBuyNow}
                 rank={i + 1}

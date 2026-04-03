@@ -68,12 +68,6 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
 
   const config: RequestInit = { method, headers };
   const cacheKey = method === 'GET' ? `${path}|${JSON.stringify(body || {})}` : '';
-  if (method === 'GET') {
-    const cached = responseCache.get(cacheKey);
-    if (cached && now - cached.ts < API_CACHE_TTL_MS) {
-      if (degradedUntil > now) return cached.data as T;
-    }
-  }
 
   if (method === 'GET' && body) {
     const params = new URLSearchParams();
@@ -102,8 +96,8 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
     const code = errorPayload?.code || data?.code;
     if (res.status === 401 || code === 'TOKEN_EXPIRED') {
       savePreLogoutState(window.location.pathname, window.location.search, window.location.hash);
-      savePostLoginRedirect('/login');
-      if (window.location.pathname !== '/auth') {
+      savePostLoginRedirect(`${window.location.pathname}${window.location.search}${window.location.hash}`);
+      if (window.location.pathname !== '/auth' && window.location.pathname !== '/login') {
         window.location.assign('/login');
       }
     }
