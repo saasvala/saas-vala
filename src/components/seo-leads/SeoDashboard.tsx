@@ -19,6 +19,7 @@ import {
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, AreaChart, Area } from 'recharts';
+import { leadsApi, seoApi } from '@/lib/api';
 
 interface DashboardStats {
   totalPages: number;
@@ -146,54 +147,79 @@ export function SeoDashboard() {
   const runFullSeoScan = async () => {
     setScanning(true);
     toast.info('Starting full SEO scan...');
-    
-    // Simulate scan progress
-    await new Promise(r => setTimeout(r, 2000));
-    toast.success('SEO scan completed!', {
-      description: 'All pages analyzed and meta tags updated.',
-    });
-    setScanning(false);
-    fetchStats();
+
+    try {
+      const result = await seoApi.scan();
+      toast.success('SEO scan completed!', {
+        description: result?.message || 'All pages analyzed and meta tags updated.',
+      });
+      fetchStats();
+    } catch (error) {
+      console.error('SEO scan failed:', error);
+      toast.error('SEO scan failed', {
+        description: 'Please try again.',
+      });
+    } finally {
+      setScanning(false);
+    }
   };
 
   const syncWithGoogle = async () => {
     setSyncing(true);
     toast.info('Syncing with Google Search Console...');
-    
-    await new Promise(r => setTimeout(r, 2000));
-    toast.success('Google sync complete!', {
-      description: 'Sitemap submitted and indexing requested.',
-    });
-    setSyncing(false);
+
+    try {
+      const result = await seoApi.googleSync();
+      toast.success('Google sync complete!', {
+        description: result?.message || 'Sitemap submitted and indexing requested.',
+      });
+    } catch (error) {
+      console.error('Google sync failed:', error);
+      toast.error('Google sync failed', {
+        description: 'Please verify integration settings and retry.',
+      });
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const generateMetaForAll = async () => {
     toast.info('Generating meta tags for all pages...');
-    await new Promise(r => setTimeout(r, 1500));
-    toast.success('Meta tags generated!', {
-      description: 'AI-powered meta tags applied to all pages.',
-    });
+
+    try {
+      const result = await seoApi.generateMeta();
+      toast.success('Meta tags generated!', {
+        description: result?.message || 'AI-powered meta tags applied to all pages.',
+      });
+      fetchStats();
+    } catch (error) {
+      console.error('Meta generation failed:', error);
+      toast.error('Meta generation failed', {
+        description: 'Please try again.',
+      });
+    }
   };
 
   const exportLeads = async () => {
-    const { data } = await supabase.from('leads').select('*');
-    if (!data?.length) {
-      toast.error('No leads to export');
-      return;
+    try {
+      const res = await leadsApi.export();
+      const csv = String(res?.csv || '');
+      if (!csv) {
+        toast.error('No leads to export');
+        return;
+      }
+
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = String(res?.filename || `leads-${new Date().toISOString().split('T')[0]}.csv`);
+      a.click();
+      toast.success('Leads exported!');
+    } catch (error) {
+      console.error('Lead export failed:', error);
+      toast.error('Failed to export leads');
     }
-    
-    const csv = [
-      ['Name', 'Email', 'Phone', 'Company', 'Source', 'Status', 'Created'].join(','),
-      ...data.map(l => [l.name, l.email, l.phone, l.company, l.source, l.status, l.created_at].join(','))
-    ].join('\n');
-    
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `leads-${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
-    toast.success('Leads exported!');
   };
 
   if (loading) {
