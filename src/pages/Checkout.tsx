@@ -24,6 +24,7 @@ export default function Checkout() {
   const [paymentMethod, setPaymentMethod] = useState<'wallet' | 'upi' | 'card' | 'crypto'>('wallet');
   const payInFlightRef = useRef(false);
   const pendingRestoreAttemptedRef = useRef(false);
+  const restoreInFlightRef = useRef(false);
 
   const selected = useMemo(() => {
     const productId = searchParams.get('product_id');
@@ -76,7 +77,8 @@ export default function Checkout() {
   };
 
   const restorePendingPayment = async () => {
-    if (restoring) return;
+    if (restoreInFlightRef.current) return;
+    restoreInFlightRef.current = true;
     setRestoring(true);
     try {
       const raw = sessionStorage.getItem('sv_pending_payment');
@@ -95,6 +97,7 @@ export default function Checkout() {
     } catch {
       toast.error('Failed to restore payment');
     } finally {
+      restoreInFlightRef.current = false;
       setRestoring(false);
     }
   };
