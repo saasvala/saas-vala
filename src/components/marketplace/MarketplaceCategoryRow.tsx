@@ -4,6 +4,7 @@ import { MarketplaceProductCard, ComingSoonCard } from './MarketplaceProductCard
 import { useProductsByCategory } from '@/hooks/useMarketplaceProducts';
 import type { MarketplaceCategory } from '@/data/marketplaceCategories';
 import { useNavigate } from 'react-router-dom';
+import { executeButtonAction, resolveSafeRoute } from '@/lib/buttonEngine';
 
 interface Props {
   category: MarketplaceCategory;
@@ -30,7 +31,13 @@ export function MarketplaceCategoryRow({ category, onBuyNow }: Props) {
           badge={category.badge}
           badgeVariant={category.badgeVariant}
           totalCount={0}
-          onViewAll={() => navigate(categoryPath)}
+          onViewAll={() => {
+            void executeButtonAction<void>({
+              config: { action: 'CATEGORY_CLICK', route: '/category/:macro/:sub/:micro', debounceMs: 150, throttleMs: 200, idempotent: false },
+              run: () => navigate(resolveSafeRoute(categoryPath, '/')),
+              validateResponse: false,
+            });
+          }}
         />
         <SectionSlider>
           <ComingSoonCard label={category.title} />
@@ -48,7 +55,13 @@ export function MarketplaceCategoryRow({ category, onBuyNow }: Props) {
         badge={category.badge}
         badgeVariant={category.badgeVariant}
         totalCount={displayProducts.length}
-        onViewAll={() => navigate(categoryPath)}
+        onViewAll={() => {
+          void executeButtonAction<void>({
+            config: { action: 'CATEGORY_CLICK', route: '/category/:macro/:sub/:micro', debounceMs: 150, throttleMs: 200, idempotent: false },
+            run: () => navigate(resolveSafeRoute(categoryPath, '/')),
+            validateResponse: false,
+          });
+        }}
       />
       <SectionSlider>
         {displayProducts.map((product, i) => (

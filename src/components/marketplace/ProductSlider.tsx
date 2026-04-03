@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
 import * as LucideIcons from 'lucide-react';
+import { executeButtonAction, getButtonInteractionClassName } from '@/lib/buttonEngine';
 
 interface Product {
   id: string;
@@ -84,14 +85,26 @@ export function ProductSlider({ title, products, onBuyNow, onFavorite, onNotify,
   };
 
   const scroll = (direction: 'left' | 'right') => {
-    if (scrollRef.current) {
-      const scrollAmount = scrollRef.current.clientWidth * 0.8;
-      scrollRef.current.scrollBy({
-        left: direction === 'left' ? -scrollAmount : scrollAmount,
-        behavior: 'smooth'
-      });
-      setTimeout(checkScroll, 300);
-    }
+    void executeButtonAction<void>({
+      config: {
+        action: direction === 'left' ? 'SLIDER_LEFT' : 'SLIDER_RIGHT',
+        route: '/marketplace',
+        debounceMs: 150,
+        throttleMs: 200,
+        idempotent: false,
+      },
+      run: () => {
+        if (scrollRef.current) {
+          const scrollAmount = scrollRef.current.clientWidth * 0.8;
+          scrollRef.current.scrollBy({
+            left: direction === 'left' ? -scrollAmount : scrollAmount,
+            behavior: 'smooth'
+          });
+          setTimeout(checkScroll, 200);
+        }
+      },
+      validateResponse: false,
+    });
   };
 
   // Extract category from title
@@ -110,11 +123,12 @@ export function ProductSlider({ title, products, onBuyNow, onFavorite, onNotify,
         <Button
           variant="ghost"
           size="icon"
-          className={cn(
+          className={getButtonInteractionClassName(cn(
             'absolute left-0 top-1/2 -translate-y-1/2 z-10 h-full rounded-none bg-gradient-to-r from-background to-transparent opacity-0 group-hover:opacity-100 transition-opacity',
             !canScrollLeft && 'hidden'
-          )}
+          ))}
           onClick={() => scroll('left')}
+          onTouchStart={() => scroll('left')}
         >
           <ChevronLeft className="h-8 w-8" />
         </Button>
@@ -243,8 +257,21 @@ export function ProductSlider({ title, products, onBuyNow, onFavorite, onNotify,
                         <>
                           <Button
                             size="sm"
-                            className="flex-1 h-10 text-[11px] gap-1.5 bg-yellow-500 hover:bg-yellow-400 text-black font-bold rounded-xl"
-                            onClick={() => onNotify?.(product)}
+                            className={getButtonInteractionClassName("flex-1 h-10 text-[11px] gap-1.5 bg-yellow-500 hover:bg-yellow-400 text-black font-bold rounded-xl")}
+                            onClick={() => {
+                              void executeButtonAction<void>({
+                                config: { action: 'NOTIFY_ME', route: `/product/${encodeURIComponent(product.id)}`, debounceMs: 150, throttleMs: 200, idempotent: true },
+                                run: () => onNotify?.(product),
+                                validateResponse: false,
+                              });
+                            }}
+                            onTouchStart={() => {
+                              void executeButtonAction<void>({
+                                config: { action: 'NOTIFY_ME', route: `/product/${encodeURIComponent(product.id)}`, debounceMs: 150, throttleMs: 200, idempotent: true },
+                                run: () => onNotify?.(product),
+                                validateResponse: false,
+                              });
+                            }}
                           >
                             <Bell className="h-3.5 w-3.5" />
                             NOTIFY ME
@@ -252,8 +279,21 @@ export function ProductSlider({ title, products, onBuyNow, onFavorite, onNotify,
                           <Button
                             size="sm"
                             variant="outline"
-                            className="h-10 w-11 p-0 rounded-xl border-pink-400/40 text-pink-400 hover:bg-pink-500/10"
-                            onClick={() => onFavorite?.(product)}
+                            className={getButtonInteractionClassName("h-10 w-11 p-0 rounded-xl border-pink-400/40 text-pink-400 hover:bg-pink-500/10")}
+                            onClick={() => {
+                              void executeButtonAction<void>({
+                                config: { action: 'FAVORITE', api: '/marketplace/favorite/toggle', debounceMs: 150, throttleMs: 200, idempotent: true },
+                                run: () => onFavorite?.(product),
+                                validateResponse: false,
+                              });
+                            }}
+                            onTouchStart={() => {
+                              void executeButtonAction<void>({
+                                config: { action: 'FAVORITE', api: '/marketplace/favorite/toggle', debounceMs: 150, throttleMs: 200, idempotent: true },
+                                run: () => onFavorite?.(product),
+                                validateResponse: false,
+                              });
+                            }}
                             title="Add to Cart"
                           >
                             <Heart className="h-4 w-4" />
@@ -264,8 +304,23 @@ export function ProductSlider({ title, products, onBuyNow, onFavorite, onNotify,
                           <Button
                             variant="outline"
                             size="sm"
-                            className="flex-1 h-10 text-[11px] gap-1.5 rounded-xl border-border hover:border-primary/50 hover:text-primary font-bold"
-                            onClick={(e) => { e.stopPropagation(); onLiveDemo?.(product); }}
+                            className={getButtonInteractionClassName("flex-1 h-10 text-[11px] gap-1.5 rounded-xl border-border hover:border-primary/50 hover:text-primary font-bold")}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void executeButtonAction<void>({
+                                config: { action: 'VIEW_DETAILS_DEMO', route: `/product/${encodeURIComponent(product.id)}`, debounceMs: 150, throttleMs: 200, idempotent: false },
+                                run: () => onLiveDemo?.(product),
+                                validateResponse: false,
+                              });
+                            }}
+                            onTouchStart={(e) => {
+                              e.stopPropagation();
+                              void executeButtonAction<void>({
+                                config: { action: 'VIEW_DETAILS_DEMO', route: `/product/${encodeURIComponent(product.id)}`, debounceMs: 150, throttleMs: 200, idempotent: false },
+                                run: () => onLiveDemo?.(product),
+                                validateResponse: false,
+                              });
+                            }}
                           >
                             <Play className="h-3.5 w-3.5" />
                             DEMO
@@ -273,16 +328,46 @@ export function ProductSlider({ title, products, onBuyNow, onFavorite, onNotify,
                           <Button
                             size="sm"
                             variant="outline"
-                            className="h-10 w-11 p-0 rounded-xl border-pink-400/40 text-pink-400 hover:bg-pink-500/10"
-                            onClick={(e) => { e.stopPropagation(); onFavorite?.(product); }}
+                            className={getButtonInteractionClassName("h-10 w-11 p-0 rounded-xl border-pink-400/40 text-pink-400 hover:bg-pink-500/10")}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void executeButtonAction<void>({
+                                config: { action: 'FAVORITE', api: '/marketplace/favorite/toggle', debounceMs: 150, throttleMs: 200, idempotent: true },
+                                run: () => onFavorite?.(product),
+                                validateResponse: false,
+                              });
+                            }}
+                            onTouchStart={(e) => {
+                              e.stopPropagation();
+                              void executeButtonAction<void>({
+                                config: { action: 'FAVORITE', api: '/marketplace/favorite/toggle', debounceMs: 150, throttleMs: 200, idempotent: true },
+                                run: () => onFavorite?.(product),
+                                validateResponse: false,
+                              });
+                            }}
                             title="Add to Cart"
                           >
                             <Heart className="h-4 w-4" />
                           </Button>
                           <Button
                             size="sm"
-                            className="flex-1 h-10 text-[11px] gap-1.5 rounded-xl font-black"
-                            onClick={(e) => { e.stopPropagation(); onBuyNow?.(product); }}
+                            className={getButtonInteractionClassName("flex-1 h-10 text-[11px] gap-1.5 rounded-xl font-black")}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void executeButtonAction<void>({
+                                config: { action: 'BUY_NOW', route: '/checkout', api: '/payment/intent', debounceMs: 150, throttleMs: 200, idempotent: true },
+                                run: () => onBuyNow?.(product),
+                                validateResponse: false,
+                              });
+                            }}
+                            onTouchStart={(e) => {
+                              e.stopPropagation();
+                              void executeButtonAction<void>({
+                                config: { action: 'BUY_NOW', route: '/checkout', api: '/payment/intent', debounceMs: 150, throttleMs: 200, idempotent: true },
+                                run: () => onBuyNow?.(product),
+                                validateResponse: false,
+                              });
+                            }}
                           >
                             <ShoppingCart className="h-3.5 w-3.5" />
                             BUY $5
@@ -301,11 +386,12 @@ export function ProductSlider({ title, products, onBuyNow, onFavorite, onNotify,
         <Button
           variant="ghost"
           size="icon"
-          className={cn(
+          className={getButtonInteractionClassName(cn(
             'absolute right-0 top-1/2 -translate-y-1/2 z-10 h-full rounded-none bg-gradient-to-l from-background to-transparent opacity-0 group-hover:opacity-100 transition-opacity',
             !canScrollRight && 'hidden'
-          )}
+          ))}
           onClick={() => scroll('right')}
+          onTouchStart={() => scroll('right')}
         >
           <ChevronRight className="h-8 w-8" />
         </Button>

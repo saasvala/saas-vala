@@ -496,7 +496,7 @@ function AppRoutes() {
         <Route path="/logout" element={<Logout />} />
         <Route path="/unauthorized" element={<Navigate to="/dashboard" replace />} />
         <Route path="/404" element={<NotFound />} />
-        <Route path="*" element={<Navigate to="/marketplace" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Suspense>
   );

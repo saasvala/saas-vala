@@ -18,6 +18,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { formatLocalizedPrice, getCurrencySymbol } from '@/lib/locale';
+import { createPressHandlers, executeButtonAction, getButtonInteractionClassName, resolveSafeRoute } from '@/lib/buttonEngine';
 
 interface MarketplaceProductCardProps {
   product: MarketplaceProduct;
@@ -92,7 +93,11 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
   const handleFavorite = useCallback(async () => {
     if (!user) { toast.error('Sign in to add to favorites'); return; }
     try {
-      const active = await toggleFavoriteServer(product.id, product.title);
+      const active = await executeButtonAction<boolean>({
+        config: { action: 'FAVORITE', api: '/marketplace/favorite/toggle', debounceMs: 150, throttleMs: 200, idempotent: true, retries: 1, retryBackoffMs: 1000 },
+        run: async () => toggleFavoriteServer(product.id, product.title),
+      });
+      if (typeof active !== 'boolean') return;
       setFavorited(active);
       toast.success(active ? '❤️ Added to favorites!' : 'Removed from favorites');
     } catch {
@@ -101,27 +106,47 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
   }, [user, toggleFavoriteServer, product.id, product.title]);
 
   const handleAddToCart = useCallback(async () => {
-    toggleItem({ id: product.id, title: product.title, subtitle: product.subtitle || '', image: product.image || '', price, category: product.category });
-    if (!inCart && user) {
-      try { await addToCartServer(product.id, 1); } catch {}
+    try {
+      await executeButtonAction<void>({
+        config: { action: 'ADD_TO_CART', api: '/marketplace/cart/add', debounceMs: 150, throttleMs: 200, idempotent: true, retries: 1, retryBackoffMs: 1000 },
+        run: async () => {
+          toggleItem({ id: product.id, title: product.title, subtitle: product.subtitle || '', image: product.image || '', price, category: product.category });
+          if (!inCart && user) {
+            await addToCartServer(product.id, 1);
+          }
+        },
+      });
+      toast.success(inCart ? 'Removed from cart' : '🛒 Added to cart!');
+    } catch {
+      toast.error('Cart update failed');
     }
-    toast.success(inCart ? 'Removed from cart' : `🛒 Added to cart!`);
   }, [product, inCart, toggleItem, price, user, addToCartServer]);
 
   const handleNotifyMe = useCallback(() => {
     if (!user) { toast.error('Sign in to get notified'); return; }
-    setNotified(true);
-    toast.success(`🔔 You'll be notified when ${product.title} is ready!`);
+    void executeButtonAction<void>({
+      config: { action: 'NOTIFY_ME', route: `/product/${encodeURIComponent(product.id)}`, debounceMs: 150, throttleMs: 200, idempotent: true },
+      run: () => {
+        setNotified(true);
+        toast.success(`🔔 You'll be notified when ${product.title} is ready!`);
+      },
+    });
   }, [user, product.title]);
 
   const handleDemo = useCallback(() => {
-    const url = getDemoUrl();
-    if (!url) { setFeaturesOpen(true); return; }
-    if (!isIframeable(url)) {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    } else {
-      setDemoOpen(true);
-    }
+    void executeButtonAction<void>({
+      config: { action: 'VIEW_DETAILS_DEMO', route: '/product/:id', debounceMs: 150, throttleMs: 200, idempotent: false },
+      run: () => {
+        const url = getDemoUrl();
+        if (!url) { setFeaturesOpen(true); return; }
+        if (!isIframeable(url)) {
+          window.open(url, '_blank', 'noopener,noreferrer');
+        } else {
+          setDemoOpen(true);
+        }
+      },
+      validateResponse: false,
+    });
   }, [getDemoUrl]);
 
   const handleDownloadApk = useCallback(async () => {
@@ -129,9 +154,20 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
     if (!user) { toast.error('Please sign in to download APK'); return; }
     setDownloadChecking(true);
     try {
-      const { data: licenseRecord } = await supabase
-        .from('license_keys').select('license_key, status, expires_at, meta')
-        .eq('created_by', user.id).eq('status', 'active').limit(50);
+      const licenseRecord = await executeButtonAction<any[]>({
+        config: { action: 'DOWNLOAD_LICENSE_CHECK', api: '/license_keys', debounceMs: 150, throttleMs: 200, idempotent: true, retries: 1, retryBackoffMs: 1000 },
+        run: async () => {
+          const { data } = await supabase
+            .from('license_keys').select('license_key, status, expires_at, meta')
+            .eq('created_by', user.id).eq('status', 'active').limit(50);
+          return data || [];
+        },
+      });
+      if (!licenseRecord) {
+        toast.error('Unable to validate license');
+        setDownloadChecking(false);
+        return;
+      }
       const match = licenseRecord?.find((l: any) => {
         const m = l.meta as any;
         return m?.product_id === product.id || m?.product_title === product.title;
@@ -146,7 +182,15 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
       const isUuid = /^[0-9a-f]{8}-/.test(product.id);
         if (isUuid) {
         try {
-          const data = await apkApi.download(product.id);
+          const data = await executeButtonAction<any>({
+            config: { action: 'DOWNLOAD_APK', api: `/apk/download/${product.id}`, debounceMs: 150, throttleMs: 200, idempotent: true, retries: 1, retryBackoffMs: 1000 },
+            run: async () => apkApi.download(product.id),
+          });
+          if (!data) {
+            toast.error('Download response missing');
+            setDownloadChecking(false);
+            return;
+          }
           if (data?.allowed && (data?.download_url || data?.url)) {
             window.open(data.download_url || data.url, '_blank');
             setDownloadChecking(false);
@@ -199,7 +243,13 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
           border: `1px solid ${CARD_BASE_BORDER}`,
           transition: `transform ${CARD_HOVER_TRANSITION_SECONDS}s ease, box-shadow ${CARD_HOVER_TRANSITION_SECONDS}s ease, border-color ${CARD_HOVER_TRANSITION_SECONDS}s ease`,
         }}
-        onClick={() => navigate(`/product/${encodeURIComponent(product.id)}`)}
+        onClick={() => {
+          void executeButtonAction<void>({
+            config: { action: 'VIEW_DETAILS', route: '/product/:id', debounceMs: 150, throttleMs: 200, idempotent: false },
+            run: () => navigate(resolveSafeRoute(`/product/${encodeURIComponent(product.id)}`, '/')),
+            validateResponse: false,
+          });
+        }}
         onMouseEnter={e => { e.currentTarget.style.transform = `scale(${CARD_HOVER_SCALE})`; e.currentTarget.style.boxShadow = CARD_HOVER_SHADOW; e.currentTarget.style.borderColor = CARD_HOVER_BORDER; }}
         onMouseLeave={e => { e.currentTarget.style.transform = ''; e.currentTarget.style.boxShadow = ''; e.currentTarget.style.borderColor = CARD_BASE_BORDER; }}
       >
@@ -207,23 +257,26 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
           <Button
             size="sm"
             variant="secondary"
-            className="h-6 text-[10px] px-2"
-            onClick={(e) => { e.stopPropagation(); navigate(`/product/${encodeURIComponent(product.id)}`); }}
+            className={getButtonInteractionClassName('h-6 text-[10px] px-2')}
+            onClick={(e) => { e.stopPropagation(); navigate(resolveSafeRoute(`/product/${encodeURIComponent(product.id)}`, '/')); }}
+            onTouchStart={(e) => { e.stopPropagation(); navigate(resolveSafeRoute(`/product/${encodeURIComponent(product.id)}`, '/')); }}
           >
             View
           </Button>
           <Button
             size="sm"
-            className="h-6 text-[10px] px-2"
+            className={getButtonInteractionClassName('h-6 text-[10px] px-2')}
             onClick={(e) => { e.stopPropagation(); onBuyNow(product); }}
+            onTouchStart={(e) => { e.stopPropagation(); onBuyNow(product); }}
           >
             Buy Now
           </Button>
           <Button
             size="sm"
             variant="outline"
-            className="h-6 text-[10px] px-2 border-white/20 text-white"
+            className={getButtonInteractionClassName('h-6 text-[10px] px-2 border-white/20 text-white')}
             onClick={(e) => { e.stopPropagation(); void handleDownloadApk(); }}
+            onTouchStart={(e) => { e.stopPropagation(); void handleDownloadApk(); }}
             disabled={downloadChecking || isPipeline || !apkEnabled}
           >
             Download
@@ -291,40 +344,40 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
         <div className="px-4 pb-4 flex flex-col gap-1.5">
           {isPipeline ? (
             <div className="flex gap-1.5">
-              <Button size="sm" className={cn('flex-1 h-8 text-[10px] font-bold rounded-lg', notified ? 'bg-emerald-600' : 'bg-amber-500 text-black hover:bg-amber-400')} onClick={handleNotifyMe}>
+              <Button size="sm" className={getButtonInteractionClassName(cn('flex-1 h-8 text-[10px] font-bold rounded-lg', notified ? 'bg-emerald-600' : 'bg-amber-500 text-black hover:bg-amber-400'))} {...createPressHandlers(`notify-${product.id}`, handleNotifyMe)}>
                 <Bell style={{ width: 12, height: 12 }} className="mr-1" />{notified ? 'NOTIFIED' : 'NOTIFY ME'}
               </Button>
-              <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => { void handleFavorite(); }}>
+              <Button size="sm" variant="ghost" className={getButtonInteractionClassName('h-8 w-8 p-0')} {...createPressHandlers(`favorite-${product.id}`, () => { void handleFavorite(); })}>
                 <Heart style={{ width: 14, height: 14 }} className={favoriteActive ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
               </Button>
             </div>
           ) : (
             <>
               <div className="flex gap-1.5">
-                <Button size="sm" variant="outline" className="flex-1 h-8 text-[10px] font-bold rounded-lg border-white/10 text-foreground/70 hover:border-white/20" onClick={(e) => { e.stopPropagation(); handleDemo(); }}>
-                  <Play style={{ width: 11, height: 11 }} className="mr-1" />{hasDemoAvailable ? 'DEMO' : 'VIEW'}
-                </Button>
-                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); void handleFavorite(); }}>
-                  <Heart style={{ width: 14, height: 14 }} className={favoriteActive ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
-                </Button>
-                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); void handleAddToCart(); }}>
-                  <ShoppingCart style={{ width: 14, height: 14 }} className={inCart ? 'text-primary' : 'text-muted-foreground'} />
-                </Button>
-              </div>
-              <Button size="sm" className="w-full h-9 text-[11px] font-black rounded-lg text-white border-0" style={{ background: 'linear-gradient(90deg,#2563EB,#1D4ED8)' }} onClick={(e) => { e.stopPropagation(); onBuyNow(product); }}>
-                <Package style={{ width: 13, height: 13 }} className="mr-1" /> BUY NOW — {localizedPrice}
-              </Button>
+                 <Button size="sm" variant="outline" className={getButtonInteractionClassName('flex-1 h-8 text-[10px] font-bold rounded-lg border-white/10 text-foreground/70 hover:border-white/20')} onClick={(e) => { e.stopPropagation(); handleDemo(); }} onTouchStart={(e) => { e.stopPropagation(); handleDemo(); }}>
+                   <Play style={{ width: 11, height: 11 }} className="mr-1" />{hasDemoAvailable ? 'DEMO' : 'VIEW'}
+                 </Button>
+                 <Button size="sm" variant="ghost" className={getButtonInteractionClassName('h-8 w-8 p-0')} onClick={(e) => { e.stopPropagation(); void handleFavorite(); }} onTouchStart={(e) => { e.stopPropagation(); void handleFavorite(); }}>
+                   <Heart style={{ width: 14, height: 14 }} className={favoriteActive ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
+                 </Button>
+                 <Button size="sm" variant="ghost" className={getButtonInteractionClassName('h-8 w-8 p-0')} onClick={(e) => { e.stopPropagation(); void handleAddToCart(); }} onTouchStart={(e) => { e.stopPropagation(); void handleAddToCart(); }}>
+                   <ShoppingCart style={{ width: 14, height: 14 }} className={inCart ? 'text-primary' : 'text-muted-foreground'} />
+                 </Button>
+               </div>
+               <Button size="sm" className={getButtonInteractionClassName('w-full h-9 text-[11px] font-black rounded-lg text-white border-0')} style={{ background: 'linear-gradient(90deg,#2563EB,#1D4ED8)' }} onClick={(e) => { e.stopPropagation(); onBuyNow(product); }} onTouchStart={(e) => { e.stopPropagation(); onBuyNow(product); }}>
+                 <Package style={{ width: 13, height: 13 }} className="mr-1" /> BUY NOW — {localizedPrice}
+               </Button>
             </>
           )}
           <div className="flex gap-1.5">
             {apkEnabled && (
-              <Button size="sm" variant="outline" className="flex-1 h-7 text-[10px] font-bold rounded-lg text-white border-0" style={{ background: 'linear-gradient(90deg,#7C3AED,#6D28D9)' }} onClick={handleDownloadApk} disabled={downloadChecking || isPipeline}>
-                <Download style={{ width: 11, height: 11 }} className="mr-1" />{downloadButtonText}
-              </Button>
-            )}
-            <Button size="sm" variant="outline" className={cn('h-7 text-[10px] font-bold rounded-lg border-white/10 text-muted-foreground', apkEnabled ? 'flex-1' : 'w-full')} onClick={(e) => { e.stopPropagation(); setFeaturesOpen(true); }}>
-              <Info style={{ width: 11, height: 11 }} className="mr-1" /> FEATURES
-            </Button>
+               <Button size="sm" variant="outline" className={getButtonInteractionClassName('flex-1 h-7 text-[10px] font-bold rounded-lg text-white border-0')} style={{ background: 'linear-gradient(90deg,#7C3AED,#6D28D9)' }} onClick={handleDownloadApk} onTouchStart={() => { void handleDownloadApk(); }} disabled={downloadChecking || isPipeline}>
+                 <Download style={{ width: 11, height: 11 }} className="mr-1" />{downloadButtonText}
+               </Button>
+             )}
+             <Button size="sm" variant="outline" className={getButtonInteractionClassName(cn('h-7 text-[10px] font-bold rounded-lg border-white/10 text-muted-foreground', apkEnabled ? 'flex-1' : 'w-full'))} onClick={(e) => { e.stopPropagation(); setFeaturesOpen(true); }} onTouchStart={(e) => { e.stopPropagation(); setFeaturesOpen(true); }}>
+               <Info style={{ width: 11, height: 11 }} className="mr-1" /> FEATURES
+             </Button>
           </div>
         </div>
       </div>

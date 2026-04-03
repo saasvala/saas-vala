@@ -12,6 +12,7 @@ import { apkApi } from '@/lib/api';
 import { formatLocalizedPrice } from '@/lib/locale';
 import { isExpiredSignedUrl } from '@/lib/edgeGuards';
 import { toast } from 'sonner';
+import { executeButtonAction, getButtonInteractionClassName, resolveSafeRoute } from '@/lib/buttonEngine';
 
 
 function hasScreenshots(value: unknown): value is { screenshots?: unknown[] } {
@@ -98,7 +99,11 @@ export default function ProductDetail() {
       navigate('/auth');
       return;
     }
-    navigate(`/checkout?product_id=${encodeURIComponent(product.id)}`);
+    void executeButtonAction<void>({
+      config: { action: 'BUY_NOW', route: '/checkout', api: '/payment/intent', debounceMs: 150, throttleMs: 200, idempotent: true, retries: 1, retryBackoffMs: 1000 },
+      run: () => navigate(`${resolveSafeRoute('/checkout', '/')}` + `?product_id=${encodeURIComponent(product.id)}`),
+      validateResponse: false,
+    });
   };
 
   const handleDownload = async () => {
@@ -112,7 +117,14 @@ export default function ProductDetail() {
       return;
     }
     try {
-      const res = await apkApi.download(product.id);
+      const res = await executeButtonAction<any>({
+        config: { action: 'DOWNLOAD_APK', route: '/product/:id', api: `/apk/download/${product.id}`, debounceMs: 150, throttleMs: 200, idempotent: true, retries: 1, retryBackoffMs: 1000 },
+        run: async () => apkApi.download(product.id),
+      });
+      if (!res) {
+        toast.error('Download failed');
+        return;
+      }
       if (res?.allowed && (res?.download_url || res?.url)) {
         const link = String(res.download_url || res.url || '');
         if (!link || isExpiredSignedUrl(link)) {
@@ -132,7 +144,7 @@ export default function ProductDetail() {
     <div className="min-h-screen bg-background">
       <MarketplaceHeader />
       <main className="pt-20 pb-10 px-4 md:px-8 max-w-4xl mx-auto space-y-6">
-        <Button variant="outline" onClick={() => navigate(-1)}>
+        <Button variant="outline" className={getButtonInteractionClassName()} onClick={() => navigate(-1)} onTouchStart={() => navigate(-1)}>
           <ArrowLeft className="h-4 w-4 mr-2" /> Back
         </Button>
 
@@ -167,41 +179,72 @@ export default function ProductDetail() {
           <div className="flex flex-wrap gap-3 pt-2">
             <Button
               variant={inCart ? 'secondary' : 'outline'}
+              className={getButtonInteractionClassName()}
               onClick={async () => {
-                toggleItem({
-                  id: product.id,
-                  title: product.title,
-                  subtitle: product.subtitle || '',
-                  image: product.image || '',
-                  price: product.price,
-                  category: product.category || 'Software',
-                });
-                if (!inCart && user) {
-                  try { await addToCartServer(product.id, 1); } catch {}
+                try {
+                  await executeButtonAction<void>({
+                    config: { action: 'ADD_TO_CART', route: '/cart', api: '/marketplace/cart/add', debounceMs: 150, throttleMs: 200, idempotent: true, retries: 1, retryBackoffMs: 1000 },
+                    run: async () => {
+                      toggleItem({
+                        id: product.id,
+                        title: product.title,
+                        subtitle: product.subtitle || '',
+                        image: product.image || '',
+                        price: product.price,
+                        category: product.category || 'Software',
+                      });
+                      if (!inCart && user) {
+                        await addToCartServer(product.id, 1);
+                      }
+                    },
+                  });
+                } catch {
+                  toast.error('Cart update failed');
                 }
+              }}
+              onTouchStart={() => {
+                void executeButtonAction<void>({
+                  config: { action: 'ADD_TO_CART', route: '/cart', api: '/marketplace/cart/add', debounceMs: 150, throttleMs: 200, idempotent: true, retries: 1, retryBackoffMs: 1000 },
+                  run: async () => {
+                    toggleItem({
+                      id: product.id,
+                      title: product.title,
+                      subtitle: product.subtitle || '',
+                      image: product.image || '',
+                      price: product.price,
+                      category: product.category || 'Software',
+                    });
+                    if (!inCart && user) {
+                      await addToCartServer(product.id, 1);
+                    }
+                  },
+                });
               }}
             >
               <ShoppingCart className="h-4 w-4 mr-2" />
               {inCart ? 'Remove from Cart' : 'Add to Cart'}
             </Button>
-            <Button onClick={handleBuyNow}>
+            <Button className={getButtonInteractionClassName()} onClick={handleBuyNow} onTouchStart={handleBuyNow}>
               <CreditCard className="h-4 w-4 mr-2" /> Buy Now
             </Button>
-            <Button variant="secondary" onClick={handleDownload} disabled={!product.apk_enabled}>
+            <Button variant="secondary" className={getButtonInteractionClassName()} onClick={handleDownload} onTouchStart={() => { void handleDownload(); }} disabled={!product.apk_enabled}>
               <Download className="h-4 w-4 mr-2" /> Download APK
             </Button>
             {!!product.demo_url && (
-              <Button variant="outline" onClick={() => {
+              <Button variant="outline" className={getButtonInteractionClassName()} onClick={() => {
+                if (!product.demo_url) return;
+                window.open(product.demo_url, '_blank', 'noopener,noreferrer');
+              }} onTouchStart={() => {
                 if (!product.demo_url) return;
                 window.open(product.demo_url, '_blank', 'noopener,noreferrer');
               }}>
                 <PlayCircle className="h-4 w-4 mr-2" /> Live Demo
               </Button>
             )}
-            <Button variant="outline" onClick={() => setPreviewMode((v) => !v)}>
+            <Button variant="outline" className={getButtonInteractionClassName()} onClick={() => setPreviewMode((v) => !v)} onTouchStart={() => setPreviewMode((v) => !v)}>
               Preview Mode {previewMode ? 'On' : 'Off'}
             </Button>
-            <Button variant="ghost" onClick={() => navigate(`/app/${product.id}`)}>
+            <Button variant="ghost" className={getButtonInteractionClassName()} onClick={() => navigate(resolveSafeRoute(`/app/${product.id}`, '/'))} onTouchStart={() => navigate(resolveSafeRoute(`/app/${product.id}`, '/'))}>
               <ExternalLink className="h-4 w-4 mr-2" /> Access
             </Button>
           </div>
