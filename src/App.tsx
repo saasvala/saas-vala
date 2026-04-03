@@ -345,6 +345,7 @@ function AppRoutes() {
         <Route path="/servers/:id/logs" element={<AuthGuard><ServerLogsPage /></AuthGuard>} />
         <Route path="/servers/:id/deploy" element={<AuthGuard><ServerDeployPage /></AuthGuard>} />
         <Route path="/servers/:id/dns" element={<AuthGuard><ServerDnsPage /></AuthGuard>} />
+        <Route path="/servers/:id/hosting" element={<AuthGuard><ServerSettingsPage /></AuthGuard>} />
         <Route path="/servers/:id/git" element={<AuthGuard><ServerGitPage /></AuthGuard>} />
         <Route path="/servers/:id/settings" element={<AuthGuard><ServerSettingsPage /></AuthGuard>} />
         <Route path="/admin/servers/hosting" element={<AuthGuard><RoleGuard role="super_admin"><ServerSettingsPage /></RoleGuard></AuthGuard>} />

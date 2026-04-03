@@ -53,10 +53,11 @@ function generateAgentToken() {
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-async function sha256Hex(value: string) {
-  const bytes = new TextEncoder().encode(value)
-  const digest = await crypto.subtle.digest('SHA-256', bytes)
-  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('')
+function generateSubdomainSuffix(length = 6) {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
+  const bytes = new Uint8Array(length)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes).map((b) => chars[b % chars.length]).join('')
 }
 
 function isValidIpAddress(input: string) {
@@ -2576,8 +2577,12 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     }
 
     const plainAgentToken = (parsed.data.agent_token || '').trim() || generateAgentToken()
-    const hashedAgentToken = await sha256Hex(plainAgentToken)
-    const subdomain = `${name.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Math.random().toString(36).substring(2, 6)}`
+    const baseSubdomain = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '') || 'server'
+    const subdomain = `${baseSubdomain}-${generateSubdomainSuffix(6)}`
     const provider = sanitizeTextInput(parsed.data.provider || '')
     const region = sanitizeTextInput(parsed.data.region || '')
 
@@ -2587,7 +2592,7 @@ async function handleServers(method: string, pathParts: string[], body: any, use
       server_type: type,
       ip_address: ipAddress || null,
       agent_url: parsed.data.agent_url || null,
-      agent_token: hashedAgentToken,
+      agent_token: plainAgentToken,
       status: 'stopped',
       health_status: 'pending',
       git_branch: 'main',
@@ -2607,7 +2612,7 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     return ok({
       ...data,
       agent_token: plainAgentToken,
-      token_encrypted: true,
+      token_generated: !(parsed.data.agent_token || '').trim(),
     }, 201)
   }
 
@@ -2661,19 +2666,22 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
 
     const action = sanitizeTextInput(parsed.data.action, 64).toLowerCase()
-    const actionMap: Record<string, { command: string; activity: string }> = {
-      'ai_scan_server': { command: 'status', activity: 'ai_scan' },
-      'ai_scan': { command: 'status', activity: 'ai_scan' },
-      'fix_issues': { command: 'service_status', activity: 'ai_fix' },
-      'auto_fix': { command: 'service_status', activity: 'ai_fix' },
-      'deploy_project': { command: 'deploy', activity: 'ai_deploy' },
-      'deploy': { command: 'deploy', activity: 'ai_deploy' },
-      'restart_server': { command: 'restart', activity: 'ai_restart' },
-      'restart': { command: 'restart', activity: 'ai_restart' },
-      'security_scan': { command: 'firewall_status', activity: 'ai_security_scan' },
-      'optimize': { command: 'cpu_usage', activity: 'ai_optimize' },
+    const aliasMap: Record<string, string> = {
+      ai_scan_server: 'ai_scan',
+      auto_fix: 'fix_issues',
+      deploy_project: 'deploy',
+      restart_server: 'restart',
     }
-    const mapped = actionMap[action]
+    const canonicalAction = aliasMap[action] || action
+    const actionMap: Record<string, { command: string; activity: string }> = {
+      ai_scan: { command: 'status', activity: 'ai_scan' },
+      fix_issues: { command: 'service_status', activity: 'ai_fix' },
+      deploy: { command: 'deploy', activity: 'ai_deploy' },
+      restart: { command: 'restart', activity: 'ai_restart' },
+      security_scan: { command: 'firewall_status', activity: 'ai_security_scan' },
+      optimize: { command: 'cpu_usage', activity: 'ai_optimize' },
+    }
+    const mapped = actionMap[canonicalAction]
     if (!mapped) return fail('Unsupported AI action', 422, 'VALIDATION_ERROR')
 
     const { data, error } = await sb.functions.invoke('server-agent', {
@@ -2686,11 +2694,12 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     })
     if (error || !data?.success) return fail(error?.message || data?.error || 'AI action failed', 400, 'AI_ACTION_FAILED')
 
-    await sb.from('ai_logs').insert({
+    const { error: aiLogError } = await sb.from('ai_logs').insert({
       server_id: parsed.data.server_id,
       action: mapped.activity,
       result: JSON.stringify(data),
     })
+    if (aiLogError) return fail(aiLogError.message, 400, 'DB_ERROR')
     await logActivity(admin, 'server', parsed.data.server_id, mapped.activity, userId, { action })
 
     return ok({

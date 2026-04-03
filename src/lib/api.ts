@@ -190,10 +190,10 @@ export const keysApi = {
 
 // ===================== SERVERS =====================
 export const serversApi = {
-  list: () => apiCall('GET', 'projects'),
+  list: () => apiCall('GET', 'servers/list'),
   get: (id: string) => apiCall('GET', `servers/${id}`),
   status: (params?: { page?: number; limit?: number }) => apiCall('GET', 'servers/status', params),
-  create: (data: any) => apiCall('POST', 'projects', data),
+  create: (data: any) => apiCall('POST', 'server/add', data),
   start: (server_id: string) => apiCall('POST', 'servers/start', { server_id }),
   stop: (server_id: string) => apiCall('POST', 'servers/stop', { server_id }),
   restart: (server_id: string) => apiCall('POST', 'servers/restart', { server_id }),
