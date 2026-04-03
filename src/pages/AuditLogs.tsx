@@ -352,15 +352,16 @@ export default function AuditLogs() {
     const rows = filteredLogs.slice(0, 200);
     const htmlRows = rows.map((row) => `
       <tr>
-        <td>${new Date(row.time).toLocaleString()}</td>
-        <td>${row.role}</td>
-        <td>${row.action}</td>
-        <td>${row.module}</td>
-        <td>${row.status}</td>
+        <td>${escapeHtml(new Date(row.time).toLocaleString())}</td>
+        <td>${escapeHtml(row.role)}</td>
+        <td>${escapeHtml(row.action)}</td>
+        <td>${escapeHtml(row.module)}</td>
+        <td>${escapeHtml(row.status)}</td>
         <td>${escapeHtml(row.message || '')}</td>
       </tr>
     `).join('');
 
+    toast.info('Opening printable report in a new window');
     const win = window.open('', '_blank', 'noopener,noreferrer,width=1200,height=900');
     if (!win) {
       toast.error('Popup blocked; cannot open PDF report');
@@ -368,9 +369,9 @@ export default function AuditLogs() {
     }
 
     win.document.write(`
-      <html>
+      <html lang="en">
         <head><title>Audit Logs Report</title></head>
-        <body style="font-family:Arial,sans-serif;padding:20px;">
+        <body aria-label="Audit Logs Printable Report" style="font-family:Arial,sans-serif;padding:20px;">
           <h2>Audit Logs Report</h2>
           <p>Generated: ${new Date().toLocaleString()}</p>
           <table border="1" cellspacing="0" cellpadding="6" style="width:100%;border-collapse:collapse;font-size:12px;">
@@ -424,11 +425,23 @@ export default function AuditLogs() {
     });
 
     const csv = buildCsv(shareRows.slice(0, 1000));
-    const dataUrl = `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
-    const text = encodeURIComponent(`Audit logs export: ${dataUrl}`);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const fileUrl = URL.createObjectURL(blob);
+    const download = document.createElement('a');
+    download.href = fileUrl;
+    download.download = `audit-share-${new Date().toISOString().split('T')[0]}.csv`;
+    download.click();
+    URL.revokeObjectURL(fileUrl);
+
+    const shareTarget = new URL('/audit-logs', window.location.origin);
+    if (moduleFilter !== 'all') shareTarget.searchParams.set('table', moduleFilter);
+    if (actionFilter !== 'all') shareTarget.searchParams.set('action', actionFilter);
+    if (userFilter.trim()) shareTarget.searchParams.set('user', userFilter.trim());
+    if (searchQuery.trim()) shareTarget.searchParams.set('q', searchQuery.trim());
+    const text = encodeURIComponent(`Audit logs exported. Review link: ${shareTarget.toString()}`);
     const shareUrl = platform === 'whatsapp'
       ? `https://wa.me/?text=${text}`
-      : `https://t.me/share/url?url=${encodeURIComponent(dataUrl)}&text=${encodeURIComponent('Audit logs export')}`;
+      : `https://t.me/share/url?url=${encodeURIComponent(shareTarget.toString())}&text=${encodeURIComponent('Audit logs exported')}`;
     window.open(shareUrl, '_blank', 'noopener,noreferrer');
     toast.success(`Share link opened on ${platform === 'whatsapp' ? 'WhatsApp' : 'Telegram'}`);
   };
