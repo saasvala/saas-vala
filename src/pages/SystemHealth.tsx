@@ -156,7 +156,13 @@ export default function SystemHealth() {
     if (!loading && !hasLoadedRef.current) {
       hasLoadedRef.current = true;
     }
-    if (!loading && hasLoadedRef.current && hasErrors && !hadErrorsRef.current) {
+    const shouldShowFirstErrorAlert =
+      !loading
+      && hasLoadedRef.current
+      && hasErrors
+      && !hadErrorsRef.current;
+
+    if (shouldShowFirstErrorAlert) {
       toast.error('System health alert: one or more modules are in error state');
     }
     hadErrorsRef.current = hasErrors;
