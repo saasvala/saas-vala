@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, createContext, useContext, ReactNode } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
+import { writeAuditEvent } from '@/observability/auditClient';
 
 type AppRole = 'super_admin' | 'reseller';
 
@@ -47,6 +48,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
         if (!isMounted) return;
+
+        const actorId = session?.user?.id ?? null;
+        if (event === 'SIGNED_IN') {
+          void writeAuditEvent({
+            eventCategory: 'AUTH',
+            eventType: 'login',
+            action: 'login',
+            actorId,
+            targetTable: 'auth',
+            targetId: actorId,
+            metadata: { event },
+            ingestSource: 'auth_hook',
+          });
+        } else if (event === 'SIGNED_OUT') {
+          void writeAuditEvent({
+            eventCategory: 'AUTH',
+            eventType: 'logout',
+            action: 'logout',
+            actorId,
+            targetTable: 'auth',
+            targetId: actorId,
+            metadata: { event },
+            ingestSource: 'auth_hook',
+          });
+        }
         
         setSession(session);
         setUser(session?.user ?? null);
@@ -176,6 +202,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = async (email: string, password: string) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      void writeAuditEvent({
+        eventCategory: 'AUTH',
+        eventType: 'failed_login',
+        action: 'read',
+        targetTable: 'auth',
+        targetId: null,
+        metadata: { email, message: error.message },
+        ingestSource: 'auth_hook',
+        isSystem: true,
+      });
+    }
 
     // Safety net: if onAuthStateChange is delayed/missed, set state from returned session.
     if (!error) {

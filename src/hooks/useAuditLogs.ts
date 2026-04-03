@@ -1,21 +1,24 @@
 import { useState, useEffect } from 'react';
-import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import type { Json } from '@/integrations/supabase/types';
+import { listAuditLogs, writeAuditEvent, type AuditEventCategory } from '@/observability/auditClient';
 
-type AuditAction = 'create' | 'read' | 'update' | 'delete' | 'login' | 'logout' | 'suspend' | 'activate';
+type LegacyAuditAction = 'create' | 'read' | 'update' | 'delete' | 'login' | 'logout' | 'suspend' | 'activate';
 
 export interface AuditLog {
   id: string;
-  user_id: string | null;
-  action: AuditAction;
-  table_name: string;
-  record_id: string | null;
+  actor_id: string | null;
+  action: LegacyAuditAction;
+  event_category: AuditEventCategory;
+  event_type: string;
+  target_table: string | null;
+  target_id: string | null;
+  metadata: Json;
   old_data: Json | null;
   new_data: Json | null;
   ip_address: string | null;
   user_agent: string | null;
-  created_at: string;
+  occurred_at: string;
 }
 
 export function useAuditLogs() {
@@ -23,36 +26,21 @@ export function useAuditLogs() {
   const [loading, setLoading] = useState(true);
 
   const fetchLogs = async (filters?: {
-    userId?: string;
+    actorId?: string;
     tableName?: string;
-    action?: AuditAction;
-    startDate?: string;
-    endDate?: string;
+    eventCategory?: AuditEventCategory;
+    eventType?: string;
+    search?: string;
   }) => {
     setLoading(true);
-    let query = supabase
-      .from('audit_logs')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(500);
-
-    if (filters?.userId) {
-      query = query.eq('user_id', filters.userId);
-    }
-    if (filters?.tableName) {
-      query = query.eq('table_name', filters.tableName);
-    }
-    if (filters?.action) {
-      query = query.eq('action', filters.action);
-    }
-    if (filters?.startDate) {
-      query = query.gte('created_at', filters.startDate);
-    }
-    if (filters?.endDate) {
-      query = query.lte('created_at', filters.endDate);
-    }
-
-    const { data, error } = await query;
+    const { data, error } = await listAuditLogs({
+      limit: 500,
+      actorId: filters?.actorId,
+      targetTable: filters?.tableName,
+      eventCategory: filters?.eventCategory,
+      eventType: filters?.eventType,
+      search: filters?.search,
+    });
 
     if (error) {
       toast.error('Failed to fetch audit logs');
@@ -64,41 +52,39 @@ export function useAuditLogs() {
   };
 
   const logAction = async (
-    action: AuditAction,
+    action: LegacyAuditAction,
     tableName: string,
     recordId?: string,
     oldData?: Record<string, unknown>,
     newData?: Record<string, unknown>
   ) => {
-    const { data: userData } = await supabase.auth.getUser();
-    
-    const { error } = await supabase
-      .from('audit_logs')
-      .insert({
-        user_id: userData.user?.id,
-        action,
-        table_name: tableName,
-        record_id: recordId,
-        old_data: oldData as Json,
-        new_data: newData as Json,
-        user_agent: navigator.userAgent
-      });
-
-    if (error) {
-      console.error('Failed to log action:', error);
-    }
+    const eventType = `${action}_${tableName}`;
+    await writeAuditEvent({
+      eventCategory: action === 'login' || action === 'logout' ? 'AUTH' : 'CRUD',
+      eventType,
+      action,
+      targetTable: tableName,
+      targetId: recordId ?? null,
+      metadata: {
+        old_data: oldData ?? null,
+        new_data: newData ?? null,
+      },
+      ingestSource: 'hook',
+    });
   };
 
   const exportLogs = () => {
     const csv = [
-      ['ID', 'User ID', 'Action', 'Table', 'Record ID', 'Created At'].join(','),
+      ['ID', 'Actor ID', 'Category', 'Event', 'Action', 'Table', 'Target ID', 'Occurred At'].join(','),
       ...logs.map(log => [
         log.id,
-        log.user_id || '',
+        log.actor_id || '',
+        log.event_category || '',
+        log.event_type || '',
         log.action,
-        log.table_name,
-        log.record_id || '',
-        log.created_at
+        log.target_table || '',
+        log.target_id || '',
+        log.occurred_at
       ].join(','))
     ].join('\n');
 

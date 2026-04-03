@@ -779,36 +779,85 @@ export type Database = {
       audit_logs: {
         Row: {
           action: Database["public"]["Enums"]["audit_action"]
+          actor_id: string | null
           created_at: string | null
+          entity: string | null
+          entity_id: string | null
+          event_category: string
+          event_type: string
           id: string
+          ingest_source: string
+          integrity_hash: string | null
+          integrity_prev_hash: string | null
+          integrity_version: number
           ip_address: string | null
+          is_system: boolean
+          meta: Json | null
+          metadata: Json
           new_data: Json | null
+          occurred_at: string
           old_data: Json | null
           record_id: string | null
+          table_name: string
+          target_id: string | null
+          target_table: string | null
+          ts: string | null
           table_name: string
           user_agent: string | null
           user_id: string | null
         }
         Insert: {
           action: Database["public"]["Enums"]["audit_action"]
+          actor_id?: string | null
           created_at?: string | null
+          entity?: string | null
+          entity_id?: string | null
+          event_category?: string
+          event_type?: string
           id?: string
+          ingest_source?: string
+          integrity_hash?: string | null
+          integrity_prev_hash?: string | null
+          integrity_version?: number
           ip_address?: string | null
+          is_system?: boolean
+          meta?: Json | null
+          metadata?: Json
           new_data?: Json | null
+          occurred_at?: string
           old_data?: Json | null
           record_id?: string | null
+          target_id?: string | null
+          target_table?: string | null
+          ts?: string | null
           table_name: string
           user_agent?: string | null
           user_id?: string | null
         }
         Update: {
           action?: Database["public"]["Enums"]["audit_action"]
+          actor_id?: string | null
           created_at?: string | null
+          entity?: string | null
+          entity_id?: string | null
+          event_category?: string
+          event_type?: string
           id?: string
+          ingest_source?: string
+          integrity_hash?: string | null
+          integrity_prev_hash?: string | null
+          integrity_version?: number
           ip_address?: string | null
+          is_system?: boolean
+          meta?: Json | null
+          metadata?: Json
           new_data?: Json | null
+          occurred_at?: string
           old_data?: Json | null
           record_id?: string | null
+          target_id?: string | null
+          target_table?: string | null
+          ts?: string | null
           table_name?: string
           user_agent?: string | null
           user_id?: string | null

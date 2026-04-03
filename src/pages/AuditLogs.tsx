@@ -27,11 +27,6 @@ import {
 import {
   Search,
   FileText,
-  User,
-  Package,
-  Key,
-  Server,
-  CreditCard,
   RefreshCw,
   Loader2,
   Eye,
@@ -39,12 +34,23 @@ import {
   Calendar,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { listAuditLogs, type AuditEventCategory } from '@/observability/auditClient';
 import type { Database } from '@/integrations/supabase/types';
 
 type AuditLog = Database['public']['Tables']['audit_logs']['Row'];
 type AuditAction = Database['public']['Enums']['audit_action'];
+
+const categoryColors: Record<AuditEventCategory, string> = {
+  AUTH: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
+  CRUD: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+  SYSTEM: 'bg-slate-500/20 text-slate-400 border-slate-500/30',
+  API: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  FILE: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+  SECURITY: 'bg-red-500/20 text-red-400 border-red-500/30',
+  PAYMENT: 'bg-violet-500/20 text-violet-400 border-violet-500/30',
+  BACKGROUND: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+};
 
 const actionColors: Record<AuditAction, string> = {
   create: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
@@ -57,41 +63,25 @@ const actionColors: Record<AuditAction, string> = {
   suspend: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
 };
 
-const tableIcons: Record<string, React.ComponentType<{ className?: string }>> = {
-  products: Package,
-  license_keys: Key,
-  servers: Server,
-  transactions: CreditCard,
-  profiles: User,
-};
-
 export default function AuditLogs() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [actionFilter, setActionFilter] = useState<AuditAction | 'all'>('all');
+  const [categoryFilter, setCategoryFilter] = useState<AuditEventCategory | 'all'>('all');
   const [tableFilter, setTableFilter] = useState<string>('all');
   const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
 
   const fetchLogs = async () => {
     setLoading(true);
     try {
-      let query = supabase
-        .from('audit_logs')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(500);
-
-      if (actionFilter !== 'all') {
-        query = query.eq('action', actionFilter);
-      }
-      if (tableFilter !== 'all') {
-        query = query.eq('table_name', tableFilter);
-      }
-
-      const { data, error } = await query;
+      const { data, error } = await listAuditLogs({
+        limit: 500,
+        eventCategory: categoryFilter === 'all' ? null : categoryFilter,
+        targetTable: tableFilter === 'all' ? null : tableFilter,
+        search: searchQuery || null,
+      });
       if (error) throw error;
-      setLogs(data || []);
+      setLogs((data || []) as AuditLog[]);
     } catch (error) {
       console.error('Error fetching audit logs:', error);
       toast.error('Failed to fetch audit logs');
@@ -102,28 +92,32 @@ export default function AuditLogs() {
 
   useEffect(() => {
     fetchLogs();
-  }, [actionFilter, tableFilter]);
+  }, [categoryFilter, tableFilter]);
 
-  const filteredLogs = logs.filter(log =>
-    log.table_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    log.action.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    log.record_id?.includes(searchQuery)
-  );
+  const filteredLogs = logs.filter((log) => {
+    const table = log.target_table || log.table_name || '';
+    const eventType = log.event_type || '';
+    const targetId = log.target_id || log.record_id || '';
+    return table.toLowerCase().includes(searchQuery.toLowerCase())
+      || eventType.toLowerCase().includes(searchQuery.toLowerCase())
+      || targetId.includes(searchQuery);
+  });
 
-  const uniqueTables = [...new Set(logs.map(l => l.table_name))];
+  const uniqueTables = [...new Set(logs.map((l) => l.target_table || l.table_name || 'system'))];
 
   const exportLogs = () => {
     const csv = [
-      ['ID', 'Table', 'Action', 'Record ID', 'User ID', 'IP Address', 'Created At'].join(','),
-      ...filteredLogs.map(log => [
+      ['ID', 'Category', 'Event Type', 'Action', 'Target Table', 'Target ID', 'Actor ID', 'Occurred At'].join(','),
+      ...filteredLogs.map((log) => [
         log.id,
-        log.table_name,
+        log.event_category || '',
+        log.event_type || '',
         log.action,
-        log.record_id || '',
-        log.user_id || '',
-        log.ip_address || '',
-        log.created_at
-      ].join(','))
+        log.target_table || log.table_name || '',
+        log.target_id || log.record_id || '',
+        log.actor_id || log.user_id || '',
+        log.occurred_at || log.created_at || '',
+      ].join(',')),
     ].join('\n');
 
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -138,14 +132,13 @@ export default function AuditLogs() {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h2 className="font-display text-2xl font-bold text-foreground">
               Audit Logs
             </h2>
             <p className="text-muted-foreground">
-              System-wide activity tracking and compliance records
+              Tamper-evident, append-only system activity logs
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -160,7 +153,6 @@ export default function AuditLogs() {
           </div>
         </div>
 
-        {/* Filters */}
         <div className="glass-card rounded-xl p-4">
           <div className="flex flex-col md:flex-row gap-4 items-start md:items-center">
             <div className="relative flex-1 md:max-w-xs">
@@ -173,25 +165,29 @@ export default function AuditLogs() {
               />
             </div>
             <div className="flex items-center gap-3">
-              <Select value={actionFilter} onValueChange={(v) => setActionFilter(v as AuditAction | 'all')}>
-                <SelectTrigger className="w-[140px]">
-                  <SelectValue placeholder="Action" />
+              <Select value={categoryFilter} onValueChange={(v) => setCategoryFilter(v as AuditEventCategory | 'all')}>
+                <SelectTrigger className="w-[170px]">
+                  <SelectValue placeholder="Category" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Actions</SelectItem>
-                  <SelectItem value="create">Create</SelectItem>
-                  <SelectItem value="update">Update</SelectItem>
-                  <SelectItem value="delete">Delete</SelectItem>
-                  <SelectItem value="login">Login</SelectItem>
+                  <SelectItem value="all">All Categories</SelectItem>
+                  <SelectItem value="AUTH">AUTH</SelectItem>
+                  <SelectItem value="CRUD">CRUD</SelectItem>
+                  <SelectItem value="SYSTEM">SYSTEM</SelectItem>
+                  <SelectItem value="API">API</SelectItem>
+                  <SelectItem value="FILE">FILE</SelectItem>
+                  <SelectItem value="SECURITY">SECURITY</SelectItem>
+                  <SelectItem value="PAYMENT">PAYMENT</SelectItem>
+                  <SelectItem value="BACKGROUND">BACKGROUND</SelectItem>
                 </SelectContent>
               </Select>
               <Select value={tableFilter} onValueChange={setTableFilter}>
-                <SelectTrigger className="w-[160px]">
-                  <SelectValue placeholder="Table" />
+                <SelectTrigger className="w-[170px]">
+                  <SelectValue placeholder="Target Table" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Tables</SelectItem>
-                  {uniqueTables.map(table => (
+                  <SelectItem value="all">All Targets</SelectItem>
+                  {uniqueTables.map((table) => (
                     <SelectItem key={table} value={table}>{table}</SelectItem>
                   ))}
                 </SelectContent>
@@ -200,33 +196,25 @@ export default function AuditLogs() {
           </div>
         </div>
 
-        {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="glass-card rounded-xl p-4 text-center">
             <p className="text-2xl font-bold text-foreground">{logs.length}</p>
             <p className="text-sm text-muted-foreground">Total Logs</p>
           </div>
           <div className="glass-card rounded-xl p-4 text-center">
-            <p className="text-2xl font-bold text-primary">
-              {logs.filter(l => l.action === 'create').length}
-            </p>
-            <p className="text-sm text-muted-foreground">Creates</p>
+            <p className="text-2xl font-bold text-primary">{logs.filter((l) => l.event_category === 'AUTH').length}</p>
+            <p className="text-sm text-muted-foreground">AUTH</p>
           </div>
           <div className="glass-card rounded-xl p-4 text-center">
-            <p className="text-2xl font-bold text-primary">
-              {logs.filter(l => l.action === 'update').length}
-            </p>
-            <p className="text-sm text-muted-foreground">Updates</p>
+            <p className="text-2xl font-bold text-primary">{logs.filter((l) => l.event_category === 'CRUD').length}</p>
+            <p className="text-sm text-muted-foreground">CRUD</p>
           </div>
           <div className="glass-card rounded-xl p-4 text-center">
-            <p className="text-2xl font-bold text-primary">
-              {logs.filter(l => l.action === 'delete').length}
-            </p>
-            <p className="text-sm text-muted-foreground">Deletes</p>
+            <p className="text-2xl font-bold text-primary">{logs.filter((l) => l.event_category === 'API').length}</p>
+            <p className="text-sm text-muted-foreground">API</p>
           </div>
         </div>
 
-        {/* Logs Table */}
         <div className="glass-card rounded-xl overflow-hidden">
           {loading ? (
             <div className="flex items-center justify-center p-12">
@@ -242,50 +230,46 @@ export default function AuditLogs() {
             <Table>
               <TableHeader>
                 <TableRow className="border-border hover:bg-muted/50">
-                  <TableHead className="text-muted-foreground">Table</TableHead>
+                  <TableHead className="text-muted-foreground">Category</TableHead>
+                  <TableHead className="text-muted-foreground">Event</TableHead>
                   <TableHead className="text-muted-foreground">Action</TableHead>
-                  <TableHead className="text-muted-foreground">Record ID</TableHead>
-                  <TableHead className="text-muted-foreground">User</TableHead>
-                  <TableHead className="text-muted-foreground">IP Address</TableHead>
+                  <TableHead className="text-muted-foreground">Target</TableHead>
+                  <TableHead className="text-muted-foreground">Actor</TableHead>
                   <TableHead className="text-muted-foreground">Timestamp</TableHead>
                   <TableHead className="text-muted-foreground text-right">Details</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredLogs.slice(0, 100).map((log) => {
-                  const Icon = tableIcons[log.table_name] || FileText;
+                  const category = (log.event_category || 'SYSTEM') as AuditEventCategory;
+                  const action = log.action;
                   return (
                     <TableRow key={log.id} className="border-border hover:bg-muted/30">
                       <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Icon className="h-4 w-4 text-muted-foreground" />
-                          <span className="font-medium text-foreground">{log.table_name}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className={cn('uppercase text-xs', actionColors[log.action])}>
-                          {log.action}
+                        <Badge variant="outline" className={cn('uppercase text-xs', categoryColors[category])}>
+                          {category}
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <span className="font-mono text-xs text-muted-foreground">
-                          {log.record_id?.slice(0, 8)}...
-                        </span>
+                        <span className="font-medium text-foreground">{log.event_type || 'unknown'}</span>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={cn('uppercase text-xs', actionColors[action])}>
+                          {action}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <span className="font-medium text-foreground">{log.target_table || log.table_name || 'system'}</span>
                       </TableCell>
                       <TableCell>
                         <span className="font-mono text-xs text-muted-foreground">
-                          {log.user_id?.slice(0, 8) || 'System'}...
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-xs text-muted-foreground">
-                          {log.ip_address || 'N/A'}
+                          {(log.actor_id || log.user_id || 'System').slice(0, 8)}...
                         </span>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1 text-xs text-muted-foreground">
                           <Calendar className="h-3 w-3" />
-                          {new Date(log.created_at || '').toLocaleString()}
+                          {new Date(log.occurred_at || log.created_at || '').toLocaleString()}
                         </div>
                       </TableCell>
                       <TableCell className="text-right">
@@ -306,7 +290,6 @@ export default function AuditLogs() {
         </div>
       </div>
 
-      {/* Log Detail Dialog */}
       <Dialog open={!!selectedLog} onOpenChange={() => setSelectedLog(null)}>
         <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
@@ -316,37 +299,42 @@ export default function AuditLogs() {
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <p className="text-sm text-muted-foreground">Table</p>
-                  <p className="font-medium">{selectedLog.table_name}</p>
+                  <p className="text-sm text-muted-foreground">Category</p>
+                  <p className="font-medium">{selectedLog.event_category}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Event</p>
+                  <p className="font-medium">{selectedLog.event_type}</p>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Action</p>
-                  <Badge variant="outline" className={cn('uppercase', actionColors[selectedLog.action])}>
-                    {selectedLog.action}
-                  </Badge>
+                  <p className="font-medium">{selectedLog.action}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-muted-foreground">Record ID</p>
-                  <p className="font-mono text-sm">{selectedLog.record_id}</p>
+                  <p className="text-sm text-muted-foreground">Target</p>
+                  <p className="font-mono text-sm">{selectedLog.target_table || selectedLog.table_name}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-muted-foreground">User ID</p>
-                  <p className="font-mono text-sm">{selectedLog.user_id || 'System'}</p>
+                  <p className="text-sm text-muted-foreground">Target ID</p>
+                  <p className="font-mono text-sm">{selectedLog.target_id || selectedLog.record_id || 'N/A'}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-muted-foreground">IP Address</p>
-                  <p className="font-mono text-sm">{selectedLog.ip_address || 'N/A'}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">User Agent</p>
-                  <p className="text-sm truncate">{selectedLog.user_agent || 'N/A'}</p>
+                  <p className="text-sm text-muted-foreground">Actor ID</p>
+                  <p className="font-mono text-sm">{selectedLog.actor_id || selectedLog.user_id || 'System'}</p>
                 </div>
                 <div className="col-span-2">
                   <p className="text-sm text-muted-foreground">Timestamp</p>
-                  <p>{new Date(selectedLog.created_at || '').toLocaleString()}</p>
+                  <p>{new Date(selectedLog.occurred_at || selectedLog.created_at || '').toLocaleString()}</p>
                 </div>
               </div>
-              
+
+              <div>
+                <p className="text-sm text-muted-foreground mb-2">Metadata</p>
+                <pre className="bg-muted/50 p-4 rounded-lg text-xs overflow-auto max-h-48">
+                  {JSON.stringify(selectedLog.metadata || {}, null, 2)}
+                </pre>
+              </div>
+
               {selectedLog.old_data && (
                 <div>
                   <p className="text-sm text-muted-foreground mb-2">Old Data</p>
@@ -355,7 +343,7 @@ export default function AuditLogs() {
                   </pre>
                 </div>
               )}
-              
+
               {selectedLog.new_data && (
                 <div>
                   <p className="text-sm text-muted-foreground mb-2">New Data</p>
@@ -371,3 +359,4 @@ export default function AuditLogs() {
     </DashboardLayout>
   );
 }
+
