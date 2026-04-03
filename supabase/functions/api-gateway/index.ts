@@ -3679,12 +3679,98 @@ async function handleAuto(method: string, pathParts: string[], body: any, userId
 }
 
 async function handleAutoPilot(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const admin = adminClient()
+  const action = pathParts[0] || ''
+  console.log('API HIT:', `/auto-pilot/${action}`)
 
+  if (method === 'POST' && action === 'new-request') {
+    const missing = validateRequired(body, ['name', 'business_type', 'country', 'language', 'features_required'])
+    if (missing) return fail(missing, 422, 'VALIDATION_ERROR')
+
+    const requestData = {
+      requestId: body.request_id || body.requestId || null,
+      name: body.name,
+      businessType: body.business_type || body.businessType,
+      country: body.country,
+      language: body.language,
+      budget: body.budget ?? null,
+      featuresRequired: body.features_required || body.featuresRequired,
+      requestType: body.request_type || body.requestType,
+      requestDetails: body.request_details || body.requestDetails,
+      clientName: body.client_name || body.clientName,
+    }
+
+    const { data, error } = await sb.functions.invoke('ai-auto-pilot', {
+      body: { action: 'handle_client_request', data: requestData },
+    })
+    if (error) return fail(error.message, 500, 'AUTO_PILOT_NEW_REQUEST_FAILED')
+    if (data?.error) return fail(String(data.error), 400, 'AUTO_PILOT_NEW_REQUEST_FAILED', data)
+
+    await logActivity(admin, 'auto_pilot', 'new-request', 'new_request', userId, {
+      name: body.name,
+      business_type: body.business_type,
+    })
+    return json({ success: true, data, error: null })
+  }
+
+  if (method === 'POST' && action === 'generate') {
+    const { data, error } = await sb.functions.invoke('ai-auto-pilot', {
+      body: { action: 'generate_daily_software', data: body || {} },
+    })
+    if (error) return fail(error.message, 500, 'AUTO_PILOT_GENERATE_FAILED')
+    if (data?.error) return fail(String(data.error), 400, 'AUTO_PILOT_GENERATE_FAILED', data)
+
+    await logActivity(admin, 'auto_pilot', 'generate', 'generate_daily_software', userId)
+    return json({ success: true, data, error: null })
+  }
+
+  if (method === 'POST' && action === 'billing-check') {
+    const { data, error } = await sb.functions.invoke('ai-auto-pilot', {
+      body: { action: 'check_billing_alerts', data: body || {} },
+    })
+    if (error) return fail(error.message, 500, 'AUTO_PILOT_BILLING_CHECK_FAILED')
+    if (data?.error) return fail(String(data.error), 400, 'AUTO_PILOT_BILLING_CHECK_FAILED', data)
+
+    await logActivity(admin, 'auto_pilot', 'billing-check', 'billing_check', userId)
+    return json({ success: true, data, error: null })
+  }
+
+  if (method === 'POST' && action === 'add-billing') {
+    const missing = validateRequired(body, ['user_id', 'service_name', 'amount', 'billing_cycle'])
+    if (missing) return fail(missing, 422, 'VALIDATION_ERROR')
+    if (!Number.isFinite(Number(body.amount))) {
+      return fail('amount must be a valid number', 422, 'VALIDATION_ERROR')
+    }
+
+    const { data, error } = await sb.functions.invoke('ai-auto-pilot', {
+      body: {
+        action: 'add_billing_item',
+        data: {
+          user_id: body.user_id,
+          service_name: body.service_name,
+          amount: Number(body.amount),
+          billing_cycle: body.billing_cycle,
+        },
+      },
+    })
+    if (error) return fail(error.message, 500, 'AUTO_PILOT_ADD_BILLING_FAILED')
+    if (data?.error) return fail(String(data.error), 400, 'AUTO_PILOT_ADD_BILLING_FAILED', data)
+
+    await logActivity(admin, 'auto_pilot', 'add-billing', 'add_billing_item', userId, {
+      user_id: body.user_id,
+      service_name: body.service_name,
+      amount: Number(body.amount),
+    })
+    return json({ success: true, data, error: null })
+  }
+
+  return err('Not found', 404)
 }
 
 // ===================== 16. APK PIPELINE =====================
 async function handleApk(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const admin = adminClient()
+  console.log('API HIT:', `/apk/${pathParts[0] || ''}`)
 
   // POST /apk/build
   if (method === 'POST' && pathParts[0] === 'build') {
@@ -3702,7 +3788,35 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
       status: 'queued',
     }, body.tenant_id || null)
     await logActivity(admin, 'apk', data.id, 'build_queued', userId, { repo: body.repo_name })
-    return json({ data }, 201)
+
+    await sb.from('apk_build_queue').update({
+      build_status: 'building',
+      build_started_at: nowIso(),
+      build_error: null,
+    }).eq('id', data.id)
+
+    const { data: factoryData, error: factoryError } = await sb.functions.invoke('apk-factory', {
+      body: {
+        action: 'trigger_build',
+        data: {
+          slug: data.slug,
+          repo_url: body.repo_url,
+          product_id: body.product_id || null,
+        },
+      },
+    })
+
+    if (factoryError || factoryData?.error) {
+      const buildError = factoryError?.message || String(factoryData?.error || 'APK build trigger failed')
+      await sb.from('apk_build_queue').update({
+        build_status: 'failed',
+        build_error: buildError,
+        build_completed_at: nowIso(),
+      }).eq('id', data.id)
+      return fail(buildError, 500, 'APK_BUILD_TRIGGER_FAILED')
+    }
+
+    return json({ success: true, data: { ...data, factory: factoryData }, error: null }, 201)
   }
 
   // GET /apk/history
@@ -4894,6 +5008,9 @@ Deno.serve(async (req) => {
       case 'build': routeResponse = await handleBuild(req.method, subParts, body, userId, sb); break
       case 'chat': routeResponse = await handleChat(req.method, subParts, body, userId, sb); break
       case 'api-keys': routeResponse = await handleApiKeys(req.method, subParts, body, userId, sb); break
+      case 'auto': routeResponse = await handleAuto(req.method, subParts, body, userId, sb); break
+      case 'auto-pilot': routeResponse = await handleAutoPilot(req.method, subParts, body, userId, sb); break
+      case 'apk': routeResponse = await handleApk(req.method, subParts, body, userId, sb); break
       case 'api-usage':
 
       case 'leads':
