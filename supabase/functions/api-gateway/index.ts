@@ -1813,7 +1813,7 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
 }
 
 // ===================== 3B. RESELLER ONBOARDING =====================
-async function handleResellerOnboarding(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+async function handleResellerOnboarding(method: string, pathParts: string[], body: any, userId: string, sb: any, req?: Request) {
   const admin = adminClient()
   const action = pathParts[0]
 
@@ -1867,7 +1867,7 @@ async function handleResellerOnboarding(method: string, pathParts: string[], bod
   // GET /reseller/activity?reseller_id=
   if (method === 'GET' && action === 'activity') {
     const isAdmin = await isSuperAdminUser(userId)
-    const resellerId = String(body?.reseller_id || '').trim()
+    const resellerId = String(req ? (new URL(req.url)).searchParams.get('reseller_id') || '' : '').trim()
     let entityId = resellerId
     if (!entityId) {
       const { data: ownReseller, error: ownErr } = await sb
@@ -1955,7 +1955,7 @@ async function handleResellerOnboarding(method: string, pathParts: string[], bod
   if (method === 'GET' && action === 'export') {
     const isAdmin = await isSuperAdminUser(userId)
     if (!isAdmin) return err('Forbidden', 403)
-    const type = String(body?.type || 'resellers')
+    const type = String(req ? (new URL(req.url)).searchParams.get('type') || 'resellers' : 'resellers')
     if (!['resellers', 'sales', 'commissions', 'activity'].includes(type)) {
       return err('Invalid export type', 422, 'VALIDATION_ERROR')
     }
@@ -8093,7 +8093,7 @@ Deno.serve(async (req) => {
       case 'api-usage':
 
       case 'reseller':
-        routeResponse = await handleResellerOnboarding(req.method, subParts, body, userId, sb)
+        routeResponse = await handleResellerOnboarding(req.method, subParts, body, userId, sb, req)
         break
       case 'resellers':
         routeResponse = await handleResellers(req.method, subParts, body, userId, sb)
