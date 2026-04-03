@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -61,7 +61,7 @@ const actionColors: Record<AuditAction, string> = {
   suspend: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
 };
 
-const LIVE_REFRESH_INTERVAL_MS = 8000;
+const LIVE_REFRESH_INTERVAL_MILLISECONDS = 8000;
 
 function toObject(value: unknown): Record<string, unknown> {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -135,12 +135,22 @@ export default function AuditLogs() {
   const [dateFilter, setDateFilter] = useState<DateFilter>('all');
   const [selectedLogId, setSelectedLogId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const loadingRef = useRef(true);
+  const refreshingRef = useRef(false);
+
+  useEffect(() => {
+    loadingRef.current = loading;
+  }, [loading]);
+
+  useEffect(() => {
+    refreshingRef.current = isRefreshing;
+  }, [isRefreshing]);
 
   const fetchLogs = useCallback(async (showLoader = true) => {
     if (showLoader) {
       setLoading(true);
     } else {
-      if (isRefreshing || loading) {
+      if (refreshingRef.current || loadingRef.current) {
         return;
       }
       setIsRefreshing(true);
@@ -159,7 +169,7 @@ export default function AuditLogs() {
         setIsRefreshing(false);
       }
     }
-  }, [isRefreshing, loading]);
+  }, []);
 
   useEffect(() => {
     fetchLogs();
@@ -168,7 +178,7 @@ export default function AuditLogs() {
   useEffect(() => {
     const interval = window.setInterval(() => {
       fetchLogs(false);
-    }, LIVE_REFRESH_INTERVAL_MS);
+    }, LIVE_REFRESH_INTERVAL_MILLISECONDS);
     return () => window.clearInterval(interval);
   }, [fetchLogs]);
 
@@ -389,13 +399,16 @@ export default function AuditLogs() {
           </aside>
 
           <section className="glass-card rounded-xl overflow-hidden">
-            <div className="grid grid-cols-[150px_120px_120px_1fr_110px_2fr] border-b border-border bg-muted/20 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <span>Time</span>
-              <span>Role</span>
-              <span>Action</span>
-              <span>Module</span>
-              <span>Status</span>
-              <span>Message</span>
+            <div
+              role="row"
+              className="grid grid-cols-[150px_120px_120px_1fr_110px_2fr] border-b border-border bg-muted/20 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+            >
+              <span role="columnheader">Time</span>
+              <span role="columnheader">Role</span>
+              <span role="columnheader">Action</span>
+              <span role="columnheader">Module</span>
+              <span role="columnheader">Status</span>
+              <span role="columnheader">Message</span>
             </div>
 
             {loading ? (
@@ -409,12 +422,18 @@ export default function AuditLogs() {
                 <p className="text-sm text-muted-foreground">No audit events match the current filters.</p>
               </div>
             ) : (
-              <div className="h-[70vh] overflow-y-auto">
+              <div
+                role="rowgroup"
+                aria-label="Audit log rows"
+                tabIndex={0}
+                className="h-[70vh] overflow-y-auto"
+              >
                 {filteredLogs.map((log) => (
                   <button
                     key={log.id}
                     type="button"
                     onClick={() => setSelectedLogId(log.id)}
+                    aria-label={`View details for ${log.action} on ${log.module} at ${new Date(log.time).toLocaleString()}`}
                     className={cn(
                       'grid w-full grid-cols-[150px_120px_120px_1fr_110px_2fr] items-center gap-2 border-b border-border px-4 py-3 text-left transition-colors',
                       'hover:bg-muted/30',
