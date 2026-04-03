@@ -87,9 +87,6 @@ export function useAutomation() {
     await fetchData();
   }, [fetchData]);
 
-  const refreshDashboard = refreshData;
-  const refreshQueue = refreshData;
-  const refreshBilling = refreshData;
 
   // Submit new client request
   const submitClientRequest = async (request: {
@@ -164,7 +161,7 @@ export function useAutomation() {
       const response = await autoPilotApi.newRequest(request);
       if (response?.success) {
         toast.success('Request Created');
-        await refreshDashboard();
+        await refreshData();
         return true;
       }
 
@@ -215,7 +212,7 @@ export function useAutomation() {
       const response = await autoPilotApi.generate();
       if (response?.success) {
         toast.success('Software Generation Started');
-        await refreshQueue();
+        await refreshData();
         return true;
       }
 
@@ -293,7 +290,7 @@ export function useAutomation() {
       const response = await autoPilotApi.billingCheck();
       if (response?.success) {
         toast.success('Billing Checked');
-        await refreshBilling();
+        await refreshData();
         return response.data?.alerts || [];
       }
       const msg = typeof response?.error === 'string'
@@ -308,7 +305,7 @@ export function useAutomation() {
     } finally {
       setQuickActionLoading((prev) => ({ ...prev, billingCheck: false }));
     }
-  }, [refreshBilling]);
+  }, [refreshData]);
 
   // Add billing item
   const addBillingItem = async (item: {
@@ -347,7 +344,7 @@ export function useAutomation() {
       const response = await autoPilotApi.addBilling(item);
       if (response?.success) {
         toast.success('Billing Added');
-        await refreshBilling();
+        await refreshData();
         return true;
       }
 
@@ -399,9 +396,6 @@ export function useAutomation() {
     processing,
     quickActionLoading,
     fetchData,
-    refreshDashboard,
-    refreshQueue,
-    refreshBilling,
     submitClientRequest,
     handleNewRequest,
     generateDailySoftware,
