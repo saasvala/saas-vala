@@ -88,10 +88,10 @@ export default function AuditLogs() {
   const getStatus = useCallback((log: AuditLog): AuditStatus => {
     const metadata = getMetaObject(log);
     const rawStatus = String(metadata.status || metadata.level || '').toLowerCase();
-    if (rawStatus.includes('error') || rawStatus.includes('fail') || log.action === 'delete' || log.action === 'suspend') {
+    if (rawStatus.includes('error') || rawStatus.includes('fail')) {
       return 'error';
     }
-    if (rawStatus.includes('warn') || log.action === 'update') {
+    if (rawStatus.includes('warn')) {
       return 'warning';
     }
     return 'success';
@@ -210,18 +210,26 @@ export default function AuditLogs() {
   }, [filteredLogs, selectedLog]);
 
   const exportLogs = () => {
+    const sanitizeCsvValue = (value: string): string => {
+      const trimmed = value.trimStart();
+      const formulaUnsafe = /^[=+\-@]/.test(trimmed);
+      return formulaUnsafe ? `'${value}` : value;
+    };
+
+    const escapeCsv = (value: string): string => `"${sanitizeCsvValue(value).replaceAll('"', '""')}"`;
+
     const csv = [
       ['Time', 'Role', 'Action', 'Module', 'Status', 'Message', 'Actor ID', 'IP', 'Device'].join(','),
       ...filteredLogs.map((log) => [
-        log.occurred_at || log.created_at || '',
-        getRole(log),
-        log.action,
-        getModule(log),
-        getStatus(log),
-        `"${getMessage(log).replaceAll('"', '""')}"`,
-        log.actor_id || log.user_id || '',
-        log.ip_address || '',
-        `"${(log.user_agent || '').replaceAll('"', '""')}"`,
+        escapeCsv(log.occurred_at || log.created_at || ''),
+        escapeCsv(getRole(log)),
+        escapeCsv(log.action),
+        escapeCsv(getModule(log)),
+        escapeCsv(getStatus(log)),
+        escapeCsv(getMessage(log)),
+        escapeCsv(log.actor_id || log.user_id || ''),
+        escapeCsv(log.ip_address || ''),
+        escapeCsv(log.user_agent || ''),
       ].join(',')),
     ].join('\n');
 
