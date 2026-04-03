@@ -11,6 +11,17 @@ import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import { useMarketplaceActions } from '@/hooks/useMarketplaceActions';
 
+const SAFE_PRODUCT_PARAM = /^[a-zA-Z0-9_-]+$/;
+const PENDING_PAYMENT_MAX_AGE_MS = 15 * 60 * 1000;
+
+function makeIdempotencyKey() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  const rand = Math.random().toString(36).slice(2);
+  return `fallback-${Date.now()}-${rand}`;
+}
+
 export default function Checkout() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -20,61 +31,15 @@ export default function Checkout() {
   const { purchaseApk, processing } = useApkPurchase();
   const { trackPromoConversion } = useMarketplaceActions();
   const [submitting, setSubmitting] = useState(false);
-  const [restoring, setRestoring] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<'wallet' | 'upi' | 'card' | 'crypto'>('wallet');
-  const payInFlightRef = useRef(false);
-  const pendingRestoreAttemptedRef = useRef(false);
-  const restoreInFlightRef = useRef(false);
 
   const selected = useMemo(() => {
-    const productId = searchParams.get('product_id');
-    if (productId) {
-      const byQuery = products.find((p) => String(p.id) === String(productId));
+    if (requestedProductId) {
+      const byQuery = products.find((p) => String(p.id) === requestedProductId);
       if (byQuery) return byQuery;
     }
     if (items[0]) return items[0];
     return products[0] || null;
-  }, [items, products, searchParams]);
 
-  const hasInvalidProductParam = useMemo(() => {
-    const productId = (searchParams.get('product_id') || '').trim();
-    if (!productId) return false;
-    if (products.length === 0) return false;
-    return !products.some((p) => String(p.id) === String(productId));
-  }, [products, searchParams]);
-
-  const onPay = async () => {
-    if (payInFlightRef.current) return;
-    if (!user) {
-      navigate('/auth');
-      return;
-    }
-    if (!selected) {
-      toast.error('No product available to checkout');
-      return;
-    }
-    payInFlightRef.current = true;
-    setSubmitting(true);
-    try {
-      const result = await purchaseApk(selected, { paymentMethod: paymentMethod as any });
-      if (!result.success) {
-        toast.error(result.error || 'Payment failed');
-        return;
-      }
-
-      const promoRef = localStorage.getItem('sv_last_promo_ref') || '';
-      if (promoRef) {
-        await trackPromoConversion(promoRef, Number(payable || 0)).catch(() => undefined);
-      }
-      localStorage.removeItem('sv_last_promo_ref');
-      clearCart();
-      navigate(`/success?product=${encodeURIComponent(selected.id)}&order=${encodeURIComponent(result.transactionId || '')}`);
-      toast.success('Payment completed successfully');
-    } finally {
-      payInFlightRef.current = false;
-      setSubmitting(false);
-    }
-  };
 
   const restorePendingPayment = async () => {
     if (restoreInFlightRef.current) return;
@@ -86,9 +51,19 @@ export default function Checkout() {
         toast.info('No pending payment found');
         return;
       }
-      const parsed = JSON.parse(raw) as { paymentId?: string };
+      const parsed = JSON.parse(raw) as { paymentId?: string; ts?: number };
       if (!parsed?.paymentId) {
         toast.info('No pending payment found');
+        return;
+      }
+      const createdAt = Number(parsed.ts || 0);
+      if (createdAt && Date.now() - createdAt > PENDING_PAYMENT_MAX_AGE_MS) {
+        toast.info('Pending payment expired. Please start again.');
+        try {
+          sessionStorage.removeItem('sv_pending_payment');
+        } catch {
+          // ignore
+        }
         return;
       }
       const { marketplaceApi } = await import('@/lib/api');
@@ -102,7 +77,51 @@ export default function Checkout() {
     }
   };
 
-  const payable = total > 0 ? total : selected?.price || 0;
+  const onPay = async () => {
+    if (payInFlightRef.current) return;
+    if (!user) {
+      navigate('/auth');
+      return;
+    }
+    if (!selected) {
+      toast.error('No product available to checkout');
+      return;
+    }
+
+    payInFlightRef.current = true;
+    setSubmitting(true);
+    const idempotencyKey = makeIdempotencyKey();
+
+    try {
+      const result = await purchaseApk(selected, { paymentMethod, idempotencyKey });
+      if (!result.success) {
+        toast.error(result.error || 'Payment failed');
+        return;
+      }
+
+      if (refCode && trackedConversionRef.current !== refCode) {
+        trackedConversionRef.current = refCode;
+        try {
+          await trackPromoConversion(refCode, payable);
+        } catch {
+          // non-blocking
+        }
+      }
+
+      if (items.length > 0) {
+        clearCart();
+      }
+
+      const qs = new URLSearchParams();
+      if (result.licenseKey) qs.set('key', result.licenseKey);
+      if (selected.id) qs.set('product', selected.id);
+      if (result.transactionId) qs.set('tx', result.transactionId);
+      navigate(`/success${qs.toString() ? `?${qs.toString()}` : ''}`, { replace: true });
+    } finally {
+      payInFlightRef.current = false;
+      setSubmitting(false);
+    }
+  };
 
   useEffect(() => {
     if (pendingRestoreAttemptedRef.current) return;
@@ -113,7 +132,7 @@ export default function Checkout() {
       const parsed = JSON.parse(raw) as { paymentId?: string; ts?: number };
       if (!parsed?.paymentId) return;
       const createdAt = Number(parsed.ts || 0);
-      if (createdAt && Date.now() - createdAt > 15 * 60 * 1000) return;
+      if (createdAt && Date.now() - createdAt > PENDING_PAYMENT_MAX_AGE_MS) return;
       void restorePendingPayment();
     } catch {
       // ignore malformed pending data
