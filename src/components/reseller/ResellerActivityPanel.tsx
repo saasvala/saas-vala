@@ -17,7 +17,9 @@ import { resellersApi } from '@/lib/api';
    RefreshCw,
    Loader2,
  } from 'lucide-react';
- import { formatDistanceToNow } from 'date-fns';
+import { formatDistanceToNow } from 'date-fns';
+
+const ACTIVITY_REFRESH_INTERVAL_MS = 15000;
  
 interface ActivityLog {
   id: string;
@@ -122,14 +124,15 @@ export function ResellerActivityPanel({ resellerId }: ResellerActivityPanelProps
 
   useEffect(() => {
     fetchActivities();
-    const interval = setInterval(fetchActivities, 15000);
+    const interval = setInterval(fetchActivities, ACTIVITY_REFRESH_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [resellerId]);
 
   useEffect(() => {
+    const realtimeFilter = resellerId ? `entity_type=eq.reseller AND entity_id=eq.${resellerId}` : 'entity_type=eq.reseller';
     const channel = supabase
       .channel(`reseller-activity-live-${resellerId || 'all'}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'activity_logs' }, () => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'activity_logs', filter: realtimeFilter }, () => {
         fetchActivities();
       })
       .subscribe();

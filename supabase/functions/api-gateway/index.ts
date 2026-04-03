@@ -1659,7 +1659,13 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
     if (body.is_active !== undefined) {
       updates.is_active = body.is_active === true
       if (body.status === undefined) {
-        updates.status = updates.is_active ? 'active' : (existing.status === 'pending' ? 'pending' : 'suspended')
+        if (updates.is_active) {
+          updates.status = 'active'
+        } else if (existing.status === 'pending') {
+          updates.status = 'pending'
+        } else {
+          updates.status = 'suspended'
+        }
       }
     }
     if (body.is_verified !== undefined) {
@@ -1672,8 +1678,9 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
       updates.kyc_status = normalizedKyc
       updates.is_verified = normalizedKyc === 'verified'
     }
+    const hasMeaningfulUpdates = Object.keys(updates).length > 0
+    if (!hasMeaningfulUpdates) return json({ success: true, data: existing })
     updates.updated_at = nowIso()
-    if (Object.keys(updates).length === 1 && updates.updated_at) return json({ success: true, data: existing })
 
     const { data: updated, error: updateError } = await admin
       .from('resellers')
