@@ -46,10 +46,10 @@ interface Product {
       try {
         // Step 1: Check wallet balance
         const { data: wallet, error: walletError } = await supabase
-         .from('wallets')
-         .select('id, balance')
-         .eq('user_id', user.id)
-         .single();
+          .from('wallets')
+          .select('id, balance, version')
+          .eq('user_id', user.id)
+          .single();
  
        if (walletError || !wallet) {
          throw new Error('Could not fetch wallet balance');
@@ -60,6 +60,7 @@ interface Product {
         }
         walletId = wallet.id;
         walletBefore = Number(wallet.balance || 0);
+        const walletVersion = Number(wallet.version || 0);
   
         // Step 2: Create marketplace order
         const { data: order, error: orderError } = await supabase
@@ -100,31 +101,25 @@ interface Product {
         }
   
         // Step 4: Update wallet balance
-        const { error: updateError } = await supabase
+        const { data: updatedWalletRow, error: updateError } = await supabase
           .from('wallets')
-          .update({ balance: newBalance, updated_at: new Date().toISOString() })
-          .eq('id', wallet.id);
-  
+          .update({
+            balance: newBalance,
+            version: walletVersion + 1,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', wallet.id)
+          .eq('version', walletVersion)
+          .select('id')
+          .maybeSingle();
+
         if (updateError) {
           throw new Error('Failed to update wallet balance');
         }
-        walletDeducted = true;
-
-        const { data: walletAfterRow } = await supabase
-          .from('wallets')
-          .select('balance')
-          .eq('id', wallet.id)
-          .single();
-        const walletAfter = Number(walletAfterRow?.balance ?? newBalance);
-        if (Math.abs(walletAfter - newBalance) > 0.0001) {
-          const { error: reconcileError } = await supabase
-            .from('wallets')
-            .update({ balance: newBalance, updated_at: new Date().toISOString() })
-            .eq('id', wallet.id);
-          if (reconcileError) {
-            throw new Error('Wallet mismatch detected and reconciliation failed');
-          }
+        if (!updatedWalletRow) {
+          throw new Error('Wallet mismatch detected. Please retry payment.');
         }
+        walletDeducted = true;
  
        // Step 5: Generate secure crypto-random license key
         const licenseKey = generateSecureLicenseKey();
