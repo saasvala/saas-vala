@@ -177,19 +177,27 @@ export function AiModelManager() {
       const res = await aiApi.modelsList();
       const rows = Array.isArray(res?.data) ? res.data : [];
       if (rows.length) {
-        const mapped: AiModel[] = rows.map((m: any, idx: number) => ({
-          id: m.id,
-          name: m.name || m.model_id || `Model ${idx + 1}`,
-          provider: (String(m.provider || 'custom').toLowerCase() as AiModel['provider']) || 'custom',
-          version: m.model_id || m.name || '1.0',
-          apiKey: '••••••••••••',
-          tokenCost: Number(m.input_cost_per_1k || 0),
-          maxTokens: Number(m.max_tokens || 0),
-          priority: idx + 1,
-          enabled: !!m.is_active,
-          status: m.is_active ? 'active' : 'inactive',
-          isFailover: true,
-        }));
+        const allowedProviders = new Set(['openai', 'google', 'anthropic', 'custom']);
+        const mapped: AiModel[] = rows.map((m: any, idx: number) => {
+          const normalizedProvider = String(m.provider || '').toLowerCase();
+          if (normalizedProvider && !allowedProviders.has(normalizedProvider)) {
+            console.warn('AiModelManager: unknown provider mapped to custom', { provider: m.provider, modelId: m.id });
+          }
+          const provider = (allowedProviders.has(normalizedProvider) ? normalizedProvider : 'custom') as AiModel['provider'];
+          return {
+            id: m.id,
+            name: m.name || m.model_id || `Model ${idx + 1}`,
+            provider,
+            version: m.model_id || m.name || '1.0',
+            apiKey: '••••••••••••',
+            tokenCost: Number(m.input_cost_per_1k || 0),
+            maxTokens: Number(m.max_tokens || 0),
+            priority: idx + 1,
+            enabled: !!m.is_active,
+            status: m.is_active ? 'active' : 'inactive',
+            isFailover: true,
+          };
+        });
         setModels(mapped);
       }
     } catch (e: any) {

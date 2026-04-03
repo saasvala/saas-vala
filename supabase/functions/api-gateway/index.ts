@@ -2654,6 +2654,7 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
         ...providers.filter((p) => p.name === requestedModel || p.name === body?.provider),
         ...providers.filter((p) => p.name !== requestedModel && p.name !== body?.provider),
       ]
+    const requestedProvider = sanitizeTextInput(body?.provider || requestedModel || '')
 
     let providerName = ''
     let providerResponse: any = null
@@ -2703,9 +2704,9 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
       selectedModelId = modelRow.model_id
     }
 
-    const { data: wallet } = await admin.from('wallets').select('id, balance, locked_balance').eq('user_id', userId).maybeSingle()
+    const { data: wallet } = await admin.from('wallets').select('id, balance').eq('user_id', userId).maybeSingle()
     if (!wallet) return err('Wallet not found', 404)
-    const available = Number(wallet.balance || 0) - Number((wallet as any).locked_balance || 0)
+    const available = Number(wallet.balance || 0)
     if (available < modelCost) return err('Insufficient balance', 402, 'LOW_BALANCE')
 
     const newBalance = Number(wallet.balance || 0) - modelCost
@@ -2794,7 +2795,7 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
     return json({
       success: true,
       data: providerResponse,
-      routing: { auto_pilot: autoPilot, provider: providerName, model: selectedModelId, fallback_used: providerName !== 'openai' },
+      routing: { auto_pilot: autoPilot, provider: providerName, model: selectedModelId, fallback_used: !!requestedProvider && providerName !== requestedProvider },
       billing: { deducted: modelCost, balance_after: newBalance },
       usage: { input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: totalTokens },
     })

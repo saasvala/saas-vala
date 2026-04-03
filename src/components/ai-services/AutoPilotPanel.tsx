@@ -132,6 +132,12 @@ export function AutoPilotPanel() {
   const [masterEnabled, setMasterEnabled] = useState(false);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
 
+  const blendSuccessRate = (prevRate: number, latestSuccess: boolean) => {
+    // 90% previous reliability + 10% latest run outcome (100 on success, 0 on failure).
+    const latestScore = latestSuccess ? 100 : 0;
+    return Math.min(100, prevRate === 0 ? latestScore : Math.round((prevRate * 9 + latestScore) / 10));
+  };
+
   const runFeatureNow = async (featureId: string) => {
     switch (featureId) {
       case 'auto-seo':
@@ -194,7 +200,7 @@ export function AutoPilotPanel() {
         status: 'running',
         todayActions: f.todayActions + 1,
         totalActions: f.totalActions + 1,
-        successRate: Math.min(100, f.successRate === 0 ? 100 : Math.round((f.successRate * 9 + 100) / 10)),
+        successRate: blendSuccessRate(f.successRate, true),
         lastRun: 'Just now',
         nextRun: f.isEnabled ? 'Scheduled' : 'Not scheduled',
       } : f));
@@ -279,6 +285,7 @@ export function AutoPilotPanel() {
                 <Switch 
                   checked={masterEnabled} 
                   onCheckedChange={handleMasterToggle}
+                  aria-label="Toggle Auto-Pilot master mode"
                 />
               </div>
             </div>
@@ -331,6 +338,7 @@ export function AutoPilotPanel() {
                      checked={feature.isEnabled}
                      onCheckedChange={() => handleToggleFeature(feature.id)}
                      disabled={!!busy[feature.id]}
+                     aria-label={`Toggle ${feature.name}`}
                    />
                 </div>
               </CardHeader>

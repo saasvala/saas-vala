@@ -72,7 +72,6 @@ BEGIN
       WITH CHECK (has_role(auth.uid(), 'super_admin'));
   END IF;
 END $$;
-
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -145,4 +144,3 @@ BEGIN
       );
   END IF;
 END $$;
-
