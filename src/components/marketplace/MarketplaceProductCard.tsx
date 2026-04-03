@@ -99,15 +99,35 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
     ? product.features.slice(0, 4).map((f: any) => (typeof f === 'string' ? f : f.text))
     : ['Dashboard', 'Reports', 'Analytics', 'API'];
 
-  const getDemoUrl = useCallback((): string | null => {
-    const d = (product as any).demoUrl || (product as any).demo_url;
-    if (d && d.startsWith('http') && !d.includes('github.com')) return d;
-    const g = (product as any).gitRepoUrl || (product as any).git_repo_url;
-    if (g && g.startsWith('http')) return g;
-    return null;
-  }, [product]);
+  const parseHttpUrl = useCallback((value: string | null | undefined): URL | null => {
+    if (!value) return null;
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, []);
 
-  const isIframeable = (url: string | null) => (url ? !url.includes('github.com') : false);
+  const isGitHubHost = useCallback((hostname: string) => {
+    const host = hostname.toLowerCase();
+    return host === 'github.com' || host.endsWith('.github.com');
+  }, []);
+
+  const getDemoUrl = useCallback((): string | null => {
+    const demoUrl = parseHttpUrl((product as any).demoUrl || (product as any).demo_url);
+    if (demoUrl && !isGitHubHost(demoUrl.hostname)) return demoUrl.toString();
+    const repoUrl = parseHttpUrl((product as any).gitRepoUrl || (product as any).git_repo_url);
+    if (repoUrl) return repoUrl.toString();
+    return null;
+  }, [product, parseHttpUrl, isGitHubHost]);
+
+  const isIframeable = (url: string | null) => {
+    const parsed = parseHttpUrl(url);
+    if (!parsed) return false;
+    return !isGitHubHost(parsed.hostname);
+  };
 
   const handleFavorite = useCallback(async () => {
     if (!user) {
