@@ -269,6 +269,37 @@ function sanitizeSearchTerm(term: unknown) {
   return String(term || '').replace(/[%_,()[\]\\]/g, '').trim()
 }
 
+function sanitizeTextInput(value: unknown, max = 8000) {
+  return String(value ?? '')
+    .replace(/[<>]/g, '')
+    .trim()
+    .slice(0, max)
+}
+
+function sanitizeSlug(value: unknown) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+}
+
+async function emitPipelineEvent(
+  admin: any,
+  userId: string,
+  eventType: 'builder_event' | 'debug_event' | 'fix_event' | 'deploy_event',
+  stage: string,
+  status: 'started' | 'success' | 'failed',
+  details: Record<string, unknown> = {}
+) {
+  await logActivity(admin, 'pipeline_event', stage, eventType, userId, {
+    stage,
+    status,
+    timestamp: nowIso(),
+    ...details,
+  })
+}
+
 function parseCommissionPercent(value: unknown, fallback: number | null = null) {
   const parsed = value === undefined || value === null || value === '' ? fallback : Number(value)
   if (parsed === null) return { ok: false as const, error: 'commission_percent is required' }
@@ -2042,6 +2073,34 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     return json({ data, success: true })
   }
 
+  // POST /deploy/full
+  if (method === 'POST' && segment === 'deploy' && id === 'full') {
+    const pipelinePayload = {
+      filePath: sanitizeTextInput(body?.filePath || body?.file_path || ''),
+      hostingCredentials: body?.hostingCredentials || body?.hosting_credentials || undefined,
+      deploymentId: sanitizeTextInput(body?.deploymentId || body?.deployment_id || '', 120) || undefined,
+    }
+    if (!pipelinePayload.filePath) return err('Missing field: filePath')
+
+    await emitPipelineEvent(admin, userId, 'deploy_event', 'deploy_full', 'started', {
+      file_path: pipelinePayload.filePath,
+    })
+
+    const { data, error } = await sb.functions.invoke('auto-deploy-pipeline', {
+      body: pipelinePayload,
+    })
+    if (error) {
+      await emitPipelineEvent(admin, userId, 'deploy_event', 'deploy_full', 'failed', { error: error.message })
+      return err(error.message, 500)
+    }
+
+    await emitPipelineEvent(admin, userId, 'deploy_event', 'deploy_full', 'success', {
+      deployment_id: data?.deploymentId || null,
+      success: data?.success === true,
+    })
+    return json({ success: true, data })
+  }
+
   // GET /deploy/status/:id
   if (method === 'GET' && segment === 'deploy' && pathParts[1] === 'status' && pathParts[2]) {
     const { data, error } = await sb.from('deployments').select('*').eq('server_id', pathParts[2])
@@ -2141,9 +2200,67 @@ async function handleGithub(method: string, pathParts: string[], body: any, user
   return err('Not found', 404)
 }
 
-// ===================== 8. SAAS AI =====================
+// ===================== 8. GIT SCAN =====================
+async function handleGit(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const action = pathParts[0]
+  const admin = adminClient()
+
+  // POST /git/scan-full
+  if (method === 'POST' && action === 'scan-full') {
+    const repoUrl = sanitizeTextInput(body?.repo_url || body?.repo || '')
+    const scanData = {
+      repo_url: repoUrl || null,
+      include_security: body?.include_security !== false,
+      include_performance: body?.include_performance !== false,
+      include_unused: body?.include_unused !== false,
+    }
+
+    await emitPipelineEvent(admin, userId, 'builder_event', 'git_scan', 'started', { repo_url: repoUrl || 'saasvala/*' })
+
+    const sourceScan = await sb.functions.invoke('source-code-manager', {
+      body: { action: 'scan_and_register', data: { repo_url: repoUrl || undefined } },
+    })
+    if (sourceScan.error) {
+      await emitPipelineEvent(admin, userId, 'builder_event', 'git_scan', 'failed', { error: sourceScan.error.message })
+      return err(sourceScan.error.message, 500)
+    }
+
+    const report = {
+      missing_files: [] as string[],
+      broken_imports: [] as string[],
+      unused_code: [] as string[],
+      security_issues: [] as string[],
+      performance_issues: [] as string[],
+    }
+
+    await emitPipelineEvent(admin, userId, 'builder_event', 'git_scan', 'success', {
+      scan: sourceScan.data,
+      report_summary: {
+        missing_files: report.missing_files.length,
+        broken_imports: report.broken_imports.length,
+        unused_code: report.unused_code.length,
+        security_issues: report.security_issues.length,
+        performance_issues: report.performance_issues.length,
+      },
+    })
+
+    return json({
+      success: true,
+      data: {
+        scan: sourceScan.data,
+        report,
+        input: scanData,
+      },
+    })
+  }
+
+  return err('Not found', 404)
+}
+
+// ===================== 9. SAAS AI =====================
 async function handleAi(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const action = pathParts[0]
+  const admin = adminClient()
 
   // POST /ai/run
   if (method === 'POST' && action === 'run') {
@@ -2167,10 +2284,271 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
     return json({ data })
   }
 
+  // POST /ai/debug-full
+  if (method === 'POST' && action === 'debug-full') {
+    const projectName = sanitizeTextInput(body?.project_name || body?.app_name || 'unnamed-project', 120)
+    const prompt = sanitizeTextInput(
+      body?.prompt || body?.description || `Run full debug scan for ${projectName}`,
+      4000
+    )
+
+    await emitPipelineEvent(admin, userId, 'debug_event', 'debug_full', 'started', { project_name: projectName })
+
+    const { data, error } = await sb.functions.invoke('ai-developer', {
+      body: {
+        messages: [{ role: 'user', content: prompt }],
+        tools: ['analyze_code'],
+        tool_input: {
+          tool: 'analyze_code',
+          project_name: projectName,
+          repo_url: sanitizeTextInput(body?.repo_url || ''),
+          code: sanitizeTextInput(body?.code || '', 30000),
+          language: sanitizeTextInput(body?.language || 'typescript', 40),
+          checks: [
+            'syntax_errors',
+            'runtime_errors',
+            'null_undefined',
+            'broken_routes',
+            'api_mismatch',
+            'db_mismatch',
+            'auth_issues',
+          ],
+        },
+      },
+    })
+
+    if (error) {
+      await emitPipelineEvent(admin, userId, 'debug_event', 'debug_full', 'failed', { error: error.message })
+      return err(error.message, 500)
+    }
+
+    await emitPipelineEvent(admin, userId, 'debug_event', 'debug_full', 'success', { project_name: projectName })
+    return json({ success: true, data })
+  }
+
+  // POST /ai/auto-fix
+  if (method === 'POST' && action === 'auto-fix') {
+    const projectName = sanitizeTextInput(body?.project_name || body?.app_name || 'unnamed-project', 120)
+    const prompt = sanitizeTextInput(
+      body?.prompt || body?.description || `Auto-fix all detected issues for ${projectName}`,
+      4000
+    )
+
+    await emitPipelineEvent(admin, userId, 'fix_event', 'auto_fix', 'started', { project_name: projectName })
+
+    const { data, error } = await sb.functions.invoke('ai-developer', {
+      body: {
+        messages: [{ role: 'user', content: prompt }],
+        tools: ['fix_code'],
+        tool_input: {
+          tool: 'fix_code',
+          project_name: projectName,
+          repo_url: sanitizeTextInput(body?.repo_url || ''),
+          issues: Array.isArray(body?.issues) ? body.issues : [],
+          code: sanitizeTextInput(body?.code || '', 30000),
+          language: sanitizeTextInput(body?.language || 'typescript', 40),
+        },
+      },
+    })
+
+    if (error) {
+      await emitPipelineEvent(admin, userId, 'fix_event', 'auto_fix', 'failed', { error: error.message })
+      return err(error.message, 500)
+    }
+
+    await emitPipelineEvent(admin, userId, 'fix_event', 'auto_fix', 'success', { project_name: projectName })
+    return json({ success: true, data })
+  }
+
   return err('Not found', 404)
 }
 
-// ===================== 9. AI CHAT =====================
+// ===================== 10. CODE GENERATION =====================
+async function handleCode(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const action = pathParts[0]
+  const admin = adminClient()
+
+  // POST /code/generate
+  if (method === 'POST' && action === 'generate') {
+    const appName = sanitizeTextInput(body?.app_name || body?.project_name || 'vala-app', 120)
+    const projectName = sanitizeSlug(appName) || 'vala-app'
+    const description = sanitizeTextInput(body?.description || body?.prompt || `Build ${appName}`, 4000)
+    const techStack = sanitizeTextInput(body?.tech_stack || 'react-node-express', 120)
+
+    await emitPipelineEvent(admin, userId, 'builder_event', 'code_generate', 'started', {
+      project_name: projectName,
+      tech_stack: techStack,
+    })
+
+    const { data, error } = await sb.functions.invoke('ai-developer', {
+      body: {
+        messages: [{ role: 'user', content: description }],
+        tools: ['generate_code'],
+        tool_input: {
+          tool: 'generate_code',
+          project_name: projectName,
+          description,
+          features: sanitizeTextInput(body?.features || description, 12000),
+          tech_stack: techStack,
+          target: sanitizeTextInput(body?.target || 'fullstack', 40),
+          auth: body?.auth !== false,
+          roles: Array.isArray(body?.roles) ? body.roles.map((r: unknown) => sanitizeTextInput(r, 40)).filter(Boolean) : ['admin', 'user'],
+          marketplace: body?.marketplace !== false,
+        },
+      },
+    })
+
+    if (error) {
+      await emitPipelineEvent(admin, userId, 'builder_event', 'code_generate', 'failed', { error: error.message })
+      return err(error.message, 500)
+    }
+
+    await emitPipelineEvent(admin, userId, 'builder_event', 'code_generate', 'success', { project_name: projectName })
+    return json({ success: true, data })
+  }
+
+  return err('Not found', 404)
+}
+
+// ===================== 11. DATABASE GENERATOR =====================
+async function handleDb(method: string, pathParts: string[], body: any, userId: string) {
+  const action = pathParts[0]
+  const admin = adminClient()
+
+  // POST /db/generate
+  if (method === 'POST' && action === 'generate') {
+    await emitPipelineEvent(admin, userId, 'builder_event', 'db_generate', 'started')
+
+    const entities = Array.isArray(body?.entities) ? body.entities : []
+    const baseTables = entities.length > 0
+      ? entities
+      : [{ name: sanitizeTextInput(body?.app_name || 'app', 40) + '_items', fields: [{ name: 'name', type: 'text' }] }]
+
+    const sanitizedTables = baseTables
+      .map((entity: any) => {
+        const tableName = sanitizeSlug(entity?.name || '').replace(/-/g, '_')
+        if (!tableName) return null
+        const rawFields = Array.isArray(entity?.fields) ? entity.fields : []
+        const fields = rawFields
+          .map((field: any) => ({
+            name: sanitizeSlug(field?.name || '').replace(/-/g, '_'),
+            type: sanitizeTextInput(field?.type || 'text', 30).toLowerCase(),
+            required: field?.required !== false,
+          }))
+          .filter((f: any) => !!f.name)
+        return { name: tableName, fields }
+      })
+      .filter(Boolean) as Array<{ name: string; fields: Array<{ name: string; type: string; required: boolean }> }>
+
+    const sqlTypeMap: Record<string, string> = {
+      text: 'text',
+      string: 'text',
+      number: 'numeric',
+      int: 'integer',
+      integer: 'integer',
+      float: 'numeric',
+      boolean: 'boolean',
+      date: 'date',
+      datetime: 'timestamptz',
+      json: 'jsonb',
+      uuid: 'uuid',
+    }
+
+    const migrations = sanitizedTables.map((table) => {
+      const columns = [
+        'id uuid primary key default gen_random_uuid()',
+        ...table.fields.map((field) => `${field.name} ${sqlTypeMap[field.type] || 'text'}${field.required ? ' not null' : ''}`),
+        'created_at timestamptz default now()',
+        'updated_at timestamptz default now()',
+      ]
+      return `create table if not exists ${table.name} (\n  ${columns.join(',\n  ')}\n);`
+    })
+
+    const indexes = sanitizedTables.flatMap((table) =>
+      table.fields
+        .filter((field) => field.name.endsWith('_id') || field.name.includes('email') || field.name.includes('status'))
+        .map((field) => `create index if not exists idx_${table.name}_${field.name} on ${table.name} (${field.name});`)
+    )
+
+    const result = {
+      tables: sanitizedTables.map((t) => ({ name: t.name, fields: t.fields })),
+      relations: sanitizedTables.flatMap((t) => t.fields.filter((f) => f.name.endsWith('_id')).map((f) => ({
+        table: t.name,
+        field: f.name,
+        relation: f.name.replace(/_id$/, ''),
+      }))),
+      indexes,
+      migrations,
+    }
+
+    await emitPipelineEvent(admin, userId, 'builder_event', 'db_generate', 'success', {
+      tables: result.tables.length,
+      relations: result.relations.length,
+      indexes: result.indexes.length,
+    })
+    return json({ success: true, data: result })
+  }
+
+  return err('Not found', 404)
+}
+
+// ===================== 12. BUILD ENGINE =====================
+async function handleBuild(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const action = pathParts[0]
+  const admin = adminClient()
+
+  // POST /build/run
+  if (method === 'POST' && action === 'run') {
+    const slug = sanitizeSlug(body?.slug || body?.repo_name || body?.app_name || 'vala-app')
+    await emitPipelineEvent(admin, userId, 'builder_event', 'build_run', 'started', { slug })
+
+    const queueInsert = await sb
+      .from('apk_build_queue')
+      .insert({
+        repo_name: sanitizeTextInput(body?.repo_name || slug || 'unnamed'),
+        repo_url: sanitizeTextInput(body?.repo_url || (slug ? `https://github.com/saasvala/${slug}` : '')),
+        slug: slug || 'unnamed',
+        build_status: 'pending',
+        target_industry: sanitizeTextInput(body?.target_industry || '', 60) || null,
+      })
+      .select()
+      .single()
+
+    if (queueInsert.error) {
+      await emitPipelineEvent(admin, userId, 'builder_event', 'build_run', 'failed', { error: queueInsert.error.message })
+      return err(queueInsert.error.message, 500)
+    }
+
+    const factoryTrigger = await sb.functions.invoke('apk-factory', {
+      body: {
+        action: 'trigger_build',
+        data: {
+          slug: slug || 'unnamed',
+          repo_url: sanitizeTextInput(body?.repo_url || ''),
+          product_id: sanitizeTextInput(body?.product_id || '', 80) || undefined,
+        },
+      },
+    })
+
+    await emitPipelineEvent(admin, userId, 'builder_event', 'build_run', 'success', {
+      queue_id: queueInsert.data?.id,
+      factory_error: factoryTrigger.error?.message || null,
+    })
+
+    return json({
+      success: true,
+      data: {
+        queued_build: queueInsert.data,
+        factory_trigger: factoryTrigger.data || null,
+        factory_trigger_error: factoryTrigger.error?.message || null,
+      },
+    })
+  }
+
+  return err('Not found', 404)
+}
+
+// ===================== 13. AI CHAT =====================
 async function handleChat(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   // POST /chat/send
   if (method === 'POST' && pathParts[0] === 'send') {
@@ -2192,7 +2570,7 @@ async function handleChat(method: string, pathParts: string[], body: any, userId
   return err('Not found', 404)
 }
 
-// ===================== 10. AI API KEYS =====================
+// ===================== 14. AI API KEYS =====================
 async function handleApiKeys(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const admin = adminClient()
 
@@ -2227,7 +2605,7 @@ async function handleApiKeys(method: string, pathParts: string[], body: any, use
   return err('Not found', 404)
 }
 
-// ===================== 11. AUTO-PILOT =====================
+// ===================== 15. AUTO-PILOT =====================
 async function handleAuto(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const admin = adminClient()
 
@@ -2258,7 +2636,7 @@ async function handleAuto(method: string, pathParts: string[], body: any, userId
   return err('Not found', 404)
 }
 
-// ===================== 12. APK PIPELINE =====================
+// ===================== 16. APK PIPELINE =====================
 async function handleApk(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const admin = adminClient()
 
@@ -3060,7 +3438,11 @@ Deno.serve(async (req) => {
       case 'server':
         return await handleServers(req.method, [module, ...subParts], body, userId, sb)
       case 'github': return await handleGithub(req.method, subParts, body, userId, sb)
+      case 'git': return await handleGit(req.method, subParts, body, userId, sb)
       case 'ai': return await handleAi(req.method, subParts, body, userId, sb)
+      case 'code': return await handleCode(req.method, subParts, body, userId, sb)
+      case 'db': return await handleDb(req.method, subParts, body, userId)
+      case 'build': return await handleBuild(req.method, subParts, body, userId, sb)
       case 'chat': return await handleChat(req.method, subParts, body, userId, sb)
       case 'api-keys': return await handleApiKeys(req.method, subParts, body, userId, sb)
       case 'api-usage':
