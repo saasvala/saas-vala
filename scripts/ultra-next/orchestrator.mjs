@@ -7,6 +7,7 @@ const agentRetries = toNumber(getEnv('ORCH_AGENT_RETRIES', '1'), 1);
 function runCommand(command, args) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { stdio: 'inherit', shell: false });
+    child.on('error', () => resolve(1));
     child.on('close', (code) => resolve(code || 0));
   });
 }
@@ -30,7 +31,7 @@ async function executeAgent(agent, context) {
     return createAgentArtifact(agent, RUN_STATES.SKIPPED, { reason: 'phase1_placeholder' });
   }
 
-  const attempts = Math.max(1, context.retries.max_agent_retries + agentRetries);
+  const attempts = Math.max(1, context.retries.max_agent_retries || agentRetries);
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const results = [];
     let failed = false;
@@ -94,4 +95,3 @@ export async function runOrchestrator(input = {}) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   runOrchestrator();
 }
-
