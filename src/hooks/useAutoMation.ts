@@ -8,6 +8,7 @@ const HIGH_AMOUNT_THRESHOLD = 10000;
 const BILLING_ALERT_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
 const OTP_EXPIRY_MS = 15 * 60 * 1000;
 const HOURLY_BILLING_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+const BILLING_DUPLICATE_DETECTION_WINDOW_MS = 10 * 60 * 1000;
 
 interface ClientRequest {
   id: string;
@@ -103,11 +104,17 @@ export function useAutomation() {
 
   const isHighAmount = (amount: number) => amount >= HIGH_AMOUNT_THRESHOLD;
 
-  const isApiSuccess = (response: any) =>
-    response?.success === true ||
-    response?.data?.success === true ||
-    response?.ok === true ||
-    response?.status === 'success';
+  const isApiSuccess = (response: unknown) => {
+    const payload = response as {
+      success?: boolean;
+      ok?: boolean;
+      status?: string;
+      data?: { success?: boolean };
+    } | null;
+    if (!payload || typeof payload !== 'object') return false;
+    const status = typeof payload.status === 'string' ? payload.status.toLowerCase() : '';
+    return payload.success === true || payload.data?.success === true || payload.ok === true || status === 'success';
+  };
 
   const responseHasInvoice = (response: any) =>
     !!(
@@ -480,7 +487,7 @@ export function useAutomation() {
   }) => {
     try {
       const dueDate = item.due_date ? parseToIsoString(item.due_date) : dueDateFromCycle(item.billing_cycle);
-      const recentIso = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const recentIso = new Date(Date.now() - BILLING_DUPLICATE_DETECTION_WINDOW_MS).toISOString();
 
       let billingLookup = supabase
         .from('billing_items')
@@ -514,16 +521,27 @@ export function useAutomation() {
       let invoiceLookup = supabase
         .from('invoices')
         .select('id,user_id,total_amount')
-        .eq('user_id', item.user_id || '')
         .eq('customer_name', item.service_name)
         .eq('total_amount', item.amount)
         .gte('created_at', recentIso)
         .order('created_at', { ascending: false })
         .limit(1);
+      // Invoices use nullable user_id; use `.is(null)` for anonymous/system-created rows.
+      invoiceLookup = item.user_id ? invoiceLookup.eq('user_id', item.user_id) : invoiceLookup.is('user_id', null);
       const { data: existingInvoice } = await invoiceLookup.maybeSingle();
 
       let createdInvoice = existingInvoice;
       let invoiceNumber = '';
+      if (existingInvoice?.id) {
+        const { data: existingInvoiceNumber } = await supabase
+          .from('invoices')
+          .select('invoice_number')
+          .eq('id', existingInvoice.id)
+          .maybeSingle();
+        if (existingInvoiceNumber?.invoice_number) {
+          invoiceNumber = existingInvoiceNumber.invoice_number;
+        }
+      }
       if (!createdInvoice) {
         invoiceNumber = generateInvoiceNumber();
         const { data, error: invoiceError } = await supabase
@@ -599,7 +617,7 @@ export function useAutomation() {
         await notifyUsers(
           [item.user_id],
           'New Invoice Generated',
-          `Invoice ${invoiceNumber || createdInvoice?.id} is ready for payment.`,
+          invoiceNumber ? `Invoice ${invoiceNumber} is ready for payment.` : 'Your invoice is ready for payment.',
           '/wallet'
         );
       }
