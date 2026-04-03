@@ -47,20 +47,18 @@ export function AutoPilotDashboard() {
   const [showRequestForm, setShowRequestForm] = useState(false);
   const [showBillingForm, setShowBillingForm] = useState(false);
   const [newRequest, setNewRequest] = useState({
-    client_name: '',
-    client_email: '',
-    request_type: 'custom',
-    request_details: '',
-    priority: 'medium'
+    name: '',
+    business_type: '',
+    country: '',
+    language: '',
+    budget: 0,
+    features_required: '',
   });
   const [newBilling, setNewBilling] = useState({
-    service_type: 'subscription',
+    user_id: '',
     service_name: '',
-    provider: '',
     amount: 0,
     billing_cycle: 'monthly',
-    next_due_date: '',
-    auto_pay: false
   });
 
   const upcomingBills = getUpcomingBills();
@@ -68,35 +66,33 @@ export function AutoPilotDashboard() {
   const todaysQueue = getTodaysQueue();
 
   const handleSubmitRequest = async () => {
-    if (!newRequest.client_name || !newRequest.request_details) {
-      toast.error('Please fill in client name and request details');
+    if (!newRequest.name || !newRequest.business_type || !newRequest.country || !newRequest.language || !newRequest.features_required) {
+      toast.error('Please fill all required client request fields');
       return;
     }
     await submitClientRequest(newRequest);
     setNewRequest({
-      client_name: '',
-      client_email: '',
-      request_type: 'custom',
-      request_details: '',
-      priority: 'medium'
+      name: '',
+      business_type: '',
+      country: '',
+      language: '',
+      budget: 0,
+      features_required: '',
     });
     setShowRequestForm(false);
   };
 
   const handleAddBilling = async () => {
-    if (!newBilling.service_name || !newBilling.next_due_date || newBilling.amount <= 0) {
+    if (!newBilling.user_id || !newBilling.service_name || newBilling.amount <= 0 || !newBilling.billing_cycle) {
       toast.error('Please fill in all required billing fields');
       return;
     }
     await addBillingItem(newBilling);
     setNewBilling({
-      service_type: 'subscription',
+      user_id: '',
       service_name: '',
-      provider: '',
       amount: 0,
       billing_cycle: 'monthly',
-      next_due_date: '',
-      auto_pay: false
     });
     setShowBillingForm(false);
   };
@@ -121,17 +117,26 @@ export function AutoPilotDashboard() {
     }
   };
 
-  const getPriorityColor = (priority: string) => {
+  const getPriorityColor = (priority: number) => {
     switch (priority) {
-      case 'urgent':
+      case 1:
         return 'text-red-400';
-      case 'high':
+      case 2:
         return 'text-orange-400';
-      case 'medium':
+      case 3:
         return 'text-yellow-400';
       default:
         return 'text-green-400';
     }
+  };
+
+  const priorityFromScore = (score: number | null | undefined) => {
+    const s = typeof score === 'number' ? score : 0;
+    if (s >= 85) return 1;
+    if (s >= 70) return 2;
+    if (s >= 55) return 3;
+    if (s >= 40) return 4;
+    return 5;
   };
 
   return (
@@ -285,54 +290,44 @@ export function AutoPilotDashboard() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <Input 
-                  placeholder="Client Name *"
-                  value={newRequest.client_name}
-                  onChange={(e) => setNewRequest({ ...newRequest, client_name: e.target.value })}
-                />
-                <Input 
-                  placeholder="Client Email"
-                  type="email"
-                  value={newRequest.client_email}
-                  onChange={(e) => setNewRequest({ ...newRequest, client_email: e.target.value })}
-                />
+                <Input placeholder="Name *" value={newRequest.name} onChange={(e) => setNewRequest({ ...newRequest, name: e.target.value })} />
+                <Input placeholder="Business Type *" value={newRequest.business_type} onChange={(e) => setNewRequest({ ...newRequest, business_type: e.target.value })} />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <Select 
-                  value={newRequest.request_type}
-                  onValueChange={(val) => setNewRequest({ ...newRequest, request_type: val })}
-                >
+                <Select value={newRequest.country} onValueChange={(val) => setNewRequest({ ...newRequest, country: val })}>
                   <SelectTrigger>
-                    <SelectValue placeholder="Request Type" />
+                    <SelectValue placeholder="Country *" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="payment_gateway">Payment Gateway</SelectItem>
-                    <SelectItem value="ai_api">AI API Integration</SelectItem>
-                    <SelectItem value="server">Server Setup</SelectItem>
-                    <SelectItem value="database">Database</SelectItem>
-                    <SelectItem value="domain">Domain/SSL</SelectItem>
-                    <SelectItem value="custom">Custom Development</SelectItem>
+                    <SelectItem value="india">India</SelectItem>
+                    <SelectItem value="nigeria">Nigeria</SelectItem>
+                    <SelectItem value="kenya">Kenya</SelectItem>
+                    <SelectItem value="south-africa">South Africa</SelectItem>
+                    <SelectItem value="global">Global</SelectItem>
                   </SelectContent>
                 </Select>
-                <Select 
-                  value={newRequest.priority}
-                  onValueChange={(val) => setNewRequest({ ...newRequest, priority: val })}
-                >
+                <Select value={newRequest.language} onValueChange={(val) => setNewRequest({ ...newRequest, language: val })}>
                   <SelectTrigger>
-                    <SelectValue placeholder="Priority" />
+                    <SelectValue placeholder="Language *" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="low">Low</SelectItem>
-                    <SelectItem value="medium">Medium</SelectItem>
-                    <SelectItem value="high">High</SelectItem>
-                    <SelectItem value="urgent">Urgent</SelectItem>
+                    <SelectItem value="english">English</SelectItem>
+                    <SelectItem value="hindi">Hindi</SelectItem>
+                    <SelectItem value="french">French</SelectItem>
+                    <SelectItem value="arabic">Arabic</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
+              <Input
+                placeholder="Budget"
+                type="number"
+                value={newRequest.budget || ''}
+                onChange={(e) => setNewRequest({ ...newRequest, budget: parseFloat(e.target.value) || 0 })}
+              />
               <Textarea 
-                placeholder="Request Details - AI will analyze and auto-handle *"
-                value={newRequest.request_details}
-                onChange={(e) => setNewRequest({ ...newRequest, request_details: e.target.value })}
+                placeholder="Features Required *"
+                value={newRequest.features_required}
+                onChange={(e) => setNewRequest({ ...newRequest, features_required: e.target.value })}
                 rows={4}
               />
               <div className="flex gap-2">
@@ -361,57 +356,33 @@ export function AutoPilotDashboard() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <Select 
-                  value={newBilling.service_type}
-                  onValueChange={(val) => setNewBilling({ ...newBilling, service_type: val })}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Service Type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ai_api">AI API</SelectItem>
-                    <SelectItem value="server">Server</SelectItem>
-                    <SelectItem value="domain">Domain</SelectItem>
-                    <SelectItem value="subscription">Subscription</SelectItem>
-                    <SelectItem value="license">License</SelectItem>
-                  </SelectContent>
-                </Select>
+                <Input
+                  placeholder="User ID *"
+                  value={newBilling.user_id}
+                  onChange={(e) => setNewBilling({ ...newBilling, user_id: e.target.value })}
+                />
                 <Input 
                   placeholder="Service Name *"
                   value={newBilling.service_name}
                   onChange={(e) => setNewBilling({ ...newBilling, service_name: e.target.value })}
                 />
-                <Input 
-                  placeholder="Provider"
-                  value={newBilling.provider}
-                  onChange={(e) => setNewBilling({ ...newBilling, provider: e.target.value })}
-                />
+                <Select value={newBilling.billing_cycle} onValueChange={(val) => setNewBilling({ ...newBilling, billing_cycle: val })}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Billing Cycle *" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="monthly">Monthly</SelectItem>
+                    <SelectItem value="quarterly">Quarterly</SelectItem>
+                    <SelectItem value="yearly">Yearly</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
                 <Input 
                   placeholder="Amount ($) *"
                   type="number"
                   value={newBilling.amount || ''}
                   onChange={(e) => setNewBilling({ ...newBilling, amount: parseFloat(e.target.value) || 0 })}
-                />
-                <Select 
-                  value={newBilling.billing_cycle}
-                  onValueChange={(val) => setNewBilling({ ...newBilling, billing_cycle: val })}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Billing Cycle" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="monthly">Monthly</SelectItem>
-                    <SelectItem value="yearly">Yearly</SelectItem>
-                    <SelectItem value="one-time">One-time</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Input 
-                  placeholder="Next Due Date *"
-                  type="date"
-                  value={newBilling.next_due_date}
-                  onChange={(e) => setNewBilling({ ...newBilling, next_due_date: e.target.value })}
                 />
               </div>
               <div className="flex gap-2">
@@ -441,16 +412,16 @@ export function AutoPilotDashboard() {
             <div className="space-y-2">
               {upcomingBills.map((bill) => (
                 <div key={bill.id} className="flex items-center justify-between p-3 bg-background/50 rounded-lg">
-                  <div>
-                    <p className="font-medium">{bill.service_name}</p>
-                    <p className="text-sm text-muted-foreground">{bill.service_type} • {bill.provider || 'N/A'}</p>
+                    <div>
+                      <p className="font-medium">{bill.service_name}</p>
+                      <p className="text-sm text-muted-foreground">User: {bill.user_id || 'N/A'} • {bill.billing_cycle}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="font-bold text-orange-400">${bill.amount}</p>
+                      <p className="text-sm text-muted-foreground">Status: {bill.status}</p>
+                    </div>
                   </div>
-                  <div className="text-right">
-                    <p className="font-bold text-orange-400">${bill.amount}</p>
-                    <p className="text-sm text-muted-foreground">Due: {bill.next_due_date}</p>
-                  </div>
-                </div>
-              ))}
+                ))}
             </div>
           </CardContent>
         </Card>
@@ -478,24 +449,24 @@ export function AutoPilotDashboard() {
                   <div className="flex items-start justify-between">
                     <div>
                       <div className="flex items-center gap-2">
-                        <p className="font-medium">{request.client_name}</p>
-                        <Badge variant="outline">{request.request_type}</Badge>
-                        <span className={`text-xs font-medium ${getPriorityColor(request.priority)}`}>
-                          {request.priority.toUpperCase()}
+                        <p className="font-medium">{request.name}</p>
+                        <Badge variant="outline">{request.business_type}</Badge>
+                        <span className={`text-xs font-medium ${getPriorityColor(priorityFromScore(request.ai_score))}`}>
+                          P{priorityFromScore(request.ai_score)}
                         </span>
                       </div>
-                      <p className="text-sm text-muted-foreground mt-1">{request.request_details}</p>
-                      {request.ai_response && (
+                      <p className="text-sm text-muted-foreground mt-1">{request.features_required}</p>
+                      {request.assigned_to && (
                         <div className="mt-2 p-2 bg-primary/10 rounded text-sm">
-                          <span className="font-medium text-primary">AI Response: </span>
-                          {request.ai_response}
+                          <span className="font-medium text-primary">Assigned To: </span>
+                          {request.assigned_to}
                         </div>
                       )}
                     </div>
                     <div className="flex flex-col items-end gap-2">
                       {getStatusBadge(request.status)}
-                      {request.estimated_cost && (
-                        <span className="text-sm font-medium">${request.estimated_cost}</span>
+                      {request.budget && (
+                        <span className="text-sm font-medium">${request.budget}</span>
                       )}
                     </div>
                   </div>
@@ -533,24 +504,17 @@ export function AutoPilotDashboard() {
                 <div key={software.id} className="p-4 bg-muted/30 rounded-lg">
                   <div className="flex items-start justify-between">
                     <div>
-                      <p className="font-medium">{software.software_name}</p>
+                      <p className="font-medium">{software.type.toUpperCase()} Build</p>
                       <p className="text-sm text-muted-foreground">
-                        {software.target_industry} • {software.software_type}
+                        Priority: {software.priority} • Retries: {software.retry_count}
                       </p>
-                      {software.ai_generated_description && (
+                      {software.logs && (
                         <p className="text-xs text-muted-foreground mt-1">
-                          {software.ai_generated_description}
+                          {software.logs}
                         </p>
                       )}
                     </div>
                     {getStatusBadge(software.status)}
-                  </div>
-                  <div className="flex flex-wrap gap-1 mt-2">
-                    {(software.features as { icon: string; text: string }[] || []).slice(0, 3).map((feature, idx) => (
-                      <Badge key={idx} variant="outline" className="text-xs">
-                        {feature.text}
-                      </Badge>
-                    ))}
                   </div>
                 </div>
               ))}
