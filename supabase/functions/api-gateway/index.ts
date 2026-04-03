@@ -18,6 +18,9 @@ const productListCache: { data: any[] | null; expiresAt: number } = { data: null
 const PRODUCT_LIST_CACHE_TTL_MS = 60 * 1000
 const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SECONDS') || '60')
 const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
+const DEFAULT_GITHUB_ORG = Deno.env.get('GITHUB_DEFAULT_ORG') || 'saasvala'
+const STANDARD_APP_ROLES = ['admin', 'user'] as const
+const DB_INDEX_HINT_PATTERNS = (Deno.env.get('DB_INDEX_HINT_PATTERNS') || 'email,status').split(',').map((v) => v.trim()).filter(Boolean)
 const DEFAULT_COMMISSION_RATE = 10
 const FINAL_RESELLER_GAP_FEATURE_KEYS = [
   'tier_based_dynamic_commission_engine',
@@ -282,6 +285,11 @@ function sanitizeSlug(value: unknown) {
     .replace(/[^a-z0-9-]/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
+}
+
+function buildGithubRepoUrl(slug: string, org = DEFAULT_GITHUB_ORG) {
+  if (!slug) return ''
+  return `https://github.com/${org}/${slug}`
 }
 
 async function emitPipelineEvent(
@@ -2215,7 +2223,11 @@ async function handleGit(method: string, pathParts: string[], body: any, userId:
       include_unused: body?.include_unused !== false,
     }
 
-    await emitPipelineEvent(admin, userId, 'builder_event', 'git_scan', 'started', { repo_url: repoUrl || 'saasvala/*' })
+    await emitPipelineEvent(admin, userId, 'builder_event', 'git_scan', 'started', {
+      repo_url: repoUrl || null,
+      mode: repoUrl ? 'single_repo' : 'org_scan',
+      org: DEFAULT_GITHUB_ORG,
+    })
 
     const sourceScan = await sb.functions.invoke('source-code-manager', {
       body: { action: 'scan_and_register', data: { repo_url: repoUrl || undefined } },
@@ -2225,12 +2237,13 @@ async function handleGit(method: string, pathParts: string[], body: any, userId:
       return err(sourceScan.error.message, 500)
     }
 
+    const scanResult = sourceScan.data || {}
     const report = {
-      missing_files: [] as string[],
-      broken_imports: [] as string[],
-      unused_code: [] as string[],
-      security_issues: [] as string[],
-      performance_issues: [] as string[],
+      missing_files: Array.isArray(scanResult?.missing_files) ? scanResult.missing_files : [],
+      broken_imports: Array.isArray(scanResult?.broken_imports) ? scanResult.broken_imports : [],
+      unused_code: Array.isArray(scanResult?.unused_code) ? scanResult.unused_code : [],
+      security_issues: Array.isArray(scanResult?.security_issues) ? scanResult.security_issues : [],
+      performance_issues: Array.isArray(scanResult?.performance_issues) ? scanResult.performance_issues : [],
     }
 
     await emitPipelineEvent(admin, userId, 'builder_event', 'git_scan', 'success', {
@@ -2392,7 +2405,9 @@ async function handleCode(method: string, pathParts: string[], body: any, userId
           tech_stack: techStack,
           target: sanitizeTextInput(body?.target || 'fullstack', 40),
           auth: body?.auth !== false,
-          roles: Array.isArray(body?.roles) ? body.roles.map((r: unknown) => sanitizeTextInput(r, 40)).filter(Boolean) : ['admin', 'user'],
+          roles: Array.isArray(body?.roles)
+            ? body.roles.map((r: unknown) => sanitizeTextInput(r, 40)).filter(Boolean)
+            : [...STANDARD_APP_ROLES],
           marketplace: body?.marketplace !== false,
         },
       },
@@ -2420,9 +2435,15 @@ async function handleDb(method: string, pathParts: string[], body: any, userId: 
     await emitPipelineEvent(admin, userId, 'builder_event', 'db_generate', 'started')
 
     const entities = Array.isArray(body?.entities) ? body.entities : []
+    const fallbackAppName = sanitizeTextInput(body?.app_name || 'app', 40)
+    const fallbackTableBase = `${fallbackAppName}_items`
+    const fallbackTableName = sanitizeSlug(fallbackTableBase).replace(/-/g, '_')
     const baseTables = entities.length > 0
       ? entities
-      : [{ name: sanitizeTextInput(body?.app_name || 'app', 40) + '_items', fields: [{ name: 'name', type: 'text' }] }]
+      : [{
+        name: fallbackTableName,
+        fields: [{ name: 'name', type: 'text' }],
+      }]
 
     const sanitizedTables = baseTables
       .map((entity: any) => {
@@ -2464,11 +2485,16 @@ async function handleDb(method: string, pathParts: string[], body: any, userId: 
       return `create table if not exists ${table.name} (\n  ${columns.join(',\n  ')}\n);`
     })
 
-    const indexes = sanitizedTables.flatMap((table) =>
+    const indexStatements = sanitizedTables.flatMap((table) =>
       table.fields
-        .filter((field) => field.name.endsWith('_id') || field.name.includes('email') || field.name.includes('status'))
+        .filter(
+          (field) =>
+            field.name.endsWith('_id') ||
+            DB_INDEX_HINT_PATTERNS.some((pattern) => field.name.includes(pattern))
+        )
         .map((field) => `create index if not exists idx_${table.name}_${field.name} on ${table.name} (${field.name});`)
     )
+    const indexes = Array.from(new Set(indexStatements))
 
     const result = {
       tables: sanitizedTables.map((t) => ({ name: t.name, fields: t.fields })),
@@ -2506,7 +2532,7 @@ async function handleBuild(method: string, pathParts: string[], body: any, userI
       .from('apk_build_queue')
       .insert({
         repo_name: sanitizeTextInput(body?.repo_name || slug || 'unnamed'),
-        repo_url: sanitizeTextInput(body?.repo_url || (slug ? `https://github.com/saasvala/${slug}` : '')),
+        repo_url: sanitizeTextInput(body?.repo_url || buildGithubRepoUrl(slug || '')),
         slug: slug || 'unnamed',
         build_status: 'pending',
         target_industry: sanitizeTextInput(body?.target_industry || '', 60) || null,

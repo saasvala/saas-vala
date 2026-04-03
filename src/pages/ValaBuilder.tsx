@@ -15,6 +15,9 @@ import {
 import { cn } from '@/lib/utils';
 
 type StepStatus = 'idle' | 'running' | 'done' | 'error';
+const DEFAULT_GITHUB_ORG = import.meta.env.VITE_GITHUB_ORG || 'saasvala';
+const MAX_AUTO_FIX_RETRIES = 2;
+const DEFAULT_LIVE_DOMAIN = import.meta.env.VITE_DEFAULT_LIVE_DOMAIN || 'saasvala.com';
 
 interface WorkflowStep {
   id: string;
@@ -73,7 +76,7 @@ export default function ValaBuilder() {
       addOutput('📋 AI Planner analyzing requirements...');
 
       const scanRes = await ultraBuilderApi.scanFull({
-        repo_url: `https://github.com/saasvala/${slug}`,
+        repo_url: `https://github.com/${DEFAULT_GITHUB_ORG}/${slug}`,
         prompt,
       });
       if (!scanRes?.success) throw new Error('Git scan failed');
@@ -162,18 +165,23 @@ export default function ValaBuilder() {
       addOutput('✅ Debug scan completed');
 
       updateStep('fix', 'running');
-      let fixRes = await ultraBuilderApi.autoFix({
-        app_name: appName,
-        project_name: slug,
-        prompt: `Fix all issues for ${appName}`,
-      });
-      if (!fixRes?.success) {
-        addOutput('⚠️ Auto fix retry triggered...');
+      let fixRes: any = null;
+      let retryContext = '';
+      for (let attempt = 1; attempt <= MAX_AUTO_FIX_RETRIES; attempt++) {
         fixRes = await ultraBuilderApi.autoFix({
           app_name: appName,
           project_name: slug,
-          prompt: `Retry auto-fix and validate all issues for ${appName}`,
+          prompt: attempt === 1
+            ? `Fix all issues for ${appName}`
+            : `Retry auto-fix and validate all issues for ${appName}. ${retryContext}`,
+          issues: attempt > 1 ? [{ source: 'debug_full', context: retryContext || 'retry_requested' }] : [],
         });
+        if (fixRes?.success) break;
+        retryContext = `Attempt ${attempt} failed. Debug summary: ${JSON.stringify(debugRes?.data || {})}`.slice(0, 1200);
+        if (attempt < MAX_AUTO_FIX_RETRIES) {
+          addOutput(`⚠️ Auto fix retry ${attempt}/${MAX_AUTO_FIX_RETRIES}...`);
+          await new Promise(r => setTimeout(r, attempt * 500));
+        }
       }
       if (!fixRes?.success) throw new Error('Auto fix failed');
       updateStep('fix', 'done', 'Fix loop complete');
@@ -187,7 +195,7 @@ export default function ValaBuilder() {
         app_name: appName,
         slug,
         repo_name: slug,
-        repo_url: `https://github.com/saasvala/${slug}`,
+        repo_url: `https://github.com/${DEFAULT_GITHUB_ORG}/${slug}`,
       });
       if (!buildRes?.success) throw new Error('Build failed');
 
@@ -201,8 +209,8 @@ export default function ValaBuilder() {
       });
       if (!deployRes?.success) throw new Error('Deploy failed');
 
-      const liveUrl = deployRes?.data?.deployment?.url || `https://${slug}.saasvala.com`;
-      const repoUrl = `https://github.com/saasvala/${slug}`;
+      const liveUrl = deployRes?.data?.deployment?.url || `https://${slug}.${DEFAULT_LIVE_DOMAIN}`;
+      const repoUrl = `https://github.com/${DEFAULT_GITHUB_ORG}/${slug}`;
       setDemoUrl(liveUrl);
       setGithubUrl(repoUrl);
 
@@ -214,7 +222,7 @@ export default function ValaBuilder() {
       addOutput('📦 Building APK + publishing to marketplace...');
       await ultraBuilderApi.apkBuild({
         repo_name: slug,
-        repo_url: `https://github.com/saasvala/${slug}`,
+        repo_url: `https://github.com/${DEFAULT_GITHUB_ORG}/${slug}`,
         slug,
       });
       updateStep('publish', 'done');
@@ -243,7 +251,7 @@ export default function ValaBuilder() {
         const data = await ultraBuilderApi.deployFull({
           filePath: `${slug}/build.zip`,
         });
-        setDemoUrl(data?.data?.deployment?.url || `https://${slug}.saasvala.com`);
+        setDemoUrl(data?.data?.deployment?.url || `https://${slug}.${DEFAULT_LIVE_DOMAIN}`);
         toast.success('Deployed!');
       } else if (action === 'generate') {
         await ultraBuilderApi.codeGenerate({
@@ -253,7 +261,7 @@ export default function ValaBuilder() {
           prompt: `Create: ${appName} - ${prompt}`,
           tech_stack: 'react',
         });
-        setGithubUrl(`https://github.com/saasvala/${slug}`);
+        setGithubUrl(`https://github.com/${DEFAULT_GITHUB_ORG}/${slug}`);
         toast.success('Code generated & pushed to GitHub!');
       } else if (action === 'fix') {
         await ultraBuilderApi.autoFix({
