@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
+import { resellersApi } from '@/lib/api';
  import { Badge } from '@/components/ui/badge';
  import { ScrollArea } from '@/components/ui/scroll-area';
  import { Button } from '@/components/ui/button';
@@ -21,11 +22,12 @@ import { supabase } from '@/integrations/supabase/client';
 interface ActivityLog {
   id: string;
   action: string;
-  table_name: string;
-  record_id: string | null;
+  entity_type?: string;
+  entity_id?: string | null;
+  module?: string;
   details: Record<string, unknown> | null;
   created_at: string;
-  user_id: string | null;
+  performed_by?: string | null;
 }
  
 const getActionIcon = (action: string) => {
@@ -54,12 +56,22 @@ const getActionIcon = (action: string) => {
      case 'credit_added':
      case 'balance':
        return <DollarSign className="h-4 w-4 text-success" />;
-     case 'key_generated':
-       return <Key className="h-4 w-4 text-primary" />;
-     default:
-       return <Activity className="h-4 w-4 text-muted-foreground" />;
-   }
- };
+      case 'key_generated':
+        return <Key className="h-4 w-4 text-primary" />;
+      case 'login':
+        return <Play className="h-4 w-4 text-success" />;
+      case 'logout':
+        return <Ban className="h-4 w-4 text-muted-foreground" />;
+      case 'wallet_credit':
+      case 'wallet_debit':
+        return <DollarSign className="h-4 w-4 text-success" />;
+      case 'product_purchase':
+      case 'api_usage':
+        return <Activity className="h-4 w-4 text-primary" />;
+      default:
+        return <Activity className="h-4 w-4 text-muted-foreground" />;
+    }
+  };
  
   const getActionBadge = (action: string) => {
     const variants: Record<string, { class: string; label: string }> = {
@@ -75,26 +87,32 @@ const getActionIcon = (action: string) => {
      edit: { class: 'bg-warning/20 text-warning border-warning/30', label: 'Edited' },
      delete: { class: 'bg-destructive/20 text-destructive border-destructive/30', label: 'Deleted' },
      create: { class: 'bg-primary/20 text-primary border-primary/30', label: 'Created' },
-     credit_added: { class: 'bg-success/20 text-success border-success/30', label: 'Credit Added' },
-     key_generated: { class: 'bg-primary/20 text-primary border-primary/30', label: 'Key Generated' },
-   };
+      credit_added: { class: 'bg-success/20 text-success border-success/30', label: 'Credit Added' },
+      key_generated: { class: 'bg-primary/20 text-primary border-primary/30', label: 'Key Generated' },
+      login: { class: 'bg-success/20 text-success border-success/30', label: 'Login' },
+      logout: { class: 'bg-muted text-muted-foreground border-border', label: 'Logout' },
+      wallet_credit: { class: 'bg-success/20 text-success border-success/30', label: 'Wallet Add' },
+      wallet_debit: { class: 'bg-warning/20 text-warning border-warning/30', label: 'Wallet Debit' },
+      product_purchase: { class: 'bg-primary/20 text-primary border-primary/30', label: 'Product Purchase' },
+      api_usage: { class: 'bg-primary/20 text-primary border-primary/30', label: 'API Usage' },
+    };
    const variant = variants[action.toLowerCase()] || { class: 'bg-muted text-muted-foreground', label: action };
    return <Badge variant="outline" className={variant.class}>{variant.label}</Badge>;
  };
  
-export function ResellerActivityPanel() {
+interface ResellerActivityPanelProps {
+  resellerId?: string;
+}
+
+export function ResellerActivityPanel({ resellerId }: ResellerActivityPanelProps) {
   const [activities, setActivities] = useState<ActivityLog[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchActivities = async () => {
     setLoading(true);
     try {
-      const { data } = await supabase
-        .from('activity_logs')
-        .select('id, action, table_name, record_id, details, created_at, user_id')
-        .order('created_at', { ascending: false })
-        .limit(50);
-      setActivities((data || []) as ActivityLog[]);
+      const response = await resellersApi.activity(resellerId);
+      setActivities((response?.data || []) as ActivityLog[]);
     } catch {
       setActivities([]);
     } finally {
@@ -104,7 +122,22 @@ export function ResellerActivityPanel() {
 
   useEffect(() => {
     fetchActivities();
-  }, []);
+    const interval = setInterval(fetchActivities, 15000);
+    return () => clearInterval(interval);
+  }, [resellerId]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel(`reseller-activity-live-${resellerId || 'all'}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'activity_logs' }, () => {
+        fetchActivities();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [resellerId]);
  
    return (
      <div className="glass-card rounded-xl p-4">
@@ -146,11 +179,11 @@ export function ResellerActivityPanel() {
                      </span>
                    </div>
                    <p className="text-sm text-foreground mt-1 truncate">
-                     {activity.details && typeof activity.details === 'object' && 'company_name' in activity.details
-                        ? String(activity.details.company_name)
-                        : activity.record_id
-                          ? `Record ${activity.record_id.slice(0, 8)}...`
-                          : 'Reseller event'}
+                      {activity.details && typeof activity.details === 'object' && 'company_name' in activity.details
+                         ? String(activity.details.company_name)
+                         : activity.entity_id
+                           ? `Record ${activity.entity_id.slice(0, 8)}...`
+                           : 'Reseller event'}
                    </p>
                    {activity.details && typeof activity.details === 'object' && 'notes' in activity.details && (
                      <p className="text-xs text-muted-foreground mt-0.5">{String(activity.details.notes)}</p>

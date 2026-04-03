@@ -58,6 +58,39 @@ import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
 
 const ITEMS_PER_PAGE = 25;
+const FINAL_RESELLER_GAP_FEATURES = [
+  { key: 'tier_based_dynamic_commission_engine', label: 'Tier-based Dynamic Commission Engine' },
+  { key: 'per_product_commission_override', label: 'Per-product Commission Override' },
+  { key: 'credit_risk_scoring_auto_block', label: 'Credit Risk Scoring Auto-block' },
+  { key: 'reseller_sla_uptime_tracking', label: 'Reseller SLA Uptime Tracking' },
+  { key: 'auto_payout_scheduling', label: 'Auto Payout Scheduling' },
+  { key: 'commission_dispute_system', label: 'Commission Dispute System' },
+  { key: 'multi_level_reseller_hierarchy', label: 'Multi-level Reseller Hierarchy' },
+  { key: 'geo_country_restriction', label: 'Geo/Country Restriction' },
+  { key: 'tax_split_per_reseller', label: 'Tax Split per Reseller' },
+  { key: 'reseller_performance_scoring', label: 'Reseller Performance Scoring' },
+  { key: 'limits_per_day_month_keys_sales', label: 'Daily/Monthly Key & Sales Limits' },
+  { key: 'auto_suspend_on_fraud_triggers', label: 'Auto Suspend on Fraud Triggers' },
+  { key: 'contract_terms_acceptance_log', label: 'Contract Terms Acceptance Log' },
+];
+const FINAL_ULTRA_LAYER_FEATURES = [
+  { key: 'real_time_event_bus_pub_sub', label: 'Realtime Event Bus (Pub/Sub)' },
+  { key: 'distributed_job_queue_priority_retries', label: 'Distributed Job Queue + Retries' },
+  { key: 'event_sourcing_for_critical_flows', label: 'Event Sourcing for Critical Flows' },
+  { key: 'read_write_db_separation', label: 'Read/Write DB Separation' },
+  { key: 'horizontal_scaling_stateless_apis', label: 'Horizontal Scaling (Stateless APIs)' },
+  { key: 'feature_toggle_per_reseller', label: 'Feature Toggle per Reseller' },
+  { key: 'ai_anomaly_detection_sales_fraud', label: 'AI Anomaly Detection (Sales/Fraud)' },
+  { key: 'smart_retry_with_backoff', label: 'Smart Retry with Backoff' },
+  { key: 'dead_letter_queue_handling', label: 'Dead-letter Queue Handling' },
+  { key: 'versioned_apis_v1_v2', label: 'Versioned APIs (v1/v2)' },
+  { key: 'blue_green_deployment', label: 'Blue/Green Deployment' },
+  { key: 'canary_release_control', label: 'Canary Release Control' },
+  { key: 'auto_schema_migration_rollback', label: 'Auto Schema Migration Rollback' },
+  { key: 'data_partitioning_large_tables', label: 'Data Partitioning for Large Tables' },
+  { key: 'cold_storage_archive_strategy', label: 'Cold Storage Archive Strategy' },
+  { key: 'edge_caching_with_invalidation_rules', label: 'Edge Caching + Invalidation Rules' },
+];
 
 export default function Resellers() {
 
@@ -77,13 +110,15 @@ export default function Resellers() {
   const [selectedApplication, setSelectedApplication] = useState<ResellerApplication | null>(null);
   const [adminNotes, setAdminNotes] = useState('');
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewTab, setReviewTab] = useState('application');
+  const [selectedFeatures, setSelectedFeatures] = useState<string[]>([]);
 
   // Form state
   const [formData, setFormData] = useState({
     company_name: '',
     commission_percent: 10,
     credit_limit: 0,
-    is_active: true,
+    is_active: false,
     is_verified: false,
   });
 
@@ -91,10 +126,23 @@ export default function Resellers() {
   const resellerKycStatus = (reseller: Reseller) => String(reseller.kyc_status || (reseller.is_verified ? 'verified' : 'pending')).toLowerCase();
 
   const filteredResellers = resellers.filter((reseller) => {
+    const status = resellerStatus(reseller);
+    const kycStatus = resellerKycStatus(reseller);
     const name = (reseller.company_name || '').toLowerCase();
     const profileName = (reseller.profile?.full_name || '').toLowerCase();
-    const matchesSearch = !searchQuery || name.includes(searchQuery.toLowerCase()) || profileName.includes(searchQuery.toLowerCase());
+    const email = (reseller.profile?.email || '').toLowerCase();
+    const phone = (reseller.profile?.phone || '').toLowerCase();
+    const normalizedQuery = searchQuery.toLowerCase();
+    const matchesSearch =
+      !searchQuery ||
+      name.includes(normalizedQuery) ||
+      profileName.includes(normalizedQuery) ||
+      email.includes(normalizedQuery) ||
+      phone.includes(normalizedQuery);
     if (!matchesSearch) return false;
+    if (activeTab === 'active') return status === 'active';
+    if (activeTab === 'suspended') return status === 'suspended' || status === 'inactive';
+    if (activeTab === 'verified') return kycStatus === 'verified';
 
     return true;
   });
@@ -103,7 +151,10 @@ export default function Resellers() {
 
   const stats = {
     total: resellers.length,
-
+    active: resellers.filter((r) => resellerStatus(r) === 'active').length,
+    suspended: resellers.filter((r) => resellerStatus(r) === 'suspended').length,
+    blocked: resellers.filter((r) => resellerStatus(r) === 'inactive').length,
+    verified: resellers.filter((r) => resellerKycStatus(r) === 'verified').length,
   };
 
   const handlePageChange = (page: number) => {
@@ -124,7 +175,7 @@ export default function Resellers() {
       company_name: '',
       commission_percent: 10,
       credit_limit: 0,
-      is_active: true,
+      is_active: false,
       is_verified: false,
     });
     setDialogOpen(true);
@@ -165,6 +216,10 @@ export default function Resellers() {
         await resellersApi.create({
           user_id: userId.trim(),
           ...formData,
+          status: 'pending',
+          is_active: false,
+          is_verified: false,
+          kyc_status: 'pending',
         });
         await fetchResellers(currentPage, ITEMS_PER_PAGE, searchQuery);
       }
@@ -175,7 +230,48 @@ export default function Resellers() {
   };
 
   const openDetailDialog = async (reseller: Reseller) => {
+    setDetailOpen(true);
+    setDetailLoading(true);
+    try {
+      const response = await resellersApi.get(reseller.id);
+      setDetailReseller(response?.data || reseller);
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to load reseller details');
+      setDetailReseller(reseller);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
 
+  const allowReseller = async (reseller: Reseller) => {
+    await resellersApi.allow(reseller.id);
+    toast.success('Reseller allowed');
+    await fetchResellers(currentPage, ITEMS_PER_PAGE, searchQuery);
+  };
+
+  const suspendReseller = async (reseller: Reseller) => {
+    await resellersApi.suspend(reseller.id);
+    toast.success('Reseller suspended');
+    await fetchResellers(currentPage, ITEMS_PER_PAGE, searchQuery);
+  };
+
+  const blockReseller = async (reseller: Reseller) => {
+    await resellersApi.block(reseller.id);
+    toast.success('Reseller blocked');
+    await fetchResellers(currentPage, ITEMS_PER_PAGE, searchQuery);
+  };
+
+  const toggleSuspend = async (reseller: Reseller) => {
+    if (resellerStatus(reseller) === 'active') {
+      await suspendReseller(reseller);
+      return;
+    }
+    await allowReseller(reseller);
+  };
+
+  const markVerified = async (reseller: Reseller) => {
+    await updateReseller(reseller.id, { is_verified: true, kyc_status: 'verified' });
+    await fetchResellers(currentPage, ITEMS_PER_PAGE, searchQuery);
   };
 
   const handleOpenApplication = (app: ResellerApplication) => {
@@ -237,7 +333,7 @@ export default function Resellers() {
     setTimeout(() => URL.revokeObjectURL(link.href), 100);
   };
 
-  const handleExport = async (type: 'resellers' | 'sales' | 'commissions') => {
+  const handleExport = async (type: 'resellers' | 'sales' | 'commissions' | 'activity') => {
     setExporting(true);
     try {
       const res = await resellersApi.exportData(type);
@@ -290,11 +386,14 @@ export default function Resellers() {
                  <DropdownMenuItem className="cursor-pointer" onClick={() => handleExport('sales')}>
                    Sales CSV
                  </DropdownMenuItem>
-                 <DropdownMenuItem className="cursor-pointer" onClick={() => handleExport('commissions')}>
-                   Commissions CSV
-                 </DropdownMenuItem>
-               </DropdownMenuContent>
-             </DropdownMenu>
+                  <DropdownMenuItem className="cursor-pointer" onClick={() => handleExport('commissions')}>
+                    Commissions CSV
+                  </DropdownMenuItem>
+                  <DropdownMenuItem className="cursor-pointer" onClick={() => handleExport('activity')}>
+                    Activity CSV
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button onClick={openCreateDialog} className="bg-orange-gradient hover:opacity-90 text-white gap-2">
                 <Plus className="h-4 w-4" />
                 Add Reseller
@@ -521,9 +620,12 @@ export default function Resellers() {
                                   </>
                                 ) : (
                                   <>
-                                    <Play className="h-4 w-4" /> Activate
+                                    <Play className="h-4 w-4" /> Allow
                                   </>
                                 )}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem className="gap-2 cursor-pointer text-destructive focus:text-destructive" onClick={() => blockReseller(reseller)}>
+                                <Ban className="h-4 w-4" /> Block
                               </DropdownMenuItem>
                               {resellerKycStatus(reseller) !== 'verified' && (
                                 <DropdownMenuItem className="gap-2 cursor-pointer" onClick={() => markVerified(reseller)}>
@@ -551,10 +653,35 @@ export default function Resellers() {
  
            {/* Activity Panel */}
            <div className="xl:col-span-1">
-             <ResellerActivityPanel />
+             <ResellerActivityPanel resellerId={detailReseller?.id} />
            </div>
-        </div>
+         </div>
       </div>
+
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Reseller Details</DialogTitle>
+            <DialogDescription>Latest reseller account data and status.</DialogDescription>
+          </DialogHeader>
+          {detailLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            </div>
+          ) : detailReseller ? (
+            <div className="space-y-3 text-sm">
+              <div><span className="text-muted-foreground">Company:</span> {detailReseller.company_name || detailReseller.profile?.company_name || detailReseller.profile?.full_name || 'Unnamed'}</div>
+              <div><span className="text-muted-foreground">Email:</span> {detailReseller.profile?.email || '-'}</div>
+              <div><span className="text-muted-foreground">Phone:</span> {detailReseller.profile?.phone || '-'}</div>
+              <div><span className="text-muted-foreground">Status:</span> {String(detailReseller.status || (detailReseller.is_active ? 'active' : 'suspended')).toLowerCase()}</div>
+              <div><span className="text-muted-foreground">Commission:</span> {Number(detailReseller.commission_percent || 0)}%</div>
+              <div><span className="text-muted-foreground">Credit Limit:</span> ₹{Number(detailReseller.credit_limit || 0).toLocaleString()}</div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No details available.</p>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
