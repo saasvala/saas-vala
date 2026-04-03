@@ -30,6 +30,7 @@ class ApiError extends Error {
 
 const API_TIMEOUT_MS = Number(import.meta.env.VITE_API_TIMEOUT_MS || 10000);
 const API_MAX_RETRIES = Number(import.meta.env.VITE_API_MAX_RETRIES || 2);
+const RETRYABLE_STATUS_CODES = new Set([502, 503, 504]);
 
 async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promise<Response> {
   let lastError: unknown = null;
@@ -39,7 +40,7 @@ async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promi
     try {
       const res = await fetch(url, { ...config, signal: controller.signal });
       clearTimeout(timeout);
-      if (res.status >= 500 && attempt < API_MAX_RETRIES) {
+      if (RETRYABLE_STATUS_CODES.has(res.status) && attempt < API_MAX_RETRIES) {
         await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
         continue;
       }
@@ -71,8 +72,8 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
     config.body = JSON.stringify(body);
   }
 
-  const normalizedPath = path.replace(/^\/+/, '');
-  const res = await fetchWithTimeoutAndRetry(`${API_BASE}/${normalizedPath}`, config);
+  const pathWithoutLeadingSlash = path.replace(/^\/+/, '');
+  const res = await fetchWithTimeoutAndRetry(`${API_BASE}/${pathWithoutLeadingSlash}`, config);
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {

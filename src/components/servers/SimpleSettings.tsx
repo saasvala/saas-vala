@@ -53,6 +53,7 @@ export function SimpleSettings() {
       return;
     }
 
+    const previousSettings = localSettings;
     const newValue = !localSettings[settingId as keyof typeof localSettings];
     setLocalSettings(prev => ({ ...prev, [settingId]: newValue }));
 
@@ -69,6 +70,7 @@ export function SimpleSettings() {
           ddos: localSettings.ddos,
         });
       } catch {
+        setLocalSettings(previousSettings);
         toast.error('Failed to update');
         setSavingId(null);
         return;

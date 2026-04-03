@@ -71,19 +71,47 @@ export function ProjectDeploy() {
       return;
     }
 
-    // Simulate progress (real progress would come from agent)
-    let p = 0;
-    const interval = setInterval(() => {
-      p += 10;
+    let p = 10;
+    setProgress(p);
+    const maxPolls = 20;
+    let polls = 0;
+    const interval = setInterval(async () => {
+      polls += 1;
+      p = Math.min(95, p + 5);
       setProgress(p);
-      if (p >= 100) {
+      try {
+        const statusRes: any = await serversApi.deployStatusList(serverId);
+        const rows = Array.isArray(statusRes?.data) ? statusRes.data : [];
+        const latest = rows[0];
+        if (latest?.status === 'success' || latest?.status === 'rolled_back') {
+          clearInterval(interval);
+          setProgress(100);
+          setDeploying(false);
+          await fetchDeployments();
+          await fetchServers();
+          toast.success('Deployment successful!');
+          return;
+        }
+        if (latest?.status === 'failed' || latest?.status === 'cancelled') {
+          clearInterval(interval);
+          setDeploying(false);
+          await fetchDeployments();
+          await fetchServers();
+          toast.error(`Deployment ${latest.status}`);
+          return;
+        }
+      } catch {
+        // continue polling until timeout
+      }
+
+      if (polls >= maxPolls) {
         clearInterval(interval);
+        setDeploying(false);
         fetchDeployments();
         fetchServers();
-        setDeploying(false);
-        toast.success('Deployment successful!');
+        toast.info('Deployment started. Status will update shortly.');
       }
-    }, 300);
+    }, 1000);
   };
 
   const handleRollback = async () => {

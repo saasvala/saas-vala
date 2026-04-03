@@ -59,6 +59,7 @@ const typeConfig: Record<string, { icon: typeof Server; label: string }> = {
 };
 
 export function ServerListPanel({ routeModeAdd = false }: { routeModeAdd?: boolean }) {
+  const ACTION_DEBOUNCE_MS = 500;
   const navigate = useNavigate();
   const [servers, setServers] = useState<ServerItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -108,10 +109,10 @@ export function ServerListPanel({ routeModeAdd = false }: { routeModeAdd?: boole
   const canTriggerAction = useCallback((key: string) => {
     const now = Date.now();
     const prev = actionDebounceRef.current[key] || 0;
-    if (now - prev < 500) return false;
+    if (now - prev < ACTION_DEBOUNCE_MS) return false;
     actionDebounceRef.current[key] = now;
     return true;
-  }, []);
+  }, [ACTION_DEBOUNCE_MS]);
 
   const fetchServers = async () => {
     try {

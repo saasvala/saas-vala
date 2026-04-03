@@ -2038,8 +2038,8 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   const admin = adminClient()
   const segment = pathParts[0]
   const id = pathParts[1]
-  const action = pathParts[1]
-  const tail = pathParts[2]
+  const secondSegment = pathParts[1]
+  const thirdSegment = pathParts[2]
 
   // GET /projects
   if (method === 'GET' && segment === 'projects' && !id) {
@@ -2065,15 +2065,15 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   }
 
   // GET /servers/:id
-  if (method === 'GET' && segment === 'servers' && action && action !== 'status') {
-    const { data, error } = await sb.from('servers').select('*').eq('id', action).maybeSingle()
+  if (method === 'GET' && segment === 'servers' && secondSegment && secondSegment !== 'status') {
+    const { data, error } = await sb.from('servers').select('*').eq('id', secondSegment).maybeSingle()
     if (error) return fail(error.message, 400, 'DB_ERROR')
     if (!data) return fail('Server not found', 404, 'NOT_FOUND')
     return ok(data)
   }
 
   // GET /servers/status
-  if (method === 'GET' && segment === 'servers' && action === 'status') {
+  if (method === 'GET' && segment === 'servers' && secondSegment === 'status') {
     const now = Date.now()
     if (serverStatusCache.data && serverStatusCache.expiresAt > now) {
       return ok(serverStatusCache.data)
@@ -2087,7 +2087,7 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   }
 
   // POST /servers/start
-  if (method === 'POST' && segment === 'servers' && action === 'start') {
+  if (method === 'POST' && segment === 'servers' && secondSegment === 'start') {
     const parsed = serverActionSchema.safeParse(body)
     if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
     const { error } = await sb.from('servers').update({ status: 'live' }).eq('id', parsed.data.server_id)
@@ -2097,7 +2097,7 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   }
 
   // POST /servers/stop
-  if (method === 'POST' && segment === 'servers' && action === 'stop') {
+  if (method === 'POST' && segment === 'servers' && secondSegment === 'stop') {
     const parsed = serverActionSchema.safeParse(body)
     if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
     const { error } = await sb.from('servers').update({ status: 'stopped' }).eq('id', parsed.data.server_id)
@@ -2107,7 +2107,7 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   }
 
   // POST /servers/restart
-  if (method === 'POST' && segment === 'servers' && action === 'restart') {
+  if (method === 'POST' && segment === 'servers' && secondSegment === 'restart') {
     const parsed = serverActionSchema.safeParse(body)
     if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
     const { error } = await sb.from('servers').update({ status: 'live', last_deploy_at: nowIso() }).eq('id', parsed.data.server_id)
@@ -2216,8 +2216,9 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   if (method === 'GET' && segment === 'deploy' && pathParts[1] === 'logs' && !pathParts[2]) {
     let query = sb.from('deployment_logs').select('*').order('timestamp', { ascending: true }).limit(500)
     if (body.deployment_id) query = query.eq('deployment_id', body.deployment_id)
-    if (body.server_id) {
-      const { data: deps } = await sb.from('deployments').select('id').eq('server_id', body.server_id).order('created_at', { ascending: false }).limit(20)
+    const serverId = body.server_id || pathParts[3]
+    if (serverId) {
+      const { data: deps } = await sb.from('deployments').select('id').eq('server_id', serverId).order('created_at', { ascending: false }).limit(20)
       const ids = (deps || []).map((d: any) => d.id)
       if (ids.length > 0) query = query.in('deployment_id', ids)
     }
@@ -2229,8 +2230,9 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   // GET /deploy/logs/stream
   if (method === 'GET' && segment === 'deploy' && pathParts[1] === 'logs' && pathParts[2] === 'stream') {
     let query = sb.from('deployment_logs').select('*').order('timestamp', { ascending: true }).limit(200)
-    if (body.server_id) {
-      const { data: deps } = await sb.from('deployments').select('id').eq('server_id', body.server_id).order('created_at', { ascending: false }).limit(5)
+    const serverId = body.server_id || pathParts[3]
+    if (serverId) {
+      const { data: deps } = await sb.from('deployments').select('id').eq('server_id', serverId).order('created_at', { ascending: false }).limit(5)
       const ids = (deps || []).map((d: any) => d.id)
       if (ids.length > 0) query = query.in('deployment_id', ids)
     }
@@ -2260,7 +2262,7 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   }
 
   // POST /dns/create
-  if (method === 'POST' && segment === 'dns' && action === 'create') {
+  if (method === 'POST' && segment === 'dns' && secondSegment === 'create') {
     const schema = z.object({
       server_id: z.string().min(1),
       type: z.string().default('A').optional(),
@@ -2283,7 +2285,7 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   }
 
   // POST /dns/verify
-  if (method === 'POST' && segment === 'dns' && action === 'verify') {
+  if (method === 'POST' && segment === 'dns' && secondSegment === 'verify') {
     const schema = z.object({ id: z.string().optional(), domain_id: z.string().optional(), server_id: z.string().optional() })
     const parsed = schema.safeParse(body)
     if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
@@ -2301,7 +2303,7 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   }
 
   // GET /dns/status
-  if (method === 'GET' && segment === 'dns' && action === 'status') {
+  if (method === 'GET' && segment === 'dns' && secondSegment === 'status') {
     let query = sb.from('dns_records').select('*').order('created_at', { ascending: false }).limit(100)
     if (body.server_id) query = query.eq('server_id', body.server_id)
     const { data, error } = await query
@@ -2310,7 +2312,7 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   }
 
   // POST /ssl/enable
-  if (method === 'POST' && segment === 'ssl' && action === 'enable') {
+  if (method === 'POST' && segment === 'ssl' && secondSegment === 'enable') {
     const schema = z.object({ domain_id: z.string().min(1) })
     const parsed = schema.safeParse(body)
     if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
@@ -2321,7 +2323,7 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   }
 
   // POST /git/scan
-  if (method === 'POST' && segment === 'git' && action === 'scan') {
+  if (method === 'POST' && segment === 'git' && secondSegment === 'scan') {
     const parsed = serverActionSchema.safeParse(body)
     if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
     const { data: server, error } = await sb.from('servers').select('id,name,git_repo,git_branch,auto_deploy').eq('id', parsed.data.server_id).maybeSingle()
@@ -2332,7 +2334,7 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   }
 
   // POST /git/deploy
-  if (method === 'POST' && segment === 'git' && action === 'deploy') {
+  if (method === 'POST' && segment === 'git' && secondSegment === 'deploy') {
     const parsed = serverActionSchema.safeParse(body)
     if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
     const { data, error } = await sb.from('deployments').insert({
@@ -2348,7 +2350,7 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   }
 
   // GET /server/settings
-  if (method === 'GET' && segment === 'server' && action === 'settings') {
+  if (method === 'GET' && segment === 'server' && secondSegment === 'settings') {
     if (!body.server_id) return fail('server_id required', 422, 'VALIDATION_ERROR')
     const { data, error } = await sb.from('server_settings').select('*').eq('server_id', body.server_id).maybeSingle()
     if (error) return fail(error.message, 400, 'DB_ERROR')
@@ -2356,7 +2358,7 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   }
 
   // POST /server/settings/update
-  if (method === 'POST' && segment === 'server' && action === 'settings' && tail === 'update') {
+  if (method === 'POST' && segment === 'server' && secondSegment === 'settings' && thirdSegment === 'update') {
     const parsed = settingsUpdateSchema.safeParse(body)
     if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
     const payload = {
