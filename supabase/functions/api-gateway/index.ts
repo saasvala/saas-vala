@@ -67,6 +67,9 @@ const PRODUCT_LIST_CACHE_TTL_MS = 60 * 1000
 const SERVER_STATUS_CACHE_TTL_MS = 30 * 1000
 const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SECONDS') || '60')
 const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
+const DEFAULT_GITHUB_ORG = Deno.env.get('GITHUB_DEFAULT_ORG') || 'saasvala'
+const STANDARD_APP_ROLES = ['admin', 'user'] as const
+const DB_INDEX_HINT_PATTERNS = (Deno.env.get('DB_INDEX_HINT_PATTERNS') || 'email,status').split(',').map((v) => v.trim()).filter(Boolean)
 const DEFAULT_COMMISSION_RATE = 10
 const FINAL_RESELLER_GAP_FEATURE_KEYS = [
   'tier_based_dynamic_commission_engine',
@@ -316,6 +319,42 @@ function normalizeKycStatus(value: unknown) {
 
 function sanitizeSearchTerm(term: unknown) {
   return String(term || '').replace(/[%_,()[\]\\]/g, '').trim()
+}
+
+function sanitizeTextInput(value: unknown, max = 8000) {
+  return String(value ?? '')
+    .replace(/[<>]/g, '')
+    .trim()
+    .slice(0, max)
+}
+
+function sanitizeSlug(value: unknown) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+}
+
+function buildGithubRepoUrl(slug: string, org = DEFAULT_GITHUB_ORG) {
+  if (!slug) return ''
+  return `https://github.com/${org}/${slug}`
+}
+
+async function emitPipelineEvent(
+  admin: any,
+  userId: string,
+  eventType: 'builder_event' | 'debug_event' | 'fix_event' | 'deploy_event',
+  stage: string,
+  status: 'started' | 'success' | 'failed',
+  details: Record<string, unknown> = {}
+) {
+  await logActivity(admin, 'pipeline_event', stage, eventType, userId, {
+    stage,
+    status,
+    timestamp: nowIso(),
+    ...details,
+  })
 }
 
 function parseCommissionPercent(value: unknown, fallback: number | null = null) {
@@ -2178,6 +2217,34 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     return ok({ deployment_id: latestSuccess.id, server_id: parsed.data.server_id, status: 'rolled_back' })
   }
 
+  // POST /deploy/full
+  if (method === 'POST' && segment === 'deploy' && id === 'full') {
+    const pipelinePayload = {
+      filePath: sanitizeTextInput(body?.filePath || body?.file_path || ''),
+      hostingCredentials: body?.hostingCredentials || body?.hosting_credentials || undefined,
+      deploymentId: sanitizeTextInput(body?.deploymentId || body?.deployment_id || '', 120) || undefined,
+    }
+    if (!pipelinePayload.filePath) return err('Missing field: filePath')
+
+    await emitPipelineEvent(admin, userId, 'deploy_event', 'deploy_full', 'started', {
+      file_path: pipelinePayload.filePath,
+    })
+
+    const { data, error } = await sb.functions.invoke('auto-deploy-pipeline', {
+      body: pipelinePayload,
+    })
+    if (error) {
+      await emitPipelineEvent(admin, userId, 'deploy_event', 'deploy_full', 'failed', { error: error.message })
+      return err(error.message, 500)
+    }
+
+    await emitPipelineEvent(admin, userId, 'deploy_event', 'deploy_full', 'success', {
+      deployment_id: data?.deploymentId || null,
+      success: data?.success === true,
+    })
+    return json({ success: true, data })
+  }
+
   // GET /deploy/status/:id
   if (method === 'GET' && segment === 'deploy' && pathParts[1] === 'status' && pathParts[2]) {
     const { data, error } = await sb.from('deployments').select('*').eq('server_id', pathParts[2])
@@ -2444,9 +2511,72 @@ async function handleGithub(method: string, pathParts: string[], body: any, user
   return fail('Not found', 404, 'NOT_FOUND')
 }
 
-// ===================== 8. SAAS AI =====================
+// ===================== 8. GIT SCAN =====================
+async function handleGit(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const action = pathParts[0]
+  const admin = adminClient()
+
+  // POST /git/scan-full
+  if (method === 'POST' && action === 'scan-full') {
+    const repoUrl = sanitizeTextInput(body?.repo_url || body?.repo || '')
+    const scanData = {
+      repo_url: repoUrl || null,
+      include_security: body?.include_security !== false,
+      include_performance: body?.include_performance !== false,
+      include_unused: body?.include_unused !== false,
+    }
+
+    await emitPipelineEvent(admin, userId, 'builder_event', 'git_scan', 'started', {
+      repo_url: repoUrl || null,
+      mode: repoUrl ? 'single_repo' : 'org_scan',
+      org: DEFAULT_GITHUB_ORG,
+    })
+
+    const sourceScan = await sb.functions.invoke('source-code-manager', {
+      body: { action: 'scan_and_register', data: { repo_url: repoUrl || undefined } },
+    })
+    if (sourceScan.error) {
+      await emitPipelineEvent(admin, userId, 'builder_event', 'git_scan', 'failed', { error: sourceScan.error.message })
+      return err(sourceScan.error.message, 500)
+    }
+
+    const scanResult = sourceScan.data || {}
+    const report = {
+      missing_files: Array.isArray(scanResult?.missing_files) ? scanResult.missing_files : [],
+      broken_imports: Array.isArray(scanResult?.broken_imports) ? scanResult.broken_imports : [],
+      unused_code: Array.isArray(scanResult?.unused_code) ? scanResult.unused_code : [],
+      security_issues: Array.isArray(scanResult?.security_issues) ? scanResult.security_issues : [],
+      performance_issues: Array.isArray(scanResult?.performance_issues) ? scanResult.performance_issues : [],
+    }
+
+    await emitPipelineEvent(admin, userId, 'builder_event', 'git_scan', 'success', {
+      scan: sourceScan.data,
+      report_summary: {
+        missing_files: report.missing_files.length,
+        broken_imports: report.broken_imports.length,
+        unused_code: report.unused_code.length,
+        security_issues: report.security_issues.length,
+        performance_issues: report.performance_issues.length,
+      },
+    })
+
+    return json({
+      success: true,
+      data: {
+        scan: sourceScan.data,
+        report,
+        input: scanData,
+      },
+    })
+  }
+
+  return err('Not found', 404)
+}
+
+// ===================== 9. SAAS AI =====================
 async function handleAi(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const action = pathParts[0]
+  const admin = adminClient()
 
   // POST /ai/run
   if (method === 'POST' && action === 'run') {
@@ -2470,32 +2600,10 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
     return json({ data })
   }
 
-  // POST /ai/debug
-  if (method === 'POST' && action === 'debug') {
-    const { data, error } = await sb.from('ai_logs').insert({
-      server_id: body.server_id || null,
-      action: 'debug',
-      result: body.prompt || body.input || null,
-    }).select().single()
-    if (error) return fail(error.message, 400, 'DB_ERROR')
-    return ok(data, 201)
-  }
 
-  // POST /ai/voice
-  if (method === 'POST' && action === 'voice') {
-    const { data, error } = await sb.from('ai_logs').insert({
-      server_id: body.server_id || null,
-      action: 'voice',
-      result: body.transcript || body.intent || null,
-    }).select().single()
-    if (error) return fail(error.message, 400, 'DB_ERROR')
-    return ok(data, 201)
-  }
-
-  return fail('Not found', 404, 'NOT_FOUND')
 }
 
-// ===================== 9. AI CHAT =====================
+// ===================== 13. AI CHAT =====================
 async function handleChat(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   // POST /chat/send
   if (method === 'POST' && pathParts[0] === 'send') {
@@ -2517,7 +2625,7 @@ async function handleChat(method: string, pathParts: string[], body: any, userId
   return err('Not found', 404)
 }
 
-// ===================== 10. AI API KEYS =====================
+// ===================== 14. AI API KEYS =====================
 async function handleApiKeys(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const admin = adminClient()
 
@@ -2552,7 +2660,7 @@ async function handleApiKeys(method: string, pathParts: string[], body: any, use
   return err('Not found', 404)
 }
 
-// ===================== 11. AUTO-PILOT =====================
+// ===================== 15. AUTO-PILOT =====================
 async function handleAuto(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const admin = adminClient()
 
@@ -2583,7 +2691,7 @@ async function handleAuto(method: string, pathParts: string[], body: any, userId
   return err('Not found', 404)
 }
 
-// ===================== 12. APK PIPELINE =====================
+// ===================== 16. APK PIPELINE =====================
 async function handleApk(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const admin = adminClient()
 
@@ -3389,7 +3497,11 @@ Deno.serve(async (req) => {
       case 'server':
         return await handleServers(req.method, [module, ...subParts], body, userId, sb)
       case 'github': return await handleGithub(req.method, subParts, body, userId, sb)
+      case 'git': return await handleGit(req.method, subParts, body, userId, sb)
       case 'ai': return await handleAi(req.method, subParts, body, userId, sb)
+      case 'code': return await handleCode(req.method, subParts, body, userId, sb)
+      case 'db': return await handleDb(req.method, subParts, body, userId)
+      case 'build': return await handleBuild(req.method, subParts, body, userId, sb)
       case 'chat': return await handleChat(req.method, subParts, body, userId, sb)
       case 'api-keys': return await handleApiKeys(req.method, subParts, body, userId, sb)
       case 'api-usage':
