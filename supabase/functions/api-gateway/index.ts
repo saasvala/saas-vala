@@ -114,6 +114,7 @@ const NOTIFY_ALLOWED_TRIGGERS = ['payment_success', 'payment_fail', 'apk_ready',
 const NOTIFY_ALLOWED_CHANNELS = ['in_app', 'email', 'system_alert'] as const
 const NOTIFY_CHANNEL_SET = new Set<string>(NOTIFY_ALLOWED_CHANNELS)
 const NOTIFY_TRIGGER_SET = new Set<string>(NOTIFY_ALLOWED_TRIGGERS)
+const NOTIFY_MAX_TITLE_LENGTH = 120
 const FINAL_RESELLER_GAP_FEATURE_KEYS = [
   'tier_based_dynamic_commission_engine',
   'per_product_commission_override',
@@ -164,6 +165,12 @@ function invalidateSeoAnalyticsCache() {
 
 function nowIso() {
   return new Date().toISOString()
+}
+
+function buildNotificationTitle(trigger: string, providedTitle: unknown) {
+  const value = String(providedTitle || '').trim()
+  if (value) return value.slice(0, NOTIFY_MAX_TITLE_LENGTH)
+  return trigger.replace(/_/g, ' ').toUpperCase().slice(0, NOTIFY_MAX_TITLE_LENGTH)
 }
 
 function normalizeFeatureKeys(input: unknown): string[] {
@@ -8334,6 +8341,7 @@ async function handleScheduler(method: string, pathParts: string[], body: any, s
 
 async function handleNotify(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const action = pathParts[0]
+  const reqUrl = new URL(String(body?.__request_url || ''), 'http://localhost')
 
   // POST /notify/send
   if (method === 'POST' && action === 'send') {
@@ -8342,7 +8350,7 @@ async function handleNotify(method: string, pathParts: string[], body: any, user
       return err('Invalid trigger', 422, 'VALIDATION_ERROR')
     }
 
-    const title = String(body?.title || trigger.replace(/_/g, ' ').toUpperCase()).slice(0, 120)
+    const title = buildNotificationTitle(trigger, body?.title)
     const message = String(body?.message || '').trim()
     if (!message) return err('message is required', 422, 'VALIDATION_ERROR')
     const typeRaw = String(body?.type || 'info').toLowerCase()
@@ -8352,8 +8360,15 @@ async function handleNotify(method: string, pathParts: string[], body: any, user
       .filter((v) => NOTIFY_CHANNEL_SET.has(v))
     if (!channels.length) return err('At least one valid channel is required', 422, 'VALIDATION_ERROR')
 
-    const targetUserId = String(body?.user_id || userId)
+    const requestedUserId = String(body?.user_id || '').trim()
+    let targetUserId = userId
+    if (requestedUserId && requestedUserId !== userId) {
+      const isAdmin = await isSuperAdminUser(userId)
+      if (!isAdmin) return err('Forbidden', 403, 'FORBIDDEN')
+      targetUserId = requestedUserId
+    }
     const inserted: Record<string, unknown> = {}
+    const unavailableChannels: string[] = []
 
     if (channels.includes('in_app')) {
       const { data, error } = await sb.from('notifications').insert({
@@ -8363,7 +8378,8 @@ async function handleNotify(method: string, pathParts: string[], body: any, user
         type,
         action_url: body?.action_url || null,
       }).select('id,created_at').single()
-      if (error && !isTableMissingError(error)) return err(error.message)
+      if (error && isTableMissingError(error)) unavailableChannels.push('in_app')
+      else if (error) return err(error.message)
       if (data) inserted.in_app = data
     }
 
@@ -8383,7 +8399,8 @@ async function handleNotify(method: string, pathParts: string[], body: any, user
         },
         status: 'queued',
       }).select('id,status,scheduled_at').single()
-      if (error && !isTableMissingError(error)) return err(error.message)
+      if (error && isTableMissingError(error)) unavailableChannels.push('email')
+      else if (error) return err(error.message)
       if (data) inserted.email = data
     }
 
@@ -8402,20 +8419,26 @@ async function handleNotify(method: string, pathParts: string[], body: any, user
           metadata: body?.metadata || {},
         },
       }).select('id,status,created_at').single()
-      if (error && !isTableMissingError(error)) return err(error.message)
+      if (error && isTableMissingError(error)) unavailableChannels.push('system_alert')
+      else if (error) return err(error.message)
       if (data) inserted.system_alert = data
     }
 
-    return json({ success: true, trigger, channels, inserted })
+    if (unavailableChannels.length && Object.keys(inserted).length === 0) {
+      return err(`Notification channels unavailable: ${unavailableChannels.join(', ')}`, 503, 'NOTIFICATION_CHANNELS_UNAVAILABLE')
+    }
+    return json({ success: true, trigger, channels, inserted, unavailable_channels: unavailableChannels })
   }
 
   // GET /notify/list
   if (method === 'GET' && action === 'list') {
-    const limit = Math.min(100, Math.max(1, Number(body?.limit || new URL(String(body?.__request_url || ''), 'http://localhost').searchParams.get('limit') || 25)))
-    const rawChannelsFromQuery = new URL(String(body?.__request_url || ''), 'http://localhost').searchParams.get('channels')
-    const listChannelsRaw = Array.isArray(body?.channels)
-      ? body.channels
-      : String(rawChannelsFromQuery || body?.channels || NOTIFY_ALLOWED_CHANNELS.join(',')).split(',')
+    const limit = Math.min(100, Math.max(1, Number(reqUrl.searchParams.get('limit') || body?.limit || 25)))
+    const rawChannelsFromQuery = reqUrl.searchParams.get('channels')
+    const listChannelsRaw = rawChannelsFromQuery
+      ? String(rawChannelsFromQuery).split(',')
+      : (Array.isArray(body?.channels)
+          ? body.channels
+          : String(body?.channels || NOTIFY_ALLOWED_CHANNELS.join(',')).split(','))
     const listChannels = new Set(
       listChannelsRaw
         .map((v: any) => String(v || '').trim().toLowerCase())
@@ -8446,8 +8469,13 @@ async function handleNotify(method: string, pathParts: string[], body: any, user
         .from('system_alerts')
         .select('id,alert_type,severity,status,message,last_seen_at,resolved_at,created_at')
         .order('created_at', { ascending: false })
-        .limit(limit)
-      result.system_alert = data || []
+        .limit(Math.max(limit * 4, 100))
+      result.system_alert = (data || [])
+        .filter((row: any) => {
+          const ctxUserId = row?.context?.user_id
+          return !ctxUserId || String(ctxUserId) === userId
+        })
+        .slice(0, limit)
     }
     return json({ success: true, data: result })
   }
@@ -8515,7 +8543,7 @@ Deno.serve(async (req) => {
   try {
     const url = new URL(req.url)
     const fullPath = url.pathname.replace(/^\/api-gateway\/?/, '').replace(/\/$/, '')
-    const normalizedPath = fullPath.replace(/^api\/v[12]\/?/, '')
+    const normalizedPath = fullPath.replace(/^api\/v\d+\/?/, '')
     const parts = normalizedPath.split('/').filter(Boolean)
     const module = parts[0]
     const subParts = parts.slice(1)

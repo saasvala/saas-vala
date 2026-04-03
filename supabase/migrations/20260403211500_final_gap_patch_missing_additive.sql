@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS public.user_sessions (
   is_active BOOLEAN NOT NULL DEFAULT true,
   last_activity TIMESTAMPTZ NOT NULL DEFAULT now(),
   revoked_at TIMESTAMPTZ,
-  revoked_by UUID,
+  revoked_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
   consent_given BOOLEAN DEFAULT false,
   consent_timestamp TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
