@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -20,7 +20,7 @@ import {
   Clock,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { systemHealthApi } from '@/lib/api';
+import { healthService } from '@/services/healthService';
 import { toast } from 'sonner';
 
 type ModuleKey = 'database' | 'auth' | 'api' | 'wallet' | 'server' | 'ai' | 'storage' | 'payment';
@@ -80,7 +80,7 @@ export default function SystemHealth() {
   const [lastCheck, setLastCheck] = useState<Date | null>(null);
   const [healthChecks, setHealthChecks] = useState<HealthCheck[]>(buildCheckingState());
   const [healthPercentage, setHealthPercentage] = useState(0);
-  const pollingInFlightRef = useRef(false);
+  const service = useMemo(() => healthService(5000), []);
 
   const applySnapshot = (raw: unknown) => {
     const snapshot = unwrapHealthPayload(raw);
@@ -105,25 +105,10 @@ export default function SystemHealth() {
     setLastCheck(checkedAt ? new Date(checkedAt) : new Date());
   };
 
-  const fetchHealth = async (showToast = false) => {
-    try {
-      setLoading(true);
-      const result = await systemHealthApi.get();
-      applySnapshot(result);
-      if (showToast) toast.success('Health check completed');
-    } catch (error) {
-      console.error('System health fetch failed:', error);
-      toast.error('Failed to fetch system health');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const runHealthCheck = async () => {
     try {
       setLoading(true);
-      const result = await systemHealthApi.runCheck();
-      applySnapshot(result);
+      await service.runCheck();
       toast.success('Health check completed');
     } catch (error) {
       console.error('Run check failed:', error);
@@ -134,14 +119,22 @@ export default function SystemHealth() {
   };
 
   useEffect(() => {
-    fetchHealth();
-    const timer = window.setInterval(() => {
-      if (pollingInFlightRef.current) return;
-      pollingInFlightRef.current = true;
-      fetchHealth().finally(() => { pollingInFlightRef.current = false; });
-    }, 5000);
-    return () => window.clearInterval(timer);
-  }, []);
+    const unsubscribeUpdate = service.onUpdate((result) => {
+      applySnapshot(result);
+      setLoading(false);
+    });
+    const unsubscribeError = service.onError((error) => {
+      console.error('System health fetch failed:', error);
+      setLoading(false);
+      toast.error('Failed to fetch system health');
+    });
+    service.start();
+    return () => {
+      unsubscribeUpdate();
+      unsubscribeError();
+      service.stop();
+    };
+  }, [service]);
 
   const overallStatus = healthChecks.every((c) => c.status === 'healthy')
     ? 'healthy'
@@ -150,6 +143,13 @@ export default function SystemHealth() {
       : 'warning';
 
   const okCount = healthChecks.filter((c) => c.status === 'healthy').length;
+  const hasErrors = healthChecks.some((c) => c.status === 'error');
+
+  useEffect(() => {
+    if (!loading && hasErrors) {
+      toast.error('System health alert: one or more modules are in error state');
+    }
+  }, [hasErrors, loading]);
 
   const statusConfig = {
     healthy: { icon: CheckCircle2, color: 'text-emerald-400', bg: 'bg-emerald-500/20' },

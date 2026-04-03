@@ -501,7 +501,7 @@ export const dashboardApi = {
 
 export const systemHealthApi = {
   get: () => apiCall('GET', 'system/health'),
-  runCheck: () => apiCall('POST', 'system-health/run-check', {}),
+  runCheck: () => apiCall('POST', 'system/health/run-check', {}),
 };
 
 export const contentApi = {
