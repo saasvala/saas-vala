@@ -34,11 +34,11 @@ export function AutoPilotDashboard() {
     clientRequests,
     softwareQueue,
     loading,
-    processing,
-    submitClientRequest,
-    generateDailySoftware,
-    checkBillingAlerts,
-    addBillingItem,
+    quickActionLoading,
+    handleNewRequest,
+    handleGenerateSoftware,
+    handleBillingCheck,
+    handleAddBilling,
     getUpcomingBills,
     getPendingRequests,
     getTodaysQueue
@@ -70,37 +70,41 @@ export function AutoPilotDashboard() {
       toast.error('Please fill all required client request fields');
       return;
     }
-    await submitClientRequest(newRequest);
-    setNewRequest({
-      name: '',
-      business_type: '',
-      country: '',
-      language: '',
-      budget: 0,
-      features_required: '',
-    });
-    setShowRequestForm(false);
+    const success = await handleNewRequest(newRequest);
+    if (success) {
+      setNewRequest({
+        name: '',
+        business_type: '',
+        country: '',
+        language: '',
+        budget: 0,
+        features_required: '',
+      });
+      setShowRequestForm(false);
+    }
   };
 
-  const handleAddBilling = async () => {
+  const handleBillingFormSubmit = async () => {
     if (!newBilling.user_id || !newBilling.service_name || newBilling.amount <= 0 || !newBilling.billing_cycle) {
       toast.error('Please fill in all required billing fields');
       return;
     }
-    await addBillingItem(newBilling);
-    setNewBilling({
-      user_id: '',
-      service_name: '',
-      amount: 0,
-      billing_cycle: 'monthly',
-    });
-    setShowBillingForm(false);
+    const success = await handleAddBilling(newBilling);
+    if (success) {
+      setNewBilling({
+        user_id: '',
+        service_name: '',
+        amount: 0,
+        billing_cycle: 'monthly',
+      });
+      setShowBillingForm(false);
+    }
   };
 
   // Check billing alerts on mount
   useEffect(() => {
-    checkBillingAlerts();
-  }, []);
+    handleBillingCheck();
+  }, [handleBillingCheck]);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -244,34 +248,37 @@ export function AutoPilotDashboard() {
           <div className="flex flex-wrap gap-3">
             <Button 
               onClick={() => setShowRequestForm(!showRequestForm)}
+              disabled={quickActionLoading.newRequest}
               className="gap-2"
             >
-              <Plus className="h-4 w-4" />
+              {quickActionLoading.newRequest ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
               New Client Request
             </Button>
             <Button 
-              onClick={generateDailySoftware}
-              disabled={processing}
+              onClick={handleGenerateSoftware}
+              disabled={quickActionLoading.generate}
               variant="secondary"
               className="gap-2"
             >
-              {processing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
+              {quickActionLoading.generate ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
               Generate 2 Daily Software
             </Button>
             <Button 
-              onClick={() => checkBillingAlerts()}
+              onClick={handleBillingCheck}
+              disabled={quickActionLoading.billingCheck}
               variant="outline"
               className="gap-2"
             >
-              <Bell className="h-4 w-4" />
+              {quickActionLoading.billingCheck ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bell className="h-4 w-4" />}
               Check Billing Alerts
             </Button>
             <Button 
               onClick={() => setShowBillingForm(!showBillingForm)}
+              disabled={quickActionLoading.addBilling}
               variant="outline"
               className="gap-2"
             >
-              <Calendar className="h-4 w-4" />
+              {quickActionLoading.addBilling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Calendar className="h-4 w-4" />}
               Add Billing Item
             </Button>
           </div>
@@ -331,8 +338,8 @@ export function AutoPilotDashboard() {
                 rows={4}
               />
               <div className="flex gap-2">
-                <Button onClick={handleSubmitRequest} disabled={processing} className="gap-2">
-                  {processing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bot className="h-4 w-4" />}
+                <Button onClick={handleSubmitRequest} disabled={quickActionLoading.newRequest} className="gap-2">
+                  {quickActionLoading.newRequest ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bot className="h-4 w-4" />}
                   Submit to AI Auto-Pilot
                 </Button>
                 <Button variant="outline" onClick={() => setShowRequestForm(false)}>
@@ -386,8 +393,8 @@ export function AutoPilotDashboard() {
                 />
               </div>
               <div className="flex gap-2">
-                <Button onClick={handleAddBilling} className="gap-2">
-                  <Calendar className="h-4 w-4" />
+                <Button onClick={handleBillingFormSubmit} disabled={quickActionLoading.addBilling} className="gap-2">
+                  {quickActionLoading.addBilling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Calendar className="h-4 w-4" />}
                   Add & Enable 4-Day Alert
                 </Button>
                 <Button variant="outline" onClick={() => setShowBillingForm(false)}>
@@ -489,14 +496,14 @@ export function AutoPilotDashboard() {
           {softwareQueue.length === 0 ? (
             <div className="text-center py-8">
               <p className="text-muted-foreground">No software in queue</p>
-              <Button 
-                onClick={generateDailySoftware} 
-                disabled={processing}
-                className="mt-4 gap-2"
-              >
-                {processing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
-                Generate Today's 2 Software
-              </Button>
+                <Button 
+                  onClick={handleGenerateSoftware} 
+                  disabled={quickActionLoading.generate}
+                  className="mt-4 gap-2"
+                >
+                  {quickActionLoading.generate ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
+                  Generate Today's 2 Software
+                </Button>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
