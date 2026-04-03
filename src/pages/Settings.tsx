@@ -25,6 +25,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useProfile } from '@/hooks/useProfile';
 import { toast } from 'sonner';
 import { supabase } from '@/integrations/supabase/client';
+import { writeAuditEvent } from '@/observability/auditClient';
 
 function ChangePasswordForm() {
   const [newPassword, setNewPassword] = useState('');
@@ -63,8 +64,31 @@ function ChangePasswordForm() {
       });
       if (error) {
         toast.error(error.message);
+        void writeAuditEvent({
+          eventCategory: 'AUTH',
+          eventType: 'password_change_failed',
+          action: 'update',
+          targetTable: 'auth',
+          metadata: { message: error.message },
+          ingestSource: 'settings',
+          isSystem: true,
+        });
         return;
       }
+      const { data: userData, error: getUserError } = await supabase.auth.getUser();
+      if (getUserError) {
+        toast.warning('Password updated, but audit actor resolution failed.');
+      }
+      void writeAuditEvent({
+        eventCategory: 'AUTH',
+        eventType: 'password_change',
+        action: 'update',
+        actorId: userData.user?.id ?? null,
+        targetTable: 'auth',
+        targetId: userData.user?.id ?? null,
+        metadata: { invalidate_sessions: true },
+        ingestSource: 'settings',
+      });
       setInvalidatingSessions(true);
       const { error: signOutError } = await supabase.auth.signOut({ scope: 'global' });
       if (signOutError) {

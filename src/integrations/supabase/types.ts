@@ -779,36 +779,84 @@ export type Database = {
       audit_logs: {
         Row: {
           action: Database["public"]["Enums"]["audit_action"]
+          actor_id: string | null
           created_at: string | null
+          entity: string | null
+          entity_id: string | null
+          event_category: string
+          event_type: string
           id: string
+          ingest_source: string
+          integrity_hash: string | null
+          integrity_prev_hash: string | null
+          integrity_version: number
           ip_address: string | null
+          is_system: boolean
+          meta: Json | null
+          metadata: Json
           new_data: Json | null
+          occurred_at: string
           old_data: Json | null
           record_id: string | null
           table_name: string
+          target_id: string | null
+          target_table: string | null
+          ts: string | null
           user_agent: string | null
           user_id: string | null
         }
         Insert: {
           action: Database["public"]["Enums"]["audit_action"]
+          actor_id?: string | null
           created_at?: string | null
+          entity?: string | null
+          entity_id?: string | null
+          event_category?: string
+          event_type?: string
           id?: string
+          ingest_source?: string
+          integrity_hash?: string | null
+          integrity_prev_hash?: string | null
+          integrity_version?: number
           ip_address?: string | null
+          is_system?: boolean
+          meta?: Json | null
+          metadata?: Json
           new_data?: Json | null
+          occurred_at?: string
           old_data?: Json | null
           record_id?: string | null
+          target_id?: string | null
+          target_table?: string | null
+          ts?: string | null
           table_name: string
           user_agent?: string | null
           user_id?: string | null
         }
         Update: {
           action?: Database["public"]["Enums"]["audit_action"]
+          actor_id?: string | null
           created_at?: string | null
+          entity?: string | null
+          entity_id?: string | null
+          event_category?: string
+          event_type?: string
           id?: string
+          ingest_source?: string
+          integrity_hash?: string | null
+          integrity_prev_hash?: string | null
+          integrity_version?: number
           ip_address?: string | null
+          is_system?: boolean
+          meta?: Json | null
+          metadata?: Json
           new_data?: Json | null
+          occurred_at?: string
           old_data?: Json | null
           record_id?: string | null
+          target_id?: string | null
+          target_table?: string | null
+          ts?: string | null
           table_name?: string
           user_agent?: string | null
           user_id?: string | null
@@ -4489,6 +4537,35 @@ export type Database = {
           _user_id: string
         }
         Returns: boolean
+      }
+      list_audit_logs: {
+        Args: {
+          p_actor_id?: string | null
+          p_before?: string | null
+          p_event_category?: string | null
+          p_event_type?: string | null
+          p_limit?: number | null
+          p_search?: string | null
+          p_target_table?: string | null
+        }
+        Returns: Database["public"]["Tables"]["audit_logs"]["Row"][]
+      }
+      log_audit_event: {
+        Args: {
+          p_action?: Database["public"]["Enums"]["audit_action"] | null
+          p_actor_id?: string | null
+          p_event_category: string
+          p_event_type: string
+          p_ingest_source?: string | null
+          p_ip_address?: string | null
+          p_is_system?: boolean | null
+          p_metadata?: Json | null
+          p_occurred_at?: string | null
+          p_target_id?: string | null
+          p_target_table?: string | null
+          p_user_agent?: string | null
+        }
+        Returns: string
       }
       log_activity: {
         Args: {

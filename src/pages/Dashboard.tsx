@@ -44,12 +44,12 @@ export default function Dashboard() {
   // Map audit logs to activity feed format
   const activities = logs.slice(0, 10).map(log => ({
     id: log.id,
-    type: (log.table_name === 'license_keys' ? 'key' :
-           log.table_name === 'products' ? 'product' :
-           log.table_name === 'servers' ? 'server' :
-           log.table_name === 'transactions' ? 'payment' : 'user') as 'key' | 'payment' | 'server' | 'product' | 'user',
-    message: `${log.action} on ${log.table_name}`,
-    time: new Date(log.created_at).toLocaleString(),
+    type: ((log.target_table ?? '') === 'license_keys' ? 'key' :
+           (log.target_table ?? '') === 'products' ? 'product' :
+           (log.target_table ?? '') === 'servers' ? 'server' :
+           (log.target_table ?? '') === 'transactions' ? 'payment' : 'user') as 'key' | 'payment' | 'server' | 'product' | 'user',
+    message: `${log.event_type} on ${log.target_table ?? 'system'}`,
+    time: new Date(log.occurred_at).toLocaleString(),
   }));
 
   return (
