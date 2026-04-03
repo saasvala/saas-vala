@@ -7,15 +7,9 @@ const agentRetries = toNumber(getEnv('ORCH_AGENT_RETRIES', '1'), 1);
 
 function runCommand(command, args) {
   return new Promise((resolve) => {
-    let settled = false;
-    const complete = (value) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-    };
     const child = spawn(command, args, { stdio: 'inherit', shell: false });
-    child.on('error', () => complete(1));
-    child.on('close', (code) => complete(code || 0));
+    child.once('error', () => resolve(1));
+    child.once('close', (code) => resolve(code || 0));
   });
 }
 
