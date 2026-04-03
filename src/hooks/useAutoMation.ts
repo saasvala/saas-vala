@@ -3,6 +3,12 @@ import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { autoPilotApi, billingApi, paymentApi, subscriptionsApi } from '@/lib/api';
 
+// INR threshold above which OTP verification is required for billing payments.
+const HIGH_AMOUNT_THRESHOLD = 10000;
+const BILLING_ALERT_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
+const OTP_EXPIRY_MS = 15 * 60 * 1000;
+const HOURLY_BILLING_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+
 interface ClientRequest {
   id: string;
   name: string;
@@ -52,12 +58,35 @@ interface SeoBacklink {
 }
 
 export function useAutomation() {
+  const getSecureRandomInt = (min: number, max: number) => {
+    const range = max - min + 1;
+    if (range <= 0) {
+      throw new Error('Invalid secure random range');
+    }
+    const maxUnbiasedValue = Math.floor(0x100000000 / range) * range;
+    const buffer = new Uint32Array(1);
+    do {
+      globalThis.crypto.getRandomValues(buffer);
+    } while (buffer[0] >= maxUnbiasedValue);
+    return min + (buffer[0] % range);
+  };
+
+  const getClientEmail = (clientId?: string) => `${(clientId || 'client').slice(0, 8)}@example.com`;
+
+  const hashOtp = async (otp: string) => {
+    const data = new TextEncoder().encode(otp);
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', data);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  };
+
   const generateInvoiceNumber = () => {
-    const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
+    const rand = getSecureRandomInt(0, 0xffffff).toString(36).padStart(6, '0').toUpperCase();
     return `INV-${new Date().getFullYear()}-${rand}`;
   };
 
-  const toIsoDate = (value: string) => {
+  const parseToIsoString = (value: string) => {
     const parsed = new Date(value);
     if (Number.isNaN(parsed.getTime())) return new Date().toISOString();
     return parsed.toISOString();
@@ -72,7 +101,7 @@ export function useAutomation() {
     return now.toISOString();
   };
 
-  const isHighAmount = (amount: number) => amount >= 10000;
+  const isHighAmount = (amount: number) => amount >= HIGH_AMOUNT_THRESHOLD;
 
   const [clientRequests, setClientRequests] = useState<ClientRequest[]>([]);
   const [softwareQueue, setSoftwareQueue] = useState<SoftwareQueue[]>([]);
@@ -309,7 +338,6 @@ export function useAutomation() {
 
   const deriveBillingAlerts = useCallback((items: BillingTracker[]) => {
     const now = new Date();
-    const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
     return items
       .filter((item) => item.status !== 'paid')
       .map((item) => {
@@ -324,7 +352,7 @@ export function useAutomation() {
             userId: item.user_id,
           };
         }
-        if (delta <= twoDaysMs) {
+        if (delta <= BILLING_ALERT_WINDOW_MS) {
           return {
             type: 'upcoming_due',
             message: `${item.service_name} is due within 2 days`,
@@ -418,7 +446,7 @@ export function useAutomation() {
     type?: 'one-time' | 'subscription';
   }) => {
     try {
-      const dueDate = item.due_date ? toIsoDate(item.due_date) : dueDateFromCycle(item.billing_cycle);
+      const dueDate = item.due_date ? parseToIsoString(item.due_date) : dueDateFromCycle(item.billing_cycle);
 
       const { data: createdBilling, error } = await supabase
         .from('billing_items')
@@ -442,12 +470,12 @@ export function useAutomation() {
           invoice_number: invoiceNumber,
           user_id: item.user_id || '',
           customer_name: item.service_name,
-          customer_email: `${(item.user_id || 'client').slice(0, 8)}@client.local`,
+          customer_email: getClientEmail(item.user_id),
           items: [
             {
               title: item.service_name,
               amount: item.amount,
-              type: item.type || (item.billing_cycle === 'once' ? 'one-time' : 'subscription'),
+              type: item.type || (item.billing_cycle === 'one-time' ? 'one-time' : 'subscription'),
               notes: item.notes || null,
             },
           ],
@@ -471,12 +499,13 @@ export function useAutomation() {
 
       const shouldRequireOtp = isHighAmount(item.amount);
       if (shouldRequireOtp) {
-        const otp = String(Math.floor(100000 + Math.random() * 900000));
-        const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+        const otpRaw = String(getSecureRandomInt(100000, 999999));
+        const otpHash = await hashOtp(otpRaw);
+        const expiresAt = new Date(Date.now() + OTP_EXPIRY_MS).toISOString();
         const { error: otpInsertError } = await supabase.from('invoice_otp_codes').insert({
           invoice_id: createdInvoice.id,
-          otp_code: otp,
-          email: `${(item.user_id || 'client').slice(0, 8)}@client.local`,
+          otp_code: otpHash,
+          email: getClientEmail(item.user_id),
           expires_at: expiresAt,
           verified: false,
         });
@@ -487,7 +516,8 @@ export function useAutomation() {
             invoice_id: createdInvoice.id,
             client_id: item.user_id || '',
             amount: item.amount,
-            email: `${(item.user_id || 'client').slice(0, 8)}@client.local`,
+            email: getClientEmail(item.user_id),
+            otp: otpRaw,
           }).catch((sendError) => {
             console.warn('billing otp send api failed', sendError);
           });
@@ -536,7 +566,7 @@ export function useAutomation() {
         client_id: item.user_id || '',
         title: item.service_name,
         amount: item.amount,
-        type: item.type || (item.billing_cycle === 'once' ? 'one-time' : 'subscription'),
+        type: item.type || (item.billing_cycle === 'one-time' ? 'one-time' : 'subscription'),
         due_date: item.due_date || dueDateFromCycle(item.billing_cycle),
         notes: item.notes,
       };
@@ -552,6 +582,12 @@ export function useAutomation() {
       if (!apiSucceeded) {
         const fallback = await autoPilotApi.addBilling(item).catch(() => null);
         apiSucceeded = !!fallback?.success;
+      }
+
+      if (apiSucceeded) {
+        toast.success('Billing Added');
+        await refreshData();
+        return true;
       }
 
       const created = await addBillingItem(item);
@@ -585,6 +621,12 @@ export function useAutomation() {
     otp?: string;
   }) => {
     try {
+      const requestedAmount = Number(payload.amount);
+      if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+        toast.error('Invalid payment amount');
+        return false;
+      }
+
       const { data: invoice } = await supabase
         .from('invoices')
         .select('id,status,otp_verified,total_amount,user_id')
@@ -596,14 +638,27 @@ export function useAutomation() {
         return false;
       }
 
-      const requiresOtp = isHighAmount(Number(invoice.total_amount || payload.amount)) || invoice.otp_verified === false;
+      const { data: existingOtp } = await supabase
+        .from('invoice_otp_codes')
+        .select('id')
+        .eq('invoice_id', payload.invoice_id)
+        .gt('expires_at', new Date().toISOString())
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const requiresOtp =
+        isHighAmount(Number(invoice.total_amount || requestedAmount)) ||
+        invoice.otp_verified === false ||
+        !!existingOtp;
       if (requiresOtp && payload.otp) {
         await billingApi.otpVerify({ invoice_id: payload.invoice_id, otp: payload.otp }).catch(() => undefined);
+        const otpHash = await hashOtp(payload.otp);
         const { data: otpRow } = await supabase
           .from('invoice_otp_codes')
           .select('id,verified')
           .eq('invoice_id', payload.invoice_id)
-          .eq('otp_code', payload.otp)
+          .eq('otp_code', otpHash)
           .gt('expires_at', new Date().toISOString())
           .order('created_at', { ascending: false })
           .limit(1)
@@ -624,11 +679,13 @@ export function useAutomation() {
         return false;
       }
 
-      await paymentApi.create(payload).catch(() => undefined);
-
-      await supabase.from('invoices').update({ status: 'paid' }).eq('id', payload.invoice_id);
-      if (payload.billing_id) {
-        await supabase.from('billing_items').update({ status: 'paid' }).eq('id', payload.billing_id);
+      const paymentResponse = await paymentApi.create(payload);
+      if (paymentResponse?.success === false || paymentResponse?.error) {
+        const msg = typeof paymentResponse?.error === 'string'
+          ? paymentResponse.error
+          : paymentResponse?.error?.message || 'Payment gateway rejected the transaction';
+        toast.error(msg);
+        return false;
       }
 
       const { data: wallet } = await supabase
@@ -638,12 +695,16 @@ export function useAutomation() {
         .maybeSingle();
 
       if (wallet?.id) {
-        const nextBalance = Number(wallet.balance || 0) - Number(payload.amount || 0);
+        const nextBalance = Number(wallet.balance || 0) - requestedAmount;
+        if (nextBalance < 0) {
+          toast.error('Insufficient wallet balance');
+          return false;
+        }
         await supabase.from('wallets').update({ balance: nextBalance }).eq('id', wallet.id);
         await supabase.from('transactions').insert({
           wallet_id: wallet.id,
           type: 'debit',
-          amount: payload.amount,
+          amount: requestedAmount,
           status: 'completed',
           description: `Invoice payment ${payload.invoice_id}`,
           reference_id: payload.invoice_id,
@@ -654,6 +715,11 @@ export function useAutomation() {
             payment_method: payload.method || 'manual',
           },
         });
+      }
+
+      await supabase.from('invoices').update({ status: 'paid' }).eq('id', payload.invoice_id);
+      if (payload.billing_id) {
+        await supabase.from('billing_items').update({ status: 'paid' }).eq('id', payload.billing_id);
       }
 
       await notifyUsers(
@@ -730,13 +796,21 @@ export function useAutomation() {
   }, []);
 
   useEffect(() => {
+    let isRunning = false;
     const run = async () => {
+      if (isRunning) return;
+      isRunning = true;
       await handleBillingCheck();
       await runSubscriptionRenewals();
+      isRunning = false;
     };
 
-    const timer = window.setInterval(run, 60 * 60 * 1000);
-    return () => window.clearInterval(timer);
+    run();
+    const timer = window.setInterval(run, HOURLY_BILLING_CHECK_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+      isRunning = false;
+    };
   }, [handleBillingCheck, runSubscriptionRenewals]);
 
   return {

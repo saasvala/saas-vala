@@ -328,7 +328,7 @@ export const billingApi = {
   send: (data: { billing_id?: string; invoice_id?: string; client_id: string }) =>
     apiCall('POST', 'billing/send', data),
   alerts: () => apiCall('GET', 'billing/alerts'),
-  otpSend: (data: { invoice_id: string; client_id: string; amount: number; email?: string }) =>
+  otpSend: (data: { invoice_id: string; client_id: string; amount: number; email?: string; otp?: string }) =>
     apiCall('POST', 'billing/otp/send', data),
   otpVerify: (data: { invoice_id: string; otp: string }) =>
     apiCall('POST', 'billing/otp/verify', data),
