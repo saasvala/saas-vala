@@ -4568,6 +4568,64 @@ export type Database = {
       }
     }
     Functions: {
+      archive_audit_logs_older_than: {
+        Args: { p_days?: number; p_limit?: number }
+        Returns: number
+      }
+      audit_create: {
+        Args: {
+          p_action?: Database["public"]["Enums"]["audit_action"] | null
+          p_device?: string | null
+          p_ip_address?: string | null
+          p_module?: string | null
+          p_new_data?: Json | null
+          p_old_data?: Json | null
+          p_record_id?: string | null
+          p_role?: string | null
+          p_status?: string | null
+          p_table_name?: string | null
+        }
+        Returns: string
+      }
+      audit_export: {
+        Args: {
+          p_action?: Database["public"]["Enums"]["audit_action"] | null
+          p_from?: string | null
+          p_limit?: number | null
+          p_q?: string | null
+          p_table_name?: string | null
+          p_to?: string | null
+          p_type?: string | null
+          p_user_id?: string | null
+        }
+        Returns: Database["public"]["Tables"]["audit_logs"]["Row"][]
+      }
+      audit_list: {
+        Args: {
+          p_action?: Database["public"]["Enums"]["audit_action"] | null
+          p_from?: string | null
+          p_page?: number | null
+          p_page_size?: number | null
+          p_q?: string | null
+          p_table_name?: string | null
+          p_to?: string | null
+          p_user_id?: string | null
+        }
+        Returns: Database["public"]["Tables"]["audit_logs"]["Row"][]
+      }
+      audit_search: {
+        Args: { p_limit?: number | null; p_q: string }
+        Returns: Database["public"]["Tables"]["audit_logs"]["Row"][]
+      }
+      audit_stats: {
+        Args: { p_from?: string | null; p_to?: string | null }
+        Returns: {
+          creates: number
+          deletes: number
+          total_logs: number
+          updates: number
+        }[]
+      }
       generate_invoice_number: { Args: never; Returns: string }
       generate_license_key: { Args: never; Returns: string }
       generate_ticket_number: { Args: never; Returns: string }

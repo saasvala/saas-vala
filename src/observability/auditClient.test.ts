@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { writeAuditEvent, listAuditLogs } from './auditClient';
+import {
+  writeAuditEvent,
+  listAuditLogs,
+  listAuditLogsApi,
+  searchAuditLogs,
+  getAuditStats,
+  exportAuditLogs,
+  createManualAuditLog,
+} from './auditClient';
 import { supabase } from '@/integrations/supabase/client';
 
 vi.mock('@/integrations/supabase/client', () => {
@@ -57,5 +65,84 @@ describe('auditClient', () => {
       p_search: 'login',
     });
   });
-});
 
+  it('lists audit logs with api style filters through audit_list rpc', async () => {
+    vi.mocked((supabase as any).rpc).mockResolvedValue({ data: [], error: null });
+
+    await listAuditLogsApi({
+      tableName: 'products',
+      action: 'update',
+      userId: 'u-1',
+      query: 'products',
+      page: 2,
+      pageSize: 25,
+    });
+
+    expect((supabase as any).rpc).toHaveBeenCalledWith('audit_list', {
+      p_table_name: 'products',
+      p_action: 'update',
+      p_user_id: 'u-1',
+      p_from: null,
+      p_to: null,
+      p_q: 'products',
+      p_page: 2,
+      p_page_size: 25,
+    });
+  });
+
+  it('searches audit logs through audit_search rpc', async () => {
+    vi.mocked((supabase as any).rpc).mockResolvedValue({ data: [], error: null });
+    await searchAuditLogs('login', 30);
+    expect((supabase as any).rpc).toHaveBeenCalledWith('audit_search', {
+      p_q: 'login',
+      p_limit: 30,
+    });
+  });
+
+  it('gets stats through audit_stats rpc', async () => {
+    vi.mocked((supabase as any).rpc).mockResolvedValue({ data: [], error: null });
+    await getAuditStats();
+    expect((supabase as any).rpc).toHaveBeenCalledWith('audit_stats', {
+      p_from: null,
+      p_to: null,
+    });
+  });
+
+  it('exports logs through audit_export rpc', async () => {
+    vi.mocked((supabase as any).rpc).mockResolvedValue({ data: [], error: null });
+    await exportAuditLogs('csv', { tableName: 'orders', query: 'sales' }, 300);
+    expect((supabase as any).rpc).toHaveBeenCalledWith('audit_export', {
+      p_type: 'csv',
+      p_table_name: 'orders',
+      p_action: null,
+      p_user_id: null,
+      p_from: null,
+      p_to: null,
+      p_q: 'sales',
+      p_limit: 300,
+    });
+  });
+
+  it('creates manual logs through audit_create rpc', async () => {
+    vi.mocked((supabase as any).rpc).mockResolvedValue({ data: 'id-1', error: null });
+    await createManualAuditLog({
+      role: 'admin',
+      action: 'create',
+      module: 'wallet',
+      tableName: 'transactions',
+      recordId: 'txn-1',
+      status: 'success',
+    });
+    expect((supabase as any).rpc).toHaveBeenCalledWith(
+      'audit_create',
+      expect.objectContaining({
+        p_role: 'admin',
+        p_action: 'create',
+        p_module: 'wallet',
+        p_table_name: 'transactions',
+        p_record_id: 'txn-1',
+        p_status: 'success',
+      }),
+    );
+  });
+});

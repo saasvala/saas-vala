@@ -21,10 +21,18 @@ import {
   Clock3,
   Filter,
   Wifi,
+  Download,
+  Share2,
+  Plus,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { listAuditLogs } from '@/observability/auditClient';
+import {
+  createManualAuditLog,
+  getAuditStats,
+  listAuditLogsApi,
+  subscribeAuditLogsRealtime,
+} from '@/observability/auditClient';
 import type { Database } from '@/integrations/supabase/types';
 
 type AuditLog = Database['public']['Tables']['audit_logs']['Row'];
@@ -32,6 +40,7 @@ type AuditAction = Database['public']['Enums']['audit_action'];
 type AuditStatus = 'success' | 'error' | 'warning';
 type TimeRange = '15m' | '1h' | '24h' | '7d' | '30d' | 'all';
 type DateFilter = 'today' | '7d' | '30d' | 'all';
+type PageSize = 25 | 50 | 100;
 
 interface EnrichedAuditLog {
   id: string;
@@ -127,6 +136,7 @@ export default function AuditLogs() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [userFilter, setUserFilter] = useState('');
   const [timeRange, setTimeRange] = useState<TimeRange>('24h');
   const [roleFilter, setRoleFilter] = useState('all');
   const [actionFilter, setActionFilter] = useState<'all' | AuditAction>('all');
@@ -135,6 +145,9 @@ export default function AuditLogs() {
   const [dateFilter, setDateFilter] = useState<DateFilter>('all');
   const [selectedLogId, setSelectedLogId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<PageSize>(50);
+  const [stats, setStats] = useState({ total_logs: 0, creates: 0, updates: 0, deletes: 0 });
 
   const fetchLogs = useCallback(async (showLoader = true) => {
     if (showLoader) {
@@ -146,7 +159,14 @@ export default function AuditLogs() {
       setIsRefreshing(true);
     }
     try {
-      const { data, error } = await listAuditLogs({ limit: 500 });
+      const { data, error } = await listAuditLogsApi({
+        tableName: moduleFilter !== 'all' ? moduleFilter : null,
+        action: actionFilter !== 'all' ? actionFilter : null,
+        userId: userFilter.trim() || null,
+        query: searchQuery.trim() || null,
+        page,
+        pageSize,
+      });
       if (error) throw error;
       setLogs((data || []) as AuditLog[]);
     } catch (error) {
@@ -159,7 +179,7 @@ export default function AuditLogs() {
         setIsRefreshing(false);
       }
     }
-  }, [isRefreshing, loading]);
+  }, [actionFilter, isRefreshing, loading, moduleFilter, page, pageSize, searchQuery, userFilter]);
 
   useEffect(() => {
     fetchLogs();
@@ -171,6 +191,31 @@ export default function AuditLogs() {
     }, LIVE_REFRESH_INTERVAL_MILLISECONDS);
     return () => window.clearInterval(interval);
   }, [fetchLogs]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeAuditLogsRealtime(() => {
+      void fetchLogs(false);
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [fetchLogs]);
+
+  useEffect(() => {
+    const loadStats = async () => {
+      const { data, error } = await getAuditStats();
+      if (error) return;
+      const first = (data?.[0] || null) as { total_logs?: number; creates?: number; updates?: number; deletes?: number } | null;
+      if (!first) return;
+      setStats({
+        total_logs: Number(first.total_logs || 0),
+        creates: Number(first.creates || 0),
+        updates: Number(first.updates || 0),
+        deletes: Number(first.deletes || 0),
+      });
+    };
+    void loadStats();
+  }, [logs.length]);
 
   const enrichedLogs = useMemo<EnrichedAuditLog[]>(() => {
     return logs.map((log) => {
@@ -229,12 +274,15 @@ export default function AuditLogs() {
 
   const resetFilters = () => {
     setSearchQuery('');
+    setUserFilter('');
     setTimeRange('24h');
     setRoleFilter('all');
     setActionFilter('all');
     setModuleFilter('all');
     setStatusFilter('all');
     setDateFilter('all');
+    setPage(1);
+    setPageSize(50);
   };
 
   const statusCounts = useMemo(() => {
@@ -249,6 +297,125 @@ export default function AuditLogs() {
     if (status === 'success') return <CheckCircle2 className="h-4 w-4 text-emerald-400" />;
     if (status === 'error') return <CircleX className="h-4 w-4 text-red-400" />;
     return <CircleAlert className="h-4 w-4 text-amber-400" />;
+  };
+
+  const activeShareLogs = useMemo(() => {
+    if (selectedLogId) {
+      const one = filteredLogs.find((x) => x.id === selectedLogId);
+      return one ? [one] : [];
+    }
+    return filteredLogs.slice(0, 100);
+  }, [filteredLogs, selectedLogId]);
+
+  const buildCsv = (rows: EnrichedAuditLog[]) => {
+    const header = ['ID', 'User ID', 'Role', 'Action', 'Module', 'Event', 'Status', 'IP', 'Device', 'Time'];
+    const body = rows.map((row) => [
+      row.raw.id,
+      row.raw.actor_id || row.raw.user_id || '',
+      row.role,
+      row.action,
+      row.module,
+      row.raw.event_type || '',
+      row.status,
+      row.raw.ip_address || '',
+      row.raw.user_agent || '',
+      row.time,
+    ]);
+    return [header, ...body]
+      .map((line) => line.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+  };
+
+  const exportCsv = () => {
+    const csv = buildCsv(filteredLogs);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `audit-logs-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success('Export CSV complete');
+  };
+
+  const exportPdf = () => {
+    const rows = filteredLogs.slice(0, 200);
+    const htmlRows = rows.map((row) => `
+      <tr>
+        <td>${new Date(row.time).toLocaleString()}</td>
+        <td>${row.role}</td>
+        <td>${row.action}</td>
+        <td>${row.module}</td>
+        <td>${row.status}</td>
+        <td>${(row.message || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</td>
+      </tr>
+    `).join('');
+
+    const win = window.open('', '_blank', 'noopener,noreferrer,width=1200,height=900');
+    if (!win) {
+      toast.error('Popup blocked; cannot open PDF report');
+      return;
+    }
+
+    win.document.write(`
+      <html>
+        <head><title>Audit Logs Report</title></head>
+        <body style="font-family:Arial,sans-serif;padding:20px;">
+          <h2>Audit Logs Report</h2>
+          <p>Generated: ${new Date().toLocaleString()}</p>
+          <table border="1" cellspacing="0" cellpadding="6" style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead>
+              <tr><th>Time</th><th>Role</th><th>Action</th><th>Module</th><th>Status</th><th>Message</th></tr>
+            </thead>
+            <tbody>${htmlRows}</tbody>
+          </table>
+        </body>
+      </html>
+    `);
+    win.document.close();
+    win.focus();
+    win.print();
+    toast.success('Export PDF ready');
+  };
+
+  const shareLogs = (platform: 'whatsapp' | 'telegram') => {
+    if (activeShareLogs.length === 0) {
+      toast.error('No logs selected for sharing');
+      return;
+    }
+    const csv = buildCsv(activeShareLogs);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = URL.createObjectURL(blob);
+    const text = encodeURIComponent(`Audit logs export: ${link}`);
+    const shareUrl = platform === 'whatsapp'
+      ? `https://wa.me/?text=${text}`
+      : `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent('Audit logs export')}`;
+    window.open(shareUrl, '_blank', 'noopener,noreferrer');
+    toast.success(`Share link opened on ${platform === 'whatsapp' ? 'WhatsApp' : 'Telegram'}`);
+  };
+
+  const createManualLog = async () => {
+    const module = window.prompt('Module (example: wallet/server/ai)', 'system');
+    if (!module) return;
+    const actionInput = window.prompt('Action (create/update/delete/login/logout/read)', 'create');
+    const statusInput = window.prompt('Status (success/fail)', 'success');
+    const note = window.prompt('Message', 'Manual audit log');
+    const action = (actionInput || 'read') as AuditAction;
+    const status = statusInput === 'fail' ? 'fail' : 'success';
+    const { error } = await createManualAuditLog({
+      role: 'admin',
+      action,
+      module,
+      tableName: module,
+      newData: { message: note || 'Manual audit log' },
+      status,
+    });
+    if (error) {
+      toast.error('Failed to create log');
+      return;
+    }
+    toast.success('Manual audit log created');
+    await fetchLogs(false);
   };
 
   return (
@@ -286,6 +453,26 @@ export default function AuditLogs() {
                 <Wifi className="h-3 w-3" />
                 Live
               </Badge>
+              <Button variant="outline" onClick={createManualLog} className="gap-2">
+                <Plus className="h-4 w-4" />
+                Create
+              </Button>
+              <Button variant="outline" onClick={exportCsv} className="gap-2">
+                <Download className="h-4 w-4" />
+                Export CSV
+              </Button>
+              <Button variant="outline" onClick={exportPdf} className="gap-2">
+                <FileText className="h-4 w-4" />
+                Export PDF
+              </Button>
+              <Button variant="outline" onClick={() => shareLogs('whatsapp')} className="gap-2">
+                <Share2 className="h-4 w-4" />
+                Share WA
+              </Button>
+              <Button variant="outline" onClick={() => shareLogs('telegram')} className="gap-2">
+                <Share2 className="h-4 w-4" />
+                Share TG
+              </Button>
               <Button variant="outline" onClick={resetFilters} className="gap-2">
                 <Filter className="h-4 w-4" />
                 Reset
@@ -306,6 +493,15 @@ export default function AuditLogs() {
             </div>
 
             <div className="space-y-4">
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">User</p>
+                <Input
+                  value={userFilter}
+                  onChange={(e) => setUserFilter(e.target.value)}
+                  placeholder="User ID"
+                />
+              </div>
+
               <div>
                 <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Role</p>
                 <Select value={roleFilter} onValueChange={setRoleFilter}>
@@ -382,6 +578,20 @@ export default function AuditLogs() {
                     <SelectItem value="today">Today</SelectItem>
                     <SelectItem value="7d">Last 7 days</SelectItem>
                     <SelectItem value="30d">Last 30 days</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Page Size</p>
+                <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value) as PageSize); setPage(1); }}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Page Size" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="25">25</SelectItem>
+                    <SelectItem value="50">50</SelectItem>
+                    <SelectItem value="100">100</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -463,6 +673,25 @@ export default function AuditLogs() {
               </div>
             ) : (
               <div className="h-[70vh] space-y-4 overflow-y-auto">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-lg border border-border p-2 text-center">
+                    <p className="text-lg font-semibold text-foreground">{stats.total_logs}</p>
+                    <p className="text-xs text-muted-foreground">Total Logs</p>
+                  </div>
+                  <div className="rounded-lg border border-border p-2 text-center">
+                    <p className="text-lg font-semibold text-emerald-400">{stats.creates}</p>
+                    <p className="text-xs text-muted-foreground">Creates</p>
+                  </div>
+                  <div className="rounded-lg border border-border p-2 text-center">
+                    <p className="text-lg font-semibold text-amber-400">{stats.updates}</p>
+                    <p className="text-xs text-muted-foreground">Updates</p>
+                  </div>
+                  <div className="rounded-lg border border-border p-2 text-center">
+                    <p className="text-lg font-semibold text-red-400">{stats.deletes}</p>
+                    <p className="text-xs text-muted-foreground">Deletes</p>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-2 gap-3 rounded-lg border border-border p-3">
                   <div>
                     <p className="text-xs text-muted-foreground">Time</p>
@@ -539,6 +768,16 @@ export default function AuditLogs() {
                     <p className="text-lg font-semibold text-amber-400">{statusCounts.warning + statusCounts.error}</p>
                     <p className="text-xs text-muted-foreground">Issues</p>
                   </div>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <Button variant="outline" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
+                    Prev Page
+                  </Button>
+                  <span className="text-xs text-muted-foreground">Page {page}</span>
+                  <Button variant="outline" onClick={() => setPage((p) => p + 1)} disabled={logs.length < pageSize}>
+                    Next Page
+                  </Button>
                 </div>
               </div>
             )}
