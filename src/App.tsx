@@ -310,8 +310,7 @@ function AppRoutes() {
         <Route path="/category/:macro/:sub/:micro" element={<CategoryRouteGuarded />} />
         <Route path="/product/:id" element={<ProductRouteGuarded />} />
         <Route path="/product/:productId" element={<ProductRouteGuarded />} />
-        <Route path="/products/:id" element={<ProductRouteGuarded />} />
-        <Route path="/marketplace/product/:id" element={<ProductRouteGuarded />} />
+
 
         {/* Protected routes */}
         <Route path="/dashboard" element={<AuthGuard><Dashboard /></AuthGuard>} />
@@ -339,8 +338,14 @@ function AppRoutes() {
         <Route path="/education" element={<AuthGuard><EducationCategory /></AuthGuard>} />
         <Route path="/vala-builder" element={<AuthGuard><ValaBuilder /></AuthGuard>} />
         <Route path="/builder" element={<AuthGuard><Navigate to="/vala-builder" replace /></AuthGuard>} />
+        <Route path="/auto-pilot" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/auto-pilot/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/auto-pilot/system-monitor" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot/apk-pipeline" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/system-monitor" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot/system-monitor" replace /></RoleGuard></AuthGuard>} />
         <Route path="/ai" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/ai/chat" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
+        <Route path="/chat" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/ai-chat" element={<AuthGuard><AiChat /></AuthGuard>} />
         <Route path="/chat" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/chat/history" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
@@ -354,7 +359,7 @@ function AppRoutes() {
         <Route path="/seo-leads" element={<AuthGuard><SeoLeads /></AuthGuard>} />
         <Route path="/reseller-dashboard" element={<AuthGuard><RoleGuard role="reseller"><ResellerDashboard /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/dashboard" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard" replace /></RoleGuard></AuthGuard>} />
-        <Route path="/reseller/products" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard?tab=sales" replace /></RoleGuard></AuthGuard>} />
+
         <Route path="/reseller/buy" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/marketplace" replace /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/users" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard?tab=users" replace /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/earnings" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard?tab=commissions" replace /></RoleGuard></AuthGuard>} />
