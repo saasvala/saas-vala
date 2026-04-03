@@ -111,11 +111,23 @@ export const resellersApi = {
     apiCall('GET', 'resellers', params),
 
   create: (data: any) => apiCall('POST', 'resellers', data),
+  get: (id: string) => apiCall('GET', `resellers/${id}`),
   update: (id: string, data: any) => apiCall('PUT', `resellers/${id}`, data),
+  allow: (reseller_id: string) => apiCall('POST', 'reseller/allow', { reseller_id }),
+  suspend: (reseller_id: string) => apiCall('POST', 'reseller/suspend', { reseller_id }),
+  block: (reseller_id: string) => apiCall('POST', 'reseller/block', { reseller_id }),
+  activity: (reseller_id?: string) => apiCall('GET', 'reseller/activity', reseller_id ? { reseller_id } : undefined),
+  logResellerActivity: (data: {
+    reseller_id: string;
+    action: string;
+    module?: string;
+    details?: Record<string, unknown>;
+    ip_address?: string;
+  }) => apiCall('POST', 'reseller/activity', data),
   sales: (id: string) => apiCall('GET', `resellers/${id}/sales`),
   clients: () => apiCall('GET', 'resellers/clients'),
-  exportData: (type: 'resellers' | 'sales' | 'commissions') =>
-    apiCall('GET', 'admin/reseller-export', { type }),
+  exportData: (type: 'resellers' | 'sales' | 'commissions' | 'activity') =>
+    apiCall('GET', 'reseller/export', { type }),
 };
 
 export const resellerOnboardingApi = {
@@ -499,9 +511,37 @@ export const dashboardApi = {
   get: () => apiCall('GET', 'dashboard'),
 };
 
+export const auditApi = {
+  list: (params?: { limit?: number; offset?: number; filters?: Record<string, unknown>; q?: string }) =>
+    apiCall('GET', 'audit/list', params),
+  search: (params?: { q?: string; limit?: number; offset?: number }) =>
+    apiCall('GET', 'audit/search', params),
+  stats: (params?: { q?: string }) =>
+    apiCall('GET', 'audit/stats', params),
+  create: (data: {
+    role?: string
+    action: string
+    module?: string
+    table_name?: string
+    record_id?: string
+    old_data?: Record<string, unknown> | null
+    new_data?: Record<string, unknown> | null
+    ip?: string | null
+    device?: string | null
+    status?: string
+    message?: string
+    event_category?: string
+    event_type?: string
+    metadata?: Record<string, unknown>
+    created_at?: string
+  }) => apiCall('POST', 'audit/create', data),
+  export: (params?: { type?: 'csv' | 'pdf'; q?: string }) =>
+    apiCall('GET', 'audit/export', params),
+};
+
 export const systemHealthApi = {
   get: () => apiCall('GET', 'system/health'),
-  runCheck: () => apiCall('POST', 'system-health/run-check', {}),
+  runCheck: () => apiCall('POST', 'system/health/run-check', {}),
 };
 
 export const contentApi = {

@@ -1082,12 +1082,406 @@ async function logActivity(admin: any, entityType: string, entityId: string, act
       performed_by: userId,
       details,
     })
+    await admin.rpc('log_audit_event', {
+      p_event_category: entityType === 'payment' ? 'PAYMENT' : 'API',
+      p_event_type: action || 'activity',
+      p_action: 'read',
+      p_actor_id: userId || null,
+      p_target_table: entityType || 'system',
+      p_target_id: entityId || null,
+      p_metadata: {
+        role: details?.role || null,
+        module: entityType || 'system',
+        status: details?.status || 'success',
+        message: details?.message || `${action} ${entityType}`,
+        device: details?.device || null,
+        old_data: details?.old_data || null,
+        new_data: details?.new_data || null,
+        details,
+      },
+      p_ip_address: details?.ip || null,
+      p_user_agent: details?.device || null,
+      p_ingest_source: 'activity_log_bridge',
+      p_is_system: false,
+    })
   } catch (e) {
     console.error('Activity log failed:', e)
   }
 }
 
+type AuditUiStatus = 'success' | 'error' | 'warning'
+const MS_PER_DAY = 24 * 60 * 60 * 1000
+const END_OF_DAY_OFFSET_MS = MS_PER_DAY - 1
 
+function parseAuditSearchQuery(rawQuery: unknown) {
+  const source = String(rawQuery || '').trim()
+  const tokens = source ? source.split(/\s+/).filter(Boolean) : []
+  const filters: Record<string, string> = {}
+  const freeText: string[] = []
+  for (const token of tokens) {
+    const idx = token.indexOf(':')
+    if (idx > 0) {
+      const key = token.slice(0, idx).trim().toLowerCase()
+      const value = token.slice(idx + 1).trim()
+      if (key && value) {
+        filters[key] = value
+        continue
+      }
+    }
+    freeText.push(token)
+  }
+  return { filters, freeText: freeText.join(' ').trim(), raw: source }
+}
+
+function deriveAuditStatus(row: any): AuditUiStatus {
+  const metadataStatus = String(row?.status || row?.metadata?.status || row?.metadata?.result || row?.metadata?.outcome || '').toLowerCase()
+  if (metadataStatus.includes('error') || metadataStatus.includes('fail') || metadataStatus.includes('denied')) return 'error'
+  if (metadataStatus.includes('warn') || metadataStatus.includes('pending')) return 'warning'
+  if (String(row?.event_category || '').toUpperCase() === 'SECURITY') return 'warning'
+  return 'success'
+}
+
+function normalizeAuditRow(row: any) {
+  const metadata = (row?.metadata && typeof row.metadata === 'object') ? row.metadata : {}
+  const status = deriveAuditStatus(row)
+  const module = String(row?.module || row?.target_table || row?.table_name || metadata?.module || metadata?.service || 'system')
+  const role = String(row?.role || metadata?.role || metadata?.user_role || (row?.is_system ? 'system' : 'user'))
+  const message = String(
+    row?.message
+    || metadata?.message
+    || metadata?.description
+    || `${row?.event_type || row?.action || 'event'} on ${module}`
+  )
+  return {
+    id: row?.id,
+    user_id: row?.user_id || row?.actor_id || null,
+    role,
+    action: row?.action || 'read',
+    module,
+    table_name: row?.table_name || row?.target_table || module,
+    record_id: row?.record_id || row?.target_id || null,
+    old_data: row?.old_data || metadata?.old_data || null,
+    new_data: row?.new_data || metadata?.new_data || null,
+    ip: row?.ip_address || metadata?.ip || metadata?.ipAddress || null,
+    device: row?.device || row?.user_agent || metadata?.device || metadata?.deviceName || null,
+    status,
+    message,
+    created_at: row?.occurred_at || row?.created_at || nowIso(),
+    metadata,
+    event_category: row?.event_category || 'SYSTEM',
+    event_type: row?.event_type || row?.action || 'event',
+    ingest_source: row?.ingest_source || 'app',
+  }
+}
+
+function normalizeAuditLimit(value: unknown) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return 50
+  return Math.min(Math.max(Math.floor(parsed), 1), 50)
+}
+
+function normalizeAuditOffset(value: unknown) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0) return 0
+  return Math.floor(parsed)
+}
+
+async function ensureAuditSeed(sb: any, actorId: string) {
+  const { count, error: countError } = await sb
+    .from('audit_logs')
+    .select('id', { count: 'exact', head: true })
+  if (countError) return
+  if (Number(count || 0) > 0) return
+  const seeds = [
+    { eventType: 'system_boot', action: 'create', module: 'system', message: 'system boot', status: 'success' },
+    { eventType: 'admin_login', action: 'login', module: 'auth', message: 'admin login', status: 'success' },
+    { eventType: 'test_wallet_txn', action: 'create', module: 'wallet', message: 'test wallet txn', status: 'success' },
+  ]
+  for (const seed of seeds) {
+    await sb.rpc('log_audit_event', {
+      p_event_category: seed.module === 'wallet' ? 'PAYMENT' : (seed.module === 'auth' ? 'AUTH' : 'SYSTEM'),
+      p_event_type: seed.eventType,
+      p_action: seed.action,
+      p_actor_id: actorId || null,
+      p_target_table: seed.module,
+      p_target_id: null,
+      p_metadata: {
+        role: 'super_admin',
+        module: seed.module,
+        status: seed.status,
+        message: seed.message,
+        source: 'seedAuditLogs',
+      },
+      p_ingest_source: 'seedAuditLogs',
+      p_is_system: true,
+      p_occurred_at: nowIso(),
+    })
+  }
+}
+
+async function fetchAuditLogs(sb: any, options: {
+  limit: number
+  offset: number
+  query?: string
+  filters?: Record<string, string>
+}) {
+  const query = parseAuditSearchQuery(options.query || '')
+  const mergedFilters = { ...(options.filters || {}), ...query.filters }
+  const actionFilter = mergedFilters.action || null
+  const moduleFilter = mergedFilters.module || null
+  const searchText = query.freeText || mergedFilters.q || ''
+  const preloadLimit = Math.min(Math.max(options.offset + options.limit, 50), 500)
+  const { data, error } = await sb.rpc('list_audit_logs', {
+    p_limit: preloadLimit,
+    p_event_type: null,
+    p_event_category: null,
+    p_actor_id: null,
+    p_target_table: moduleFilter || null,
+    p_before: null,
+    p_search: searchText || null,
+  })
+  if (error) throw new Error(error.message)
+  const normalized = ((data || []) as any[]).map(normalizeAuditRow)
+  const filtered = normalized.filter((row) => {
+    const roleFilter = mergedFilters.role ? String(mergedFilters.role).toLowerCase() : ''
+    const statusFilter = mergedFilters.status ? String(mergedFilters.status).toLowerCase() : ''
+    const moduleFilterValue = mergedFilters.module ? String(mergedFilters.module).toLowerCase() : ''
+    const dateFrom = mergedFilters.date_from ? new Date(String(mergedFilters.date_from)).getTime() : null
+    const dateTo = mergedFilters.date_to ? new Date(String(mergedFilters.date_to)).getTime() : null
+    const createdAtEpoch = new Date(row.created_at).getTime()
+    if (actionFilter && String(row.action).toLowerCase() !== String(actionFilter).toLowerCase()) return false
+    if (roleFilter && String(row.role).toLowerCase() !== roleFilter) return false
+    if (statusFilter && String(row.status).toLowerCase() !== statusFilter) return false
+    if (moduleFilterValue && String(row.module).toLowerCase() !== moduleFilterValue) return false
+    if (dateFrom && Number.isFinite(dateFrom) && createdAtEpoch < dateFrom) return false
+    if (dateTo && Number.isFinite(dateTo) && createdAtEpoch > dateTo + END_OF_DAY_OFFSET_MS) return false
+    if (searchText) {
+      const q = String(searchText).toLowerCase()
+      const hay = `${row.message} ${row.module} ${row.role} ${row.action} ${row.event_type} ${row.record_id || ''}`.toLowerCase()
+      if (!hay.includes(q)) return false
+    }
+    return true
+  })
+  const total = filtered.length
+  const logs = filtered.slice(options.offset, options.offset + options.limit)
+  return {
+    logs,
+    total,
+    has_more: options.offset + options.limit < total,
+    parsed: query.filters,
+  }
+}
+
+function toCsvFromAuditLogs(logs: any[]) {
+  const headers = ['id', 'created_at', 'role', 'action', 'module', 'status', 'message', 'user_id', 'table_name', 'record_id', 'ip', 'device']
+  return toCsv(headers, logs.map((log) => ({
+    id: log.id,
+    created_at: log.created_at,
+    role: log.role,
+    action: log.action,
+    module: log.module,
+    status: log.status,
+    message: log.message,
+    user_id: log.user_id || '',
+    table_name: log.table_name || '',
+    record_id: log.record_id || '',
+    ip: log.ip || '',
+    device: log.device || '',
+  })))
+}
+
+function toSimplePdf(content: string) {
+  const escaped = String(content || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)')
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => `(${line}) Tj`)
+    .join(' T* ')
+  const stream = `BT /F1 9 Tf 40 790 Td ${escaped} ET`
+  const objects = [
+    '1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj',
+    '2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj',
+    '3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>endobj',
+    '4 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj',
+    `5 0 obj<< /Length ${stream.length} >>stream\n${stream}\nendstream endobj`,
+  ]
+  let pdf = '%PDF-1.4\n'
+  const offsets: number[] = [0]
+  for (const obj of objects) {
+    offsets.push(pdf.length)
+    pdf += `${obj}\n`
+  }
+  const xrefStart = pdf.length
+  pdf += `xref\n0 ${objects.length + 1}\n`
+  pdf += '0000000000 65535 f \n'
+  for (let i = 1; i < offsets.length; i++) {
+    pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`
+  }
+  pdf += `trailer<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`
+  return pdf
+}
+
+function toBase64Utf8(value: string) {
+  const bytes = new TextEncoder().encode(String(value || ''))
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
+}
+
+async function handleAudit(method: string, pathParts: string[], body: any, userId: string, sb: any, req: Request) {
+  const adminAllowed = await isSuperAdminUser(userId)
+  if (!adminAllowed) return err('Forbidden', 403, 'FORBIDDEN')
+  await ensureAuditSeed(sb, userId)
+  const action = pathParts[0]
+
+  if (method === 'GET' && action === 'list') {
+    const limit = normalizeAuditLimit(body.limit)
+    const offset = normalizeAuditOffset(body.offset)
+    const filters = (() => {
+      if (!body.filters) return {}
+      if (typeof body.filters === 'string') {
+        try {
+          const parsed = JSON.parse(body.filters)
+          return parsed && typeof parsed === 'object' ? parsed as Record<string, string> : {}
+        } catch {
+          return {}
+        }
+      }
+      return typeof body.filters === 'object' ? body.filters as Record<string, string> : {}
+    })()
+    const result = await fetchAuditLogs(sb, { limit, offset, query: body.q || body.search || '', filters })
+    return json({
+      data: {
+        logs: result.logs,
+        total: result.total,
+        limit,
+        offset,
+        has_more: result.has_more,
+      },
+    })
+  }
+
+  if (method === 'GET' && action === 'search') {
+    const limit = normalizeAuditLimit(body.limit)
+    const offset = normalizeAuditOffset(body.offset)
+    const query = parseAuditSearchQuery(body.q || '')
+    const result = await fetchAuditLogs(sb, { limit, offset, query: body.q || '', filters: query.filters })
+    return json({
+      data: {
+        logs: result.logs,
+        total: result.total,
+        limit,
+        offset,
+        has_more: result.has_more,
+        parsed: result.parsed,
+      },
+    })
+  }
+
+  if (method === 'GET' && action === 'stats') {
+    const allResult = await fetchAuditLogs(sb, { limit: 500, offset: 0, query: body.q || '', filters: {} })
+    const logs = allResult.logs
+    const perMinuteMap = new Map<string, number>()
+    const successVsError = { success: 0, error: 0, warning: 0 }
+    const topModuleMap = new Map<string, number>()
+    for (const log of logs) {
+      const minute = String(log.created_at || '').slice(0, 16)
+      perMinuteMap.set(minute, (perMinuteMap.get(minute) || 0) + 1)
+      successVsError[log.status as AuditUiStatus] = (successVsError[log.status as AuditUiStatus] || 0) + 1
+      const module = String(log.module || 'system')
+      topModuleMap.set(module, (topModuleMap.get(module) || 0) + 1)
+    }
+    const logsPerMinute = Array.from(perMinuteMap.entries())
+      .map(([minute, count]) => ({ minute, count }))
+      .sort((a, b) => a.minute.localeCompare(b.minute))
+    const topModules = Array.from(topModuleMap.entries())
+      .map(([module, count]) => ({ module, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10)
+    return json({
+      data: {
+        logs_per_minute: logsPerMinute,
+        success_vs_error: successVsError,
+        top_modules: topModules,
+      },
+    })
+  }
+
+  if (method === 'POST' && action === 'create') {
+    const actionNameRaw = String(body.action || 'create').toLowerCase()
+    const actionName = (['create', 'read', 'update', 'delete', 'login', 'logout', 'suspend', 'activate'].includes(actionNameRaw)
+      ? actionNameRaw
+      : 'read')
+    const moduleName = sanitizeTextInput(body.module || body.table_name || 'system', 80) || 'system'
+    const status = sanitizeTextInput(body.status || 'success', 30) || 'success'
+    const message = sanitizeTextInput(body.message || `${actionName} ${moduleName}`, 300)
+    const eventType = sanitizeTextInput(body.event_type || `${actionName}:${moduleName}`, 120)
+    const role = sanitizeTextInput(body.role || 'super_admin', 60)
+    const metadata = {
+      ...(body.metadata && typeof body.metadata === 'object' ? body.metadata : {}),
+      role,
+      module: moduleName,
+      status,
+      message,
+      device: body.device || null,
+      old_data: body.old_data || null,
+      new_data: body.new_data || null,
+    }
+    const { data, error } = await sb.rpc('log_audit_event', {
+      p_event_category: String(body.event_category || 'SYSTEM').toUpperCase(),
+      p_event_type: eventType,
+      p_action: actionName,
+      p_actor_id: userId,
+      p_target_table: moduleName,
+      p_target_id: body.record_id || null,
+      p_metadata: metadata,
+      p_ip_address: body.ip || readClientIp(req),
+      p_user_agent: body.device || req.headers.get('user-agent') || null,
+      p_ingest_source: 'api_audit_create',
+      p_is_system: false,
+      p_occurred_at: body.created_at || nowIso(),
+    })
+    if (error) return err(error.message, 400, 'AUDIT_CREATE_FAILED')
+    return json({
+      data: {
+        id: data,
+      },
+    }, 201)
+  }
+
+  if (method === 'GET' && action === 'export') {
+    const type = String(body.type || 'csv').toLowerCase()
+    if (!['csv', 'pdf'].includes(type)) return err('Unsupported export type', 422, 'VALIDATION_ERROR')
+    const result = await fetchAuditLogs(sb, { limit: 500, offset: 0, query: body.q || '', filters: {} })
+    const filenameBase = `audit-logs-${new Date().toISOString().slice(0, 10)}`
+    if (type === 'csv') {
+      const csv = toCsvFromAuditLogs(result.logs)
+      const downloadUrl = `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`
+      return json({
+        data: {
+          type: 'csv',
+          filename: `${filenameBase}.csv`,
+          download_url: downloadUrl,
+        },
+      })
+    }
+    const pdfText = result.logs
+      .map((log) => `[${log.created_at}] ${log.role} ${log.action} ${log.module} ${log.status} ${log.message}`)
+      .join('\n')
+    const pdf = toSimplePdf(pdfText || 'No audit logs')
+    const downloadUrl = `data:application/pdf;base64,${toBase64Utf8(pdf)}`
+    return json({
+      data: {
+        type: 'pdf',
+        filename: `${filenameBase}.pdf`,
+        download_url: downloadUrl,
+      },
+    })
+  }
+
+  return err('Not found', 404)
 }
 
 function isApkVersionsTableMissing(message?: string) {
@@ -1588,11 +1982,39 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
   // POST /resellers
   if (method === 'POST') {
     if (!isAdmin) return err('Forbidden', 403)
+    const userIdInput = String(body?.user_id || '').trim()
+    if (!userIdInput) return err('user_id is required', 422, 'VALIDATION_ERROR')
+    const commissionParsed = parseCommissionPercent(body?.commission_percent, 10)
+    if (!commissionParsed.ok) return err(commissionParsed.error, 422, 'VALIDATION_ERROR')
+    const creditParsed = parseCreditLimit(body?.credit_limit, 0)
+    if (!creditParsed.ok) return err(creditParsed.error, 422, 'VALIDATION_ERROR')
+    const requestedStatus = normalizeResellerStatus(body?.status) || 'pending'
+    const status = requestedStatus === 'inactive' ? 'pending' : requestedStatus
+    const isActive = status === 'active'
+    const isVerified = body?.is_verified === true && status === 'active'
+    const companyName = sanitizeTextInput(body?.company_name || '', 180) || null
 
     const { data, error } = await sb.from('resellers').insert({
-      user_id: body.user_id,
-      company_name: body.company_name,
-      commission_percent: commissionPercent,
+      user_id: userIdInput,
+      company_name: companyName,
+      commission_percent: commissionParsed.value,
+      commission_rate: commissionParsed.value,
+      credit_limit: creditParsed.value,
+      is_active: isActive,
+      is_verified: isVerified,
+      status,
+      kyc_status: isVerified ? 'verified' : 'pending',
+      credit_used: 0,
+      meta: body?.meta && typeof body.meta === 'object' ? body.meta : {},
+    }).select('*').single()
+    if (error) return err(error.message)
+
+    await logActivity(admin, 'reseller', data.id, 'create', userId, {
+      status,
+      company_name: companyName,
+      commission_percent: commissionParsed.value,
+      credit_limit: creditParsed.value,
+    })
 
     return json({ data }, 201)
   }
@@ -1600,13 +2022,75 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
   // PUT /resellers/:id
   if (method === 'PUT' && id) {
     if (!isAdmin) return err('Forbidden', 403)
-
+    const { data: existing, error: existingError } = await admin
+      .from('resellers')
+      .select('id, status, is_active, is_verified, company_name, commission_percent, credit_limit')
+      .eq('id', id)
+      .maybeSingle()
+    if (existingError) return err(existingError.message)
+    if (!existing) return err('Reseller not found', 404)
 
     const updates: any = {}
     if (body.company_name !== undefined) updates.company_name = body.company_name
     if (body.commission_percent !== undefined) {
+      const parsed = parseCommissionPercent(body.commission_percent)
+      if (!parsed.ok) return err(parsed.error, 422, 'VALIDATION_ERROR')
+      updates.commission_percent = parsed.value
+      updates.commission_rate = parsed.value
+    }
+    if (body.credit_limit !== undefined) {
+      const parsed = parseCreditLimit(body.credit_limit)
+      if (!parsed.ok) return err(parsed.error, 422, 'VALIDATION_ERROR')
+      updates.credit_limit = parsed.value
+    }
+    if (body.status !== undefined) {
+      const normalized = normalizeResellerStatus(body.status)
+      if (!normalized) return err('Invalid status', 422, 'VALIDATION_ERROR')
+      updates.status = normalized === 'inactive' ? 'pending' : normalized
+      if (updates.status === 'active') updates.is_active = true
+      if (updates.status === 'suspended' || updates.status === 'pending') updates.is_active = false
+    }
+    if (body.is_active !== undefined) {
+      updates.is_active = body.is_active === true
+      if (body.status === undefined) {
+        if (updates.is_active) {
+          updates.status = 'active'
+        } else if (existing.status === 'pending') {
+          updates.status = 'pending'
+        } else {
+          updates.status = 'suspended'
+        }
+      }
+    }
+    if (body.is_verified !== undefined) {
+      updates.is_verified = body.is_verified === true
+      updates.kyc_status = updates.is_verified ? 'verified' : 'pending'
+    }
+    if (body.kyc_status !== undefined) {
+      const normalizedKyc = normalizeKycStatus(body.kyc_status)
+      if (!normalizedKyc) return err('Invalid kyc_status', 422, 'VALIDATION_ERROR')
+      updates.kyc_status = normalizedKyc
+      updates.is_verified = normalizedKyc === 'verified'
+    }
+    const hasMeaningfulUpdates = Object.keys(updates).length > 0
+    if (!hasMeaningfulUpdates) return json({ success: true, data: existing })
+    updates.updated_at = nowIso()
 
-    return json({ success: true })
+    const { data: updated, error: updateError } = await admin
+      .from('resellers')
+      .update(updates)
+      .eq('id', id)
+      .select('*')
+      .single()
+    if (updateError) return err(updateError.message)
+
+    await logActivity(admin, 'reseller', id, 'update', userId, {
+      previous_status: existing.status,
+      new_status: updated.status,
+      updates,
+    })
+
+    return json({ success: true, data: updated })
   }
 
   // GET /resellers/commission-logs
@@ -1730,9 +2214,214 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
 }
 
 // ===================== 3B. RESELLER ONBOARDING =====================
-async function handleResellerOnboarding(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+async function handleResellerOnboarding(method: string, pathParts: string[], body: any, userId: string, sb: any, req?: Request) {
   const admin = adminClient()
   const action = pathParts[0]
+
+  if (method === 'POST' && ['allow', 'suspend', 'block'].includes(action)) {
+    const isAdmin = await isSuperAdminUser(userId)
+    if (!isAdmin) return err('Forbidden', 403)
+    const resellerId = String(body?.reseller_id || body?.id || '').trim()
+    if (!resellerId) return err('reseller_id is required', 422, 'VALIDATION_ERROR')
+
+    const { data: current, error: currentError } = await admin
+      .from('resellers')
+      .select('id,user_id,status,is_active,is_verified,company_name')
+      .eq('id', resellerId)
+      .maybeSingle()
+    if (currentError) return err(currentError.message)
+    if (!current) return err('Reseller not found', 404)
+
+    const actionToState: Record<string, { status: string; is_active: boolean; activity: string }> = {
+      allow: { status: 'active', is_active: true, activity: 'approve' },
+      suspend: { status: 'suspended', is_active: false, activity: 'suspend' },
+      block: { status: 'inactive', is_active: false, activity: 'block' },
+    }
+    const target = actionToState[action]
+    const updatePayload: Record<string, unknown> = {
+      status: target.status,
+      is_active: target.is_active,
+      updated_at: nowIso(),
+    }
+    if (action === 'allow') {
+      updatePayload.is_verified = true
+      updatePayload.kyc_status = 'verified'
+    }
+
+    const { data: updated, error: updateError } = await admin
+      .from('resellers')
+      .update(updatePayload)
+      .eq('id', resellerId)
+      .select('*')
+      .single()
+    if (updateError) return err(updateError.message)
+
+    await logActivity(admin, 'reseller', resellerId, target.activity, userId, {
+      from_status: current.status || null,
+      to_status: target.status,
+      company_name: current.company_name || null,
+    })
+
+    return json({ success: true, data: updated })
+  }
+
+  // GET /reseller/activity?reseller_id=
+  if (method === 'GET' && action === 'activity') {
+    const isAdmin = await isSuperAdminUser(userId)
+    const resellerId = String(req ? (new URL(req.url)).searchParams.get('reseller_id') || '' : '').trim()
+    let entityId = resellerId
+    if (!entityId) {
+      const { data: ownReseller, error: ownErr } = await sb
+        .from('resellers')
+        .select('id')
+        .eq('user_id', userId)
+        .maybeSingle()
+      if (ownErr) return err(ownErr.message)
+      if (!ownReseller?.id) return json({ data: [] })
+      entityId = ownReseller.id
+    } else if (!isAdmin) {
+      const { data: ownReseller, error: ownErr } = await sb
+        .from('resellers')
+        .select('id')
+        .eq('user_id', userId)
+        .maybeSingle()
+      if (ownErr) return err(ownErr.message)
+      if (!ownReseller?.id || ownReseller.id !== entityId) return err('Forbidden', 403)
+    }
+
+    const importantActions = ['login', 'logout', 'key_generated', 'wallet_credit', 'wallet_debit', 'sales_made', 'product_purchase', 'api_usage']
+    const query = admin
+      .from('activity_logs')
+      .select('id,action,entity_type,entity_id,details,performed_by,created_at')
+      .eq('entity_type', 'reseller')
+      .eq('entity_id', entityId)
+      .order('created_at', { ascending: false })
+      .limit(100)
+
+    const { data, error } = await query
+    if (error) return err(error.message)
+
+    const normalized = (data || []).map((row: any) => {
+      const actionName = String(row.action || '').toLowerCase()
+      const mappedAction = actionName === 'approve' ? 'approved' : actionName
+      const details = row.details && typeof row.details === 'object' ? row.details : {}
+      return {
+        ...row,
+        action: mappedAction,
+        module: (details as any).module || (importantActions.includes(mappedAction) ? 'reseller' : 'admin'),
+      }
+    })
+    return json({ data: normalized })
+  }
+
+  // POST /reseller/activity
+  if (method === 'POST' && action === 'activity') {
+    const requestedResellerId = String(body?.reseller_id || '').trim()
+    const actionName = String(body?.action || '').trim().toLowerCase()
+    if (!requestedResellerId || !actionName) return err('reseller_id and action are required', 422, 'VALIDATION_ERROR')
+    const allowedActions = new Set([
+      'login',
+      'logout',
+      'key_generated',
+      'wallet_credit',
+      'wallet_debit',
+      'sales_made',
+      'product_purchase',
+      'api_usage',
+      'approve',
+      'suspend',
+      'block',
+      'create',
+      'update',
+      'delete',
+    ])
+    if (!allowedActions.has(actionName)) return err('Unsupported action', 422, 'VALIDATION_ERROR')
+
+    const isAdmin = await isSuperAdminUser(userId)
+    const { data: ownReseller, error: ownErr } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
+    if (ownErr) return err(ownErr.message)
+    if (!isAdmin && (!ownReseller?.id || ownReseller.id !== requestedResellerId)) return err('Forbidden', 403)
+
+    const details = body?.details && typeof body.details === 'object' ? body.details : {}
+    await logActivity(admin, 'reseller', requestedResellerId, actionName, userId, {
+      module: String(body?.module || 'reseller').slice(0, 80),
+      ip_address: String(body?.ip_address || readClientIp()).slice(0, 80),
+      ...details,
+    })
+
+    return json({ success: true })
+  }
+
+  // GET /reseller/export
+  if (method === 'GET' && action === 'export') {
+    const isAdmin = await isSuperAdminUser(userId)
+    if (!isAdmin) return err('Forbidden', 403)
+    const type = String(req ? (new URL(req.url)).searchParams.get('type') || 'resellers' : 'resellers')
+    if (!['resellers', 'sales', 'commissions', 'activity'].includes(type)) {
+      return err('Invalid export type', 422, 'VALIDATION_ERROR')
+    }
+
+    if (type === 'resellers') {
+      const { data, error } = await admin
+        .from('resellers')
+        .select('id,user_id,company_name,commission_percent,credit_limit,credit_used,is_active,is_verified,status,created_at')
+        .order('created_at', { ascending: false })
+      if (error) return err(error.message)
+      const csv = toCsv(
+        ['id', 'user_id', 'company_name', 'commission_percent', 'credit_limit', 'credit_used', 'is_active', 'is_verified', 'status', 'created_at'],
+        (data || []) as Record<string, unknown>[],
+      )
+      return json({ filename: 'resellers.csv', csv })
+    }
+
+    if (type === 'sales') {
+      const { data: resellerRows } = await admin.from('resellers').select('id,user_id,company_name')
+      const resellerUserIds = (resellerRows || []).map((r: any) => r.user_id).filter(Boolean)
+      const salesHeaders = ['id', 'created_by', 'amount', 'status', 'created_at', 'company_name']
+      if (resellerUserIds.length === 0) return json({ filename: 'reseller-sales.csv', csv: toCsv(salesHeaders, []) })
+      const { data: txRows, error } = await admin
+        .from('transactions')
+        .select('id,created_by,amount,status,created_at')
+        .in('created_by', resellerUserIds)
+        .order('created_at', { ascending: false })
+      if (error) return err(error.message)
+      const companyByUser: Record<string, string> = {}
+      ;(resellerRows || []).forEach((r: any) => { companyByUser[r.user_id] = r.company_name || '' })
+      const rows = (txRows || []).map((r: any) => ({
+        ...r,
+        company_name: companyByUser[r.created_by] || '',
+      }))
+      const csv = toCsv(salesHeaders, rows)
+      return json({ filename: 'reseller-sales.csv', csv })
+    }
+
+    if (type === 'commissions') {
+      const { data, error } = await admin
+        .from('reseller_commission_logs')
+        .select('id,reseller_id,order_id,payment_id,commission_rate,amount,status,created_at')
+        .order('created_at', { ascending: false })
+      if (error) return err(error.message)
+      const csv = toCsv(
+        ['id', 'reseller_id', 'order_id', 'payment_id', 'commission_rate', 'amount', 'status', 'created_at'],
+        (data || []) as Record<string, unknown>[],
+      )
+      return json({ filename: 'reseller-commissions.csv', csv })
+    }
+
+    const { data, error } = await admin
+      .from('activity_logs')
+      .select('id,entity_id,action,performed_by,details,created_at')
+      .eq('entity_type', 'reseller')
+      .order('created_at', { ascending: false })
+      .limit(5000)
+    if (error) return err(error.message)
+    const rows = (data || []).map((item: any) => ({
+      ...item,
+      details: JSON.stringify(item.details || {}),
+    }))
+    const csv = toCsv(['id', 'entity_id', 'action', 'performed_by', 'details', 'created_at'], rows as Record<string, unknown>[])
+    return json({ filename: 'reseller-activity.csv', csv })
+  }
 
   // POST /reseller/apply
   if (method === 'POST' && action === 'apply') {
@@ -7805,7 +8494,7 @@ Deno.serve(async (req) => {
       case 'api-usage':
 
       case 'reseller':
-        routeResponse = await handleResellerOnboarding(req.method, subParts, body, userId, sb)
+        routeResponse = await handleResellerOnboarding(req.method, subParts, body, userId, sb, req)
         break
       case 'resellers':
         routeResponse = await handleResellers(req.method, subParts, body, userId, sb)
@@ -7825,6 +8514,9 @@ Deno.serve(async (req) => {
         break
       case 'system':
         routeResponse = await handleSystemHealth(req.method, subParts, body, userId, sb, req)
+        break
+      case 'audit':
+        routeResponse = await handleAudit(req.method, subParts, body, userId, sb, req)
         break
       case 'leads':
       case 'lead':
