@@ -32,7 +32,7 @@ const catColors: Record<string, string> = {
   Retail: '#fb923c', Food: '#f87171', Transport: '#22d3ee',
   Marketing: '#e879f9', HR: '#818cf8', Logistics: '#facc15',
 };
-const CARD_HOVER_TRANSITION_SECONDS = 0.24;
+const CARD_HOVER_TRANSITION_SECONDS = 0.2;
 const CARD_HOVER_SCALE = 1.05;
 const CARD_HOVER_SHADOW = '0 14px 38px rgba(37,99,235,0.24)';
 const CARD_HOVER_BORDER = 'rgba(37,99,235,0.45)';
@@ -230,11 +230,11 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
           width: 280,
           background: 'rgba(255,255,255,0.03)',
           border: `1px solid ${CARD_BASE_BORDER}`,
-          transition: `transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease`,
+          transition: `transform ${CARD_HOVER_TRANSITION_SECONDS}s ease, box-shadow ${CARD_HOVER_TRANSITION_SECONDS}s ease, border-color ${CARD_HOVER_TRANSITION_SECONDS}s ease`,
           pointerEvents: 'auto',
+          touchAction: 'manipulation',
         }}
         onClick={() => navigate(`/product/${encodeURIComponent(product.id)}`)}
-        onTouchStart={() => undefined}
         onMouseEnter={e => { e.currentTarget.style.transform = `scale(${CARD_HOVER_SCALE})`; e.currentTarget.style.boxShadow = CARD_HOVER_SHADOW; e.currentTarget.style.borderColor = CARD_HOVER_BORDER; }}
         onMouseLeave={e => { e.currentTarget.style.transform = ''; e.currentTarget.style.boxShadow = ''; e.currentTarget.style.borderColor = CARD_BASE_BORDER; }}
       >
@@ -329,35 +329,35 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
               <Button size="sm" className={cn('flex-1 h-8 text-[10px] font-bold rounded-lg', notified ? 'bg-emerald-600' : 'bg-amber-500 text-black hover:bg-amber-400')} onClick={handleNotifyMe}>
                 <Bell style={{ width: 12, height: 12 }} className="mr-1" />{notified ? 'NOTIFIED' : 'NOTIFY ME'}
               </Button>
-              <Button size="sm" variant="ghost" className="h-8 w-8 p-0 min-w-[44px] min-h-[44px]" onTouchStart={() => undefined} onClick={() => { void handleFavorite(); }} disabled={isProcessing(`FAVORITE_${product.id}`)}>
+              <Button size="sm" variant="ghost" className="h-8 w-8 p-0 min-w-[44px] min-h-[44px]" onClick={() => { void handleFavorite(); }} disabled={isProcessing(`FAVORITE_${product.id}`)}>
                 <Heart style={{ width: 14, height: 14 }} className={favoriteActive ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
               </Button>
             </div>
           ) : (
             <>
               <div className="flex gap-1.5">
-                <Button size="sm" variant="outline" className="flex-1 h-8 text-[10px] font-bold rounded-lg border-white/10 text-foreground/70 hover:border-white/20 min-h-[44px]" onTouchStart={() => undefined} onClick={(e) => { e.stopPropagation(); handleDemo(); }}>
+                <Button size="sm" variant="outline" className="flex-1 h-8 text-[10px] font-bold rounded-lg border-white/10 text-foreground/70 hover:border-white/20 min-h-[44px]" onClick={(e) => { e.stopPropagation(); handleDemo(); }}>
                   <Play style={{ width: 11, height: 11 }} className="mr-1" />{hasDemoAvailable ? 'DEMO' : 'VIEW'}
                 </Button>
-                <Button size="sm" variant="ghost" className="h-8 w-8 p-0 min-w-[44px] min-h-[44px]" onTouchStart={() => undefined} onClick={(e) => { e.stopPropagation(); void handleFavorite(); }} disabled={isProcessing(`FAVORITE_${product.id}`)}>
+                <Button size="sm" variant="ghost" className="h-8 w-8 p-0 min-w-[44px] min-h-[44px]" onClick={(e) => { e.stopPropagation(); void handleFavorite(); }} disabled={isProcessing(`FAVORITE_${product.id}`)}>
                   <Heart style={{ width: 14, height: 14 }} className={favoriteActive ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
                 </Button>
-                <Button size="sm" variant="ghost" className="h-8 w-8 p-0 min-w-[44px] min-h-[44px]" onTouchStart={() => undefined} onClick={(e) => { e.stopPropagation(); void handleAddToCart(); }} disabled={isProcessing(`CART_${product.id}`)}>
+                <Button size="sm" variant="ghost" className="h-8 w-8 p-0 min-w-[44px] min-h-[44px]" onClick={(e) => { e.stopPropagation(); void handleAddToCart(); }} disabled={isProcessing(`CART_${product.id}`)}>
                   <ShoppingCart style={{ width: 14, height: 14 }} className={inCart ? 'text-primary' : 'text-muted-foreground'} />
                 </Button>
               </div>
-              <Button size="sm" className="w-full h-9 text-[11px] font-black rounded-lg text-white border-0 min-h-[44px]" style={{ background: 'linear-gradient(90deg,#2563EB,#1D4ED8)' }} onTouchStart={() => undefined} onClick={(e) => { e.stopPropagation(); void handleBuyNow(); }} disabled={isProcessing(`BUY_${product.id}`)}>
+              <Button size="sm" className="w-full h-9 text-[11px] font-black rounded-lg text-white border-0 min-h-[44px]" style={{ background: 'linear-gradient(90deg,#2563EB,#1D4ED8)' }} onClick={(e) => { e.stopPropagation(); void handleBuyNow(); }} disabled={isProcessing(`BUY_${product.id}`)}>
                 <Package style={{ width: 13, height: 13 }} className="mr-1" /> BUY NOW — {localizedPrice}
               </Button>
             </>
           )}
           <div className="flex gap-1.5">
             {apkEnabled && (
-              <Button size="sm" variant="outline" className="flex-1 h-7 text-[10px] font-bold rounded-lg text-white border-0 min-h-[44px]" style={{ background: 'linear-gradient(90deg,#7C3AED,#6D28D9)' }} onTouchStart={() => undefined} onClick={handleDownloadApk} disabled={downloadChecking || isPipeline || isProcessing(`DOWNLOAD_${product.id}`)}>
+              <Button size="sm" variant="outline" className="flex-1 h-7 text-[10px] font-bold rounded-lg text-white border-0 min-h-[44px]" style={{ background: 'linear-gradient(90deg,#7C3AED,#6D28D9)' }} onClick={handleDownloadApk} disabled={downloadChecking || isPipeline || isProcessing(`DOWNLOAD_${product.id}`)}>
                 <Download style={{ width: 11, height: 11 }} className="mr-1" />{downloadButtonText}
               </Button>
             )}
-            <Button size="sm" variant="outline" className={cn('h-7 text-[10px] font-bold rounded-lg border-white/10 text-muted-foreground min-h-[44px]', apkEnabled ? 'flex-1' : 'w-full')} onTouchStart={() => undefined} onClick={(e) => { e.stopPropagation(); setFeaturesOpen(true); }}>
+            <Button size="sm" variant="outline" className={cn('h-7 text-[10px] font-bold rounded-lg border-white/10 text-muted-foreground min-h-[44px]', apkEnabled ? 'flex-1' : 'w-full')} onClick={(e) => { e.stopPropagation(); setFeaturesOpen(true); }}>
               <Info style={{ width: 11, height: 11 }} className="mr-1" /> FEATURES
             </Button>
           </div>

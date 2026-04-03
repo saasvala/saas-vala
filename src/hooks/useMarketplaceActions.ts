@@ -79,7 +79,7 @@ export function useMarketplaceActions() {
     if (!res) throw new Error('Cart response missing');
     const nextQty = Math.max(1, Number(res?.qty || qty));
     setCartQtyByProduct((prev) => ({ ...prev, [productId]: nextQty }));
-    await refreshCart();
+    void refreshCart();
     return {
       qty: nextQty,
       cartCount: Math.max(0, Number(res?.cart_count || 0)),

@@ -15,6 +15,8 @@ type ButtonActionContext = {
   attempt: number;
 };
 
+const RETRY_DELAYS_MS = [1000, 2000, 4000] as const;
+
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const makeTraceId = () =>
@@ -63,7 +65,7 @@ export function useButtonEngine() {
         for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
           try {
             const response = await executor({ traceId, attempt });
-            if (!response) throw new Error('Empty response');
+            if (response == null) throw new Error('Empty response');
             window.dispatchEvent(new CustomEvent('button:action:success', { detail: { action: key, traceId, route, api } }));
             return { ok: true, response };
           } catch (error) {
@@ -71,7 +73,7 @@ export function useButtonEngine() {
             const message = String(lastError.message || '').toLowerCase();
             const retryable = message.includes('network') || message.includes('fetch') || message.includes('timeout');
             if (attempt >= maxAttempts || !retryable) break;
-            await wait(attempt === 1 ? 1000 : attempt === 2 ? 2000 : 4000);
+            await wait(RETRY_DELAYS_MS[Math.min(attempt - 1, RETRY_DELAYS_MS.length - 1)]);
           }
         }
         window.dispatchEvent(new CustomEvent('button:action:error', { detail: { action: key, traceId, route, api, error: lastError?.message || 'Unknown error' } }));
