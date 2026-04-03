@@ -26,6 +26,10 @@ const marketNiches = [
   "Inventory control",
 ];
 
+const REVENUE_BASELINE = 700;
+const REVENUE_DAY_FACTOR = 13;
+const REVENUE_SLOT_FACTOR = 125;
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -158,7 +162,8 @@ serve(async (req) => {
         const resellerDemand = data?.reseller_demand ?? "White-label and low-ticket software";
         const revenuePotential = data?.revenue_potential ?? "medium";
 
-        const daySeed = new Date().getUTCDate();
+        const now = new Date();
+        const daySeed = Number(`${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, "0")}${String(now.getUTCDate()).padStart(2, "0")}`);
         const selectedA = marketNiches[daySeed % marketNiches.length];
         const selectedB = marketNiches[(daySeed + 3) % marketNiches.length];
         const slug = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
@@ -172,7 +177,8 @@ serve(async (req) => {
             repo_url: `https://github.com/saasvala/${clean}-${daySeed}-${idx + 1}`,
             deploy_url: `https://${clean}-${daySeed}-${idx + 1}.saasvala.app`,
             status: "deployed",
-            revenue_prediction: Number(700 + (daySeed * 13) + idx * 125),
+            // Revenue heuristic: baseline + day trend factor + per-product slot uplift.
+            revenue_prediction: Number(REVENUE_BASELINE + (daySeed * REVENUE_DAY_FACTOR) + idx * REVENUE_SLOT_FACTOR),
           };
         });
 
