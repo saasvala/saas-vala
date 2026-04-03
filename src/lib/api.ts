@@ -248,6 +248,13 @@ export const autoApi = {
   update: (id: string, data: any) => apiCall('PUT', `auto/${id}`, data),
 };
 
+export const autoPilotApi = {
+  newRequest: (data: any) => apiCall('POST', 'auto-pilot/new-request', data),
+  generate: (data?: any) => apiCall('POST', 'auto-pilot/generate', data),
+  billingCheck: (data?: any) => apiCall('POST', 'auto-pilot/billing-check', data),
+  addBilling: (data: any) => apiCall('POST', 'auto-pilot/add-billing', data),
+};
+
 export const adsApi = {
   optimize: (data: any) => apiCall('POST', 'ads/optimize', data),
 };

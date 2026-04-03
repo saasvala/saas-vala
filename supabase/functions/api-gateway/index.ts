@@ -3206,15 +3206,7 @@ async function handleAuto(method: string, pathParts: string[], body: any, userId
 }
 
 async function handleAutoPilot(method: string, pathParts: string[], body: any, userId: string, sb: any) {
-  if (method === 'POST' && pathParts[0] === 'generate') {
-    return await handleAuto('POST', ['run'], body, userId, sb)
-  }
 
-  if (method === 'GET' && pathParts[0] === 'queue') {
-    return await handleAuto('GET', ['tasks'], body, userId, sb)
-  }
-
-  return err('Not found', 404)
 }
 
 // ===================== 16. APK PIPELINE =====================
