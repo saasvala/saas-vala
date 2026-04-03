@@ -2517,8 +2517,11 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
       if (rpcError) return err(rpcError.message)
       if (!rpcData?.success) {
         const isLowBalance = rpcData?.code === 'INSUFFICIENT_BALANCE' || rpcData?.code === 'MIN_BALANCE_REQUIRED'
+        const lowBalanceMessage = rpcData?.code === 'MIN_BALANCE_REQUIRED'
+          ? 'Low Balance: minimum wallet balance requirement not met'
+          : 'Low Balance: insufficient available wallet balance'
         return json({
-          error: isLowBalance ? 'Low Balance' : (rpcData?.message || 'Atomic key generation failed'),
+          error: isLowBalance ? lowBalanceMessage : (rpcData?.message || 'Atomic key generation failed'),
           code: isLowBalance ? 'LOW_BALANCE' : (rpcData?.code || 'ATOMIC_GENERATION_FAILED'),
           deficit: rpcData?.deficit ?? null,
           minimum_balance: rpcData?.minimum_balance ?? null,
@@ -2531,16 +2534,18 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
       if (usageLimit > 0 && rpcData?.idempotency_key) {
         const { data: createdRows } = await admin
           .from('license_keys')
-          .select('id')
+          .select('id, meta')
           .eq('created_by', userId)
           .eq('idempotency_key', rpcData.idempotency_key)
-        const ids = (createdRows || []).map((row: any) => row.id).filter(Boolean)
-        if (ids.length > 0) {
-          await admin
-            .from('license_keys')
-            .update({ meta: { usage_limit: usageLimit, used_count: 0 } })
-            .in('id', ids)
-        }
+        await Promise.all((createdRows || []).map((row: any) => {
+          const existingMeta = row?.meta && typeof row.meta === 'object' ? row.meta : {}
+          const nextMeta = {
+            ...existingMeta,
+            usage_limit: usageLimit,
+            used_count: Number(existingMeta?.used_count || 0),
+          }
+          return admin.from('license_keys').update({ meta: nextMeta }).eq('id', row.id)
+        }))
       }
 
       const maskedKeys = Array.isArray(rpcData.keys)
@@ -2590,8 +2595,6 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
       idempotency_key: body.idempotency_key || null,
       meta: {
         ...keyMeta,
-        type: body.key_type || 'yearly',
-        user_id: userId,
         usage_limit: usageLimit,
         used_count: 0,
       },
@@ -2616,7 +2619,7 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
   // POST /keys/validate
   if (method === 'POST' && action === 'validate') {
     const incomingKey = String(body?.license_key || '').trim()
-    if (!incomingKey) return err('license_key is required', 422, 'VALIDATION_ERROR')
+    if (!incomingKey) return err('License key is required', 422, 'VALIDATION_ERROR')
 
     const { data, error } = await admin.from('license_keys').select('*')
       .eq('license_key', incomingKey).maybeSingle()
