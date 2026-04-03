@@ -23,6 +23,8 @@ interface PurchaseResult {
   error?: string;
 }
 
+type PaymentMethod = 'wallet' | 'upi' | 'card' | 'crypto';
+
 export function useApkPurchase() {
   const { user } = useAuth();
   const { checkUserStatus, reportViolation } = useFraudDetection();
@@ -32,7 +34,10 @@ export function useApkPurchase() {
   // Helper: check if an ID looks like a valid UUID
   const isUuid = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 
-  const purchaseApk = async (product: ApkProduct): Promise<PurchaseResult> => {
+  const purchaseApk = async (
+    product: ApkProduct,
+    options?: { paymentMethod?: PaymentMethod },
+  ): Promise<PurchaseResult> => {
     if (!user) {
       return { success: false, error: 'Please sign in to download APK' };
     }
@@ -63,13 +68,14 @@ export function useApkPurchase() {
         product_id: product.id,
         amount: product.price,
         currency: 'INR',
-        payment_method: 'wallet',
-        gateway: 'wallet',
-        lock_wallet: true,
+        payment_method: paymentMethod,
+        gateway: paymentMethod,
+        lock_wallet: paymentMethod === 'wallet',
         meta: {
           product_id: product.id,
           product_title: product.title,
           flow: 'apk_purchase',
+          payment_method: paymentMethod,
         },
       });
       paymentId = String((initRes as any)?.data?.payment?.id || '');
@@ -84,6 +90,7 @@ export function useApkPurchase() {
       const verifyRes = await marketplaceApi.paymentVerify({
         payment_id: paymentId,
         amount: product.price,
+        payment_method: paymentMethod,
       });
       if (!(verifyRes as any)?.success) {
         throw new Error((verifyRes as any)?.error || 'Payment verification failed');
@@ -155,7 +162,8 @@ export function useApkPurchase() {
           license_key: finalLicenseKey,
           amount: product.price,
           transaction_id: transactionId,
-          is_generated: isGeneratedProduct
+          is_generated: isGeneratedProduct,
+          payment_method: paymentMethod,
         }
       });
 
@@ -273,3 +281,4 @@ export function useApkPurchase() {
     processing
   };
 }
+    const paymentMethod: PaymentMethod = options?.paymentMethod || 'wallet';

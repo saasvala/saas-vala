@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ArrowLeft, CreditCard } from 'lucide-react';
 import { useCart } from '@/hooks/useCart';
 import { useMarketplaceProducts } from '@/hooks/useMarketplaceProducts';
@@ -19,6 +20,7 @@ export default function Checkout() {
   const { purchaseApk, processing } = useApkPurchase();
   const { trackPromoConversion } = useMarketplaceActions();
   const [submitting, setSubmitting] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<'wallet' | 'upi' | 'card' | 'crypto'>('wallet');
 
   const selected = useMemo(() => {
     const productId = searchParams.get('product_id');
@@ -47,7 +49,7 @@ export default function Checkout() {
       image: selected.image || '',
       status: 'live',
       price: selected.price,
-    });
+    }, { paymentMethod });
     setSubmitting(false);
     if (result.success) {
       try {
@@ -118,9 +120,24 @@ export default function Checkout() {
             <span className="text-2xl font-black text-primary">${payable}</span>
           </div>
 
+          <div className="space-y-1">
+            <span className="text-sm text-muted-foreground">Payment Method</span>
+            <Select value={paymentMethod} onValueChange={(v) => setPaymentMethod(v as typeof paymentMethod)}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select payment method" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="wallet">Wallet</SelectItem>
+                <SelectItem value="upi">UPI</SelectItem>
+                <SelectItem value="card">Card</SelectItem>
+                <SelectItem value="crypto">Crypto</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
           <Button className="w-full" onClick={onPay} disabled={processing || submitting || !selected}>
             <CreditCard className="h-4 w-4 mr-2" />
-            {processing || submitting ? 'Processing...' : `Pay $${payable}`}
+            {processing || submitting ? 'Processing...' : `Pay $${payable} via ${paymentMethod.toUpperCase()}`}
           </Button>
           <Button variant="outline" className="w-full" onClick={restorePendingPayment}>
             Retry Pending Payment
