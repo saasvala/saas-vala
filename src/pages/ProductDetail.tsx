@@ -47,7 +47,6 @@ export default function ProductDetail() {
     return product.image ? [product.image] : [];
   }, [product]);
   const localizedPrice = `$${Number(product?.price || 0).toFixed(2)}`;
-  const isBuilding = false;
 
   if (loading) {
     return (
@@ -91,10 +90,6 @@ export default function ProductDetail() {
     }
     if (!product.apk_enabled) {
       toast.info('Coming Soon');
-      return;
-    }
-    if (isBuilding) {
-      toast.info('Building...');
       return;
     }
     try {
@@ -168,7 +163,7 @@ export default function ProductDetail() {
             <Button onClick={handleBuyNow}>
               <CreditCard className="h-4 w-4 mr-2" /> Buy Now
             </Button>
-            <Button variant="secondary" onClick={handleDownload} disabled={!product.apk_enabled || isBuilding}>
+            <Button variant="secondary" onClick={handleDownload} disabled={!product.apk_enabled}>
               <Download className="h-4 w-4 mr-2" /> Download APK
             </Button>
             {!!product.demo_url && (

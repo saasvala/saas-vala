@@ -1,5 +1,5 @@
 import { Button } from '@/components/ui/button';
-import { Plus, KeyRound, Upload, Server, Wallet } from 'lucide-react';
+import { Plus, KeyRound, Upload, Server, Wallet, Headset } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useRecentActions } from '@/hooks/useRecentActions';
@@ -37,7 +37,7 @@ const actions = [
   },
   {
     label: 'Support Ticket',
-    icon: Server,
+    icon: Headset,
     href: '/support/ticket',
     className: 'bg-muted hover:bg-muted/80 text-foreground border border-border/40',
   },
