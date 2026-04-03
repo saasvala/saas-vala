@@ -4,6 +4,7 @@ import { useAuth } from './useAuth';
 import { useFraudDetection } from './useFraudDetection';
 import { generateSecureLicenseKey } from '@/lib/licenseUtils';
 import { toast } from 'sonner';
+import { marketplaceApi } from '@/lib/api';
 
 interface ApkProduct {
   id: string;
@@ -49,64 +50,48 @@ export function useApkPurchase() {
         return { success: false, error: fraudStatus.message };
       }
 
-      // Step 2: Check wallet balance
-      const { data: wallet, error: walletError } = await supabase
-        .from('wallets')
-        .select('id, balance')
-        .eq('user_id', user.id)
-        .single();
-
-      if (walletError || !wallet) {
-        throw new Error('Could not fetch wallet balance');
+      // Step 2: Initialize payment via gateway create API
+      const initRes = await marketplaceApi.paymentCreate({
+        product_id: product.id,
+        amount: product.price,
+        currency: 'INR',
+        payment_method: 'wallet',
+        gateway: 'wallet',
+        lock_wallet: true,
+        meta: {
+          product_id: product.id,
+          product_title: product.title,
+          flow: 'apk_purchase',
+        },
+      });
+      const paymentId = String((initRes as any)?.data?.payment?.id || '');
+      if (!paymentId) {
+        throw new Error('Failed to initialize payment');
       }
 
-      if ((wallet.balance || 0) < product.price) {
-        throw new Error(`Insufficient balance. Need $${product.price}, have $${(wallet.balance || 0).toFixed(2)}`);
+      // Step 3: Verify payment and activate services
+      const verifyRes = await marketplaceApi.paymentVerify({
+        payment_id: paymentId,
+        amount: product.price,
+      });
+      if (!(verifyRes as any)?.success) {
+        throw new Error((verifyRes as any)?.error || 'Payment verification failed');
       }
 
-      // Step 3: Create transaction (this becomes the license key source)
-      const newBalance = (wallet.balance || 0) - product.price;
-      
-      const { data: transaction, error: txError } = await supabase
-        .from('transactions')
-        .insert({
-          wallet_id: wallet.id,
-          type: 'debit',
-          amount: product.price,
-          balance_after: newBalance,
-          status: 'completed',
-          description: `APK Purchase: ${product.title}`,
-          reference_type: 'apk_purchase',
-          meta: {
-            product_id: product.id,
-            product_title: product.title
-          }
-        })
-        .select()
-        .single();
-
-      if (txError || !transaction) {
-        throw new Error('Failed to create transaction');
+      const transactionId = String((verifyRes as any)?.result?.order_id || '');
+      if (!transactionId) {
+        throw new Error('Payment verification did not return an order id');
       }
 
       // Step 4: Generate secure crypto-random license key
       const licenseKey = generateSecureLicenseKey();
 
-      // Step 5: Update wallet balance
-      const { error: walletUpdateError } = await supabase
-        .from('wallets')
-        .update({ balance: newBalance, updated_at: new Date().toISOString() })
-        .eq('id', wallet.id);
-      if (walletUpdateError) {
-        throw new Error(`Failed to update wallet balance: ${walletUpdateError.message}`);
-      }
 
-      // Step 6: Create APK download record (only for real DB products)
       if (!isGeneratedProduct) {
         await supabase.from('apk_downloads').insert({
           user_id: user.id,
           product_id: product.id,
-          transaction_id: transaction.id,
+          transaction_id: transactionId,
           license_key: licenseKey,
           is_verified: true,
           verification_attempts: 0,
@@ -114,12 +99,12 @@ export function useApkPurchase() {
         });
       }
 
-      // Step 6.5: Save license key to license_keys table (so user can see it on /keys page)
+      // Step 5b: Save license key to license_keys table (so user can see it on /keys page)
       // Guard against duplicate license for the same transaction
       const { data: existingLicense } = await supabase
         .from('license_keys')
         .select('license_key')
-        .filter('meta->>transaction_id', 'eq', transaction.id)
+        .filter('meta->>transaction_id', 'eq', transactionId)
         .maybeSingle();
 
       const finalLicenseKey = existingLicense ? existingLicense.license_key : licenseKey;
@@ -140,29 +125,14 @@ export function useApkPurchase() {
           expires_at: expiresAt.toISOString(),
           created_by: user.id,
           notes: `Purchased: ${product.title}`,
-          meta: { product_title: product.title, transaction_id: transaction.id, product_id: product.id }
+          meta: { product_title: product.title, transaction_id: transactionId, product_id: product.id }
         });
       }
 
-      // Step 7: Create marketplace order (only for real DB products)
-      if (!isGeneratedProduct) {
-        await supabase
-          .from('marketplace_orders')
-          .insert({
-            buyer_id: user.id,
-            seller_id: user.id,
-            amount: product.price,
-            status: 'completed',
-            payment_method: 'wallet',
-            transaction_id: transaction.id,
-            completed_at: new Date().toISOString()
-          });
-      }
-
-      // Step 8: Log activity
+      // Step 6: Log activity
       await supabase.from('activity_logs').insert({
         entity_type: 'apk_download',
-        entity_id: transaction.id,
+        entity_id: transactionId,
         action: 'apk_purchased',
         performed_by: user.id,
         details: {
@@ -170,12 +140,12 @@ export function useApkPurchase() {
           product_title: product.title,
           license_key: finalLicenseKey,
           amount: product.price,
-          transaction_id: transaction.id,
+          transaction_id: transactionId,
           is_generated: isGeneratedProduct
         }
       });
 
-      // Step 9: Create notification
+      // Step 7: Create notification
       await supabase.from('notifications').insert({
         user_id: user.id,
         title: '📱 APK Ready for Download',
@@ -188,7 +158,7 @@ export function useApkPurchase() {
       
       return {
         success: true,
-        transactionId: transaction.id,
+        transactionId,
         licenseKey: finalLicenseKey,
         downloadUrl: `/download/apk/${product.id}?key=${finalLicenseKey}`
       };
