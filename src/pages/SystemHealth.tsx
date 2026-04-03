@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -81,6 +81,7 @@ export default function SystemHealth() {
   const [healthChecks, setHealthChecks] = useState<HealthCheck[]>(buildCheckingState());
   const [healthPercentage, setHealthPercentage] = useState(0);
   const service = useMemo(() => healthService(5000), []);
+  const hadErrorsRef = useRef(false);
 
   const applySnapshot = (raw: unknown) => {
     const snapshot = unwrapHealthPayload(raw);
@@ -146,9 +147,10 @@ export default function SystemHealth() {
   const hasErrors = healthChecks.some((c) => c.status === 'error');
 
   useEffect(() => {
-    if (!loading && hasErrors) {
+    if (!loading && hasErrors && !hadErrorsRef.current) {
       toast.error('System health alert: one or more modules are in error state');
     }
+    hadErrorsRef.current = hasErrors;
   }, [hasErrors, loading]);
 
   const statusConfig = {
