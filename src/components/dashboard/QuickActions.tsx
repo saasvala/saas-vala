@@ -2,6 +2,7 @@ import { Button } from '@/components/ui/button';
 import { Plus, KeyRound, Upload, Server, Wallet } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { useRecentActions } from '@/hooks/useRecentActions';
 
 const actions = [
   {
@@ -34,10 +35,17 @@ const actions = [
     href: '/wallet',
     className: 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 border border-emerald-500/20',
   },
+  {
+    label: 'Support Ticket',
+    icon: Server,
+    href: '/support/ticket',
+    className: 'bg-muted hover:bg-muted/80 text-foreground border border-border/40',
+  },
 ];
 
 export function QuickActions() {
   const navigate = useNavigate();
+  const { actions: recentActions, pushAction } = useRecentActions();
 
   return (
     <motion.div
@@ -59,7 +67,10 @@ export function QuickActions() {
             transition={{ delay: 0.35 + i * 0.05 }}
           >
             <Button
-              onClick={() => navigate(action.href)}
+              onClick={() => {
+                pushAction({ label: action.label, href: action.href });
+                navigate(action.href);
+              }}
               size="sm"
               className={`gap-1.5 text-xs font-medium h-8 ${action.className}`}
             >
@@ -69,6 +80,24 @@ export function QuickActions() {
           </motion.div>
         ))}
       </div>
+      {recentActions.length > 0 && (
+        <div className="mt-4 border-t border-border/40 pt-3">
+          <h4 className="text-xs font-semibold text-muted-foreground mb-2">Recent Actions</h4>
+          <div className="flex flex-wrap gap-2">
+            {recentActions.slice(0, 5).map((item) => (
+              <Button
+                key={`${item.href}-${item.at}`}
+                variant="outline"
+                size="sm"
+                className="h-7 text-[11px]"
+                onClick={() => navigate(item.href)}
+              >
+                {item.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }

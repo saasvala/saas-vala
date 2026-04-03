@@ -23,6 +23,9 @@ import {
   Sparkles,
   Smartphone,
   ShieldCheck,
+  Headset,
+  Download,
+  MessageCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import saasValaLogo from '@/assets/saas-vala-logo.jpg';
@@ -44,6 +47,9 @@ const navItems: NavItem[] = [
   { title: 'License Keys', icon: KeyRound, href: '/keys', section: 'core' },
   { title: 'Servers', icon: Server, href: '/servers', section: 'core' },
   { title: 'Wallet', icon: Wallet, href: '/wallet', section: 'core' },
+  { title: 'Downloads', icon: Download, href: '/dashboard/downloads', section: 'core' },
+  { title: 'Support', icon: Headset, href: '/support', section: 'core' },
+  { title: 'Feedback', icon: MessageCircle, href: '/feedback', section: 'core' },
 
   { title: 'Resellers', icon: UsersRound, href: '/reseller-manager', activePaths: ['/reseller-manager', '/resellers'], adminOnly: true, section: 'admin' },
   { title: 'Marketplace', icon: Store, href: '/admin/marketplace', adminOnly: true, section: 'admin' },

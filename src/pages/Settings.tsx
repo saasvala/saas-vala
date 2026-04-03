@@ -26,6 +26,7 @@ import { useProfile } from '@/hooks/useProfile';
 import { toast } from 'sonner';
 import { supabase } from '@/integrations/supabase/client';
 import { writeAuditEvent } from '@/observability/auditClient';
+import { useTheme } from 'next-themes';
 
 function ChangePasswordForm() {
   const [newPassword, setNewPassword] = useState('');
@@ -134,6 +135,7 @@ export default function Settings() {
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
   const [emailNotifications, setEmailNotifications] = useState(true);
   const [pushNotifications, setPushNotifications] = useState(true);
+  const { theme, setTheme } = useTheme();
 
   // Form state
   const [formData, setFormData] = useState({
@@ -228,6 +230,10 @@ export default function Settings() {
             <TabsTrigger value="notifications" className="gap-2 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Bell className="h-4 w-4" />
               Notifications
+            </TabsTrigger>
+            <TabsTrigger value="appearance" className="gap-2 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+              <Settings className="h-4 w-4" />
+              Appearance
             </TabsTrigger>
           </TabsList>
 
@@ -417,6 +423,20 @@ export default function Settings() {
                   </div>
                   <Switch checked={pushNotifications} onCheckedChange={setPushNotifications} />
                 </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="appearance" className="mt-6 space-y-6">
+            <Card className="glass-card">
+              <CardHeader>
+                <CardTitle className="text-foreground">Dark / Light Mode</CardTitle>
+                <CardDescription>Switch app theme</CardDescription>
+              </CardHeader>
+              <CardContent className="flex gap-2">
+                <Button variant={theme === 'light' ? 'default' : 'outline'} onClick={() => setTheme('light')}>Light</Button>
+                <Button variant={theme === 'dark' ? 'default' : 'outline'} onClick={() => setTheme('dark')}>Dark</Button>
+                <Button variant={theme === 'system' ? 'default' : 'outline'} onClick={() => setTheme('system')}>System</Button>
               </CardContent>
             </Card>
           </TabsContent>

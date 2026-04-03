@@ -40,6 +40,12 @@ const Resellers = React.lazy(() => import("./pages/Resellers"));
 const Settings = React.lazy(() => import("./pages/Settings"));
 const AuditLogs = React.lazy(() => import("./pages/AuditLogs"));
 const SystemHealth = React.lazy(() => import("./pages/SystemHealth"));
+const Onboarding = React.lazy(() => import("./pages/Onboarding"));
+const Support = React.lazy(() => import("./pages/Support"));
+const SupportTicket = React.lazy(() => import("./pages/SupportTicket"));
+const Feedback = React.lazy(() => import("./pages/Feedback"));
+const Announcements = React.lazy(() => import("./pages/Announcements"));
+const Downloads = React.lazy(() => import("./pages/Downloads"));
 const NotFound = React.lazy(() => import("./pages/NotFound"));
 const ResellerDashboard = React.lazy(() => import("./pages/ResellerDashboard"));
 const Automation = React.lazy(() => import("./pages/Automation"));
@@ -272,6 +278,9 @@ function ProductEditRouteGuarded() {
 }
 
 function AppRoutes() {
+  const { user } = useAuth();
+  const setupDone = user?.id ? localStorage.getItem(`sv_onboarding_done_${user.id}`) === '1' : true;
+
   return (
     <Suspense fallback={<PageLoader />}>
       <Routes>
@@ -322,7 +331,13 @@ function AppRoutes() {
 
 
         {/* Protected routes */}
-        <Route path="/dashboard" element={<AuthGuard><Dashboard /></AuthGuard>} />
+        <Route path="/onboarding" element={<AuthGuard><Onboarding /></AuthGuard>} />
+        <Route path="/dashboard" element={<AuthGuard>{setupDone ? <Dashboard /> : <Navigate to="/onboarding" replace />}</AuthGuard>} />
+        <Route path="/support" element={<AuthGuard><Support /></AuthGuard>} />
+        <Route path="/support/ticket" element={<AuthGuard><SupportTicket /></AuthGuard>} />
+        <Route path="/feedback" element={<AuthGuard><Feedback /></AuthGuard>} />
+        <Route path="/announcements" element={<AuthGuard><Announcements /></AuthGuard>} />
+        <Route path="/dashboard/downloads" element={<AuthGuard><Downloads /></AuthGuard>} />
         <Route path="/dashboard/*" element={<AuthGuard><Navigate to="/dashboard" replace /></AuthGuard>} />
         <Route path="/dashboard/apps" element={<AuthGuard><Navigate to="/products" replace /></AuthGuard>} />
 
