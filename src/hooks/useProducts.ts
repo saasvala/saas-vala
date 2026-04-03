@@ -66,11 +66,16 @@ export function useProducts() {
       const res = await productsApi.categories();
       setCategories((res.data || []) as Category[]);
     } catch (e) {
-      const { data } = await supabase
-        .from('categories')
-        .select('id, name, slug, level, parent_id, description, is_active')
-        .order('name', { ascending: true });
-      setCategories((data || []) as Category[]);
+      try {
+        const { data } = await supabase
+          .from('categories')
+          .select('id, name, slug, level, parent_id, description, is_active')
+          .order('name', { ascending: true });
+        setCategories((data || []) as Category[]);
+      } catch (fallbackError) {
+        console.error(e);
+        console.error(fallbackError);
+      }
     }
   };
 

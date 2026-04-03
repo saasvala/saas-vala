@@ -45,6 +45,7 @@ export function useApkPurchase() {
     const isGeneratedProduct = !isUuid(product.id);
 
     const lockKey = `${user.id}:${product.id}`;
+    const paymentMethod: PaymentMethod = options?.paymentMethod || 'wallet';
     if (inFlightRef.current.has(lockKey)) {
       return { success: false, error: 'Purchase already in progress. Please wait.' };
     }
@@ -281,4 +282,3 @@ export function useApkPurchase() {
     processing
   };
 }
-    const paymentMethod: PaymentMethod = options?.paymentMethod || 'wallet';
