@@ -23,6 +23,7 @@ import {
   Send,
   Banknote,
   Globe,
+  CreditCard,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -54,7 +55,7 @@ const cryptoDetails = {
   binanceIdMasked: '•••••8519',
 };
 
-type PayMethod = 'upi' | 'bank' | 'wise' | 'remit' | 'crypto';
+type PayMethod = 'upi' | 'bank' | 'wise' | 'remit' | 'crypto' | 'card';
 
 export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsModalProps) {
   const [amount, setAmount] = useState<number>(1000);
@@ -62,11 +63,12 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
   const [payMethod, setPayMethod] = useState<PayMethod>('upi');
   const [showMoreOptions, setShowMoreOptions] = useState(false);
   const [transactionRef, setTransactionRef] = useState('');
+  const [cardLast4, setCardLast4] = useState('');
   const [step, setStep] = useState<'form' | 'processing' | 'success' | 'pending'>('form');
   const [retryCount, setRetryCount] = useState(0);
 
   const finalAmount = customAmount ? parseInt(customAmount) || 0 : amount;
-  const isManualMethod = payMethod === 'bank' || payMethod === 'wise' || payMethod === 'remit' || payMethod === 'crypto';
+  const isManualMethod = payMethod === 'bank' || payMethod === 'wise' || payMethod === 'remit' || payMethod === 'crypto' || payMethod === 'card';
 
   const handleClose = () => {
     setStep('form');
@@ -74,6 +76,7 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
     setCustomAmount('');
     setPayMethod('upi');
     setTransactionRef('');
+    setCardLast4('');
     setRetryCount(0);
     setShowMoreOptions(false);
     onOpenChange(false);
@@ -90,13 +93,37 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
       toast.error('Please enter your transaction reference number');
       return;
     }
+    const provider =
+      payMethod === 'crypto'
+        ? 'binance'
+        : payMethod === 'card'
+        ? 'visa'
+        : payMethod === 'wise'
+        ? 'wise'
+        : payMethod === 'remit'
+        ? 'remitly'
+        : 'bank_transfer';
+    const detailsMasked =
+      payMethod === 'crypto'
+        ? `Binance •••${cryptoDetails.binanceId.slice(-4)}`
+        : payMethod === 'card'
+        ? `****${cardLast4 || '0000'}`
+        : txnRef.length > 4
+        ? `•••${txnRef.slice(-4)}`
+        : '••••';
+
     setStep('processing');
     try {
       await walletApi.createRequest({
         amount: finalAmount,
-        method: payMethod === 'crypto' ? 'crypto' : 'bank_transfer',
+        method: payMethod === 'crypto' ? 'crypto' : payMethod === 'card' ? 'bank_transfer' : 'bank_transfer',
         txn_id: txnRef,
         source: 'manual',
+        payload: {
+          source_type: payMethod,
+          provider,
+          details_masked: detailsMasked,
+        },
       });
       await new Promise(r => setTimeout(r, 800));
       setStep('pending');
@@ -122,6 +149,11 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
           method: 'upi',
           txn_id: txnRef,
           source: 'user_submit',
+          payload: {
+            source_type: 'upi',
+            provider: 'gpay',
+            details_masked: bankDetails.upiId.replace(/(?<=.).(?=.*@)/g, '•'),
+          },
         });
 
         return true;
@@ -444,17 +476,35 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
                   {/* International Card */}
                   <div
                     className={cn(
-                      'rounded-xl border cursor-pointer transition-all border-border hover:border-primary/30 p-3'
+                      'rounded-xl border cursor-pointer transition-all',
+                      payMethod === 'card' ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/30'
                     )}
-                    onClick={() => { toast.info('International card payments — contact support for details'); }}
+                    onClick={() => setPayMethod('card')}
                   >
                     <div className="flex items-center gap-3">
-                      <Globe className="h-5 w-5 text-muted-foreground" />
+                      <CreditCard className="h-5 w-5 text-muted-foreground" />
                       <div>
                         <p className="font-medium text-sm text-foreground">International Card (Visa/MC)</p>
-                        <p className="text-xs text-muted-foreground">🌍 All Countries — Contact support</p>
+                        <p className="text-xs text-muted-foreground">🌍 All Countries — Secure verify</p>
                       </div>
                     </div>
+                    {payMethod === 'card' && (
+                      <div className="px-3 pb-3 space-y-2 border-t border-border pt-3">
+                        <p className="text-xs text-muted-foreground">Enter payment gateway reference and last 4 digits</p>
+                        <Input
+                          placeholder="Gateway Reference ID"
+                          value={transactionRef}
+                          onChange={(e) => setTransactionRef(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                        <Input
+                          placeholder="Card last 4 digits"
+                          value={cardLast4}
+                          onChange={(e) => setCardLast4(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
