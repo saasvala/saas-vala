@@ -2130,7 +2130,7 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     if (!row?.id) return err('Promo code not found', 404, 'NOT_FOUND')
 
     const nextConversions = Number(row.conversions || 0) + 1
-    const nextRevenue = Number(Number(row.revenue || 0) + (Number.isFinite(amount) ? amount : 0))
+    const nextRevenue = Number(row.revenue || 0) + (Number.isFinite(amount) ? amount : 0)
     const { error: updError } = await sb
       .from('promo_links')
       .update({ conversions: nextConversions, revenue: nextRevenue, updated_at: nowIso() })

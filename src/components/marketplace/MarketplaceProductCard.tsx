@@ -51,9 +51,6 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
     isFavorited: isFavoritedServer,
     toggleFavorite: toggleFavoriteServer,
     addToCart: addToCartServer,
-    addRating,
-    addComment,
-    createPromo,
   } = useMarketplaceActions();
   const inCart = isInCart(product.id);
   const favoriteActive = useMemo(() => favorited || isFavoritedServer(product.id), [favorited, isFavoritedServer, product.id]);
@@ -103,38 +100,6 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
     }
     toast.success(inCart ? 'Removed from cart' : `🛒 Added to cart!`);
   }, [product, inCart, toggleItem, price, user, addToCartServer]);
-
-  const handleRate = useCallback(async () => {
-    if (!user) { toast.error('Sign in to rate'); return; }
-    try {
-      await addRating(product.id, 5, product.title);
-      toast.success('⭐ Rating saved');
-    } catch {
-      toast.error('Rating failed');
-    }
-  }, [user, addRating, product.id, product.title]);
-
-  const handleComment = useCallback(async () => {
-    if (!user) { toast.error('Sign in to comment'); return; }
-    try {
-      await addComment(product.id, 'Great product!');
-      toast.success('💬 Comment added');
-    } catch {
-      toast.error('Comment failed');
-    }
-  }, [user, addComment, product.id]);
-
-  const handlePromo = useCallback(async () => {
-    if (!user) { toast.error('Sign in to create promo link'); return; }
-    try {
-      const res: any = await createPromo(product.id);
-      const url = String(res?.data?.url || `/product/${encodeURIComponent(product.id)}`);
-      await navigator.clipboard.writeText(`${window.location.origin}${url}`);
-      toast.success('Promo URL copied');
-    } catch {
-      toast.error('Promo link failed');
-    }
-  }, [user, createPromo, product.id]);
 
   const handleNotifyMe = useCallback(() => {
     if (!user) { toast.error('Sign in to get notified'); return; }
@@ -341,17 +306,6 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
               </Button>
             </>
           )}
-          <div className="flex gap-1.5">
-            <Button size="sm" variant="outline" className="h-7 text-[10px] font-bold rounded-lg border-white/10 text-muted-foreground flex-1" onClick={(e) => { e.stopPropagation(); void handleRate(); }}>
-              <Star style={{ width: 11, height: 11 }} className="mr-1" /> RATE
-            </Button>
-            <Button size="sm" variant="outline" className="h-7 text-[10px] font-bold rounded-lg border-white/10 text-muted-foreground flex-1" onClick={(e) => { e.stopPropagation(); void handleComment(); }}>
-              💬 COMMENT
-            </Button>
-            <Button size="sm" variant="outline" className="h-7 text-[10px] font-bold rounded-lg border-white/10 text-muted-foreground flex-1" onClick={(e) => { e.stopPropagation(); void handlePromo(); }}>
-              🔗 PROMO
-            </Button>
-          </div>
           <div className="flex gap-1.5">
             {apkEnabled && (
               <Button size="sm" variant="outline" className="flex-1 h-7 text-[10px] font-bold rounded-lg text-white border-0" style={{ background: 'linear-gradient(90deg,#7C3AED,#6D28D9)' }} onClick={handleDownloadApk} disabled={downloadChecking || isPipeline}>

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { MarketplaceHeader } from '@/components/marketplace/MarketplaceHeader';
 import { LazySection } from '@/components/marketplace/LazySection';
 import { MarketplaceCategoryRow } from '@/components/marketplace/MarketplaceCategoryRow';
@@ -50,6 +50,7 @@ type BuyPayMethod = 'wallet' | 'upi' | 'bank' | 'crypto';
 const TRENDING_RATING_THRESHOLD = 4.8;
 
 export default function Marketplace() {
+  const navigate = useNavigate();
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [showPayment, setShowPayment] = useState(false);
   const [paymentSuccess, setPaymentSuccess] = useState(false);
@@ -94,10 +95,7 @@ export default function Marketplace() {
     if (!user) { toast.error('Please sign in to purchase'); return; }
     const fraud = await checkUserStatus(user.id, user.email || '');
     if (fraud.isBlocked) { toast.error(fraud.message); return; }
-    setSelectedProduct(product); setShowPayment(true); setPaymentSuccess(false);
-    setGeneratedLicenseKey(''); setDownloadUrl(''); setShowMorePayment(false); setPaymentSubmitting(false);
-    setBuyPayMethod('wallet'); setManualTxnRef(''); setManualSubmitted(false);
-    paymentLockRef.current = false;
+    navigate(`/checkout?product_id=${encodeURIComponent(product.id)}`);
   };
 
   const handleWalletPayment = async () => {

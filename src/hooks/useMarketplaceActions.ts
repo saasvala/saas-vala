@@ -2,6 +2,26 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { marketplaceApi } from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
 
+type FavoriteRow = {
+  id: string;
+  product_id: string;
+  product_name?: string;
+  created_at?: string;
+};
+
+type CartRow = {
+  id: string;
+  product_id: string;
+  qty: number;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type FavoriteListResponse = { data?: FavoriteRow[] };
+type CartListResponse = { data?: CartRow[] };
+type FavoriteToggleResponse = { active?: boolean };
+type CartAddResponse = { qty?: number; cart_count?: number };
+
 export function useMarketplaceActions() {
   const { user } = useAuth();
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
@@ -12,10 +32,10 @@ export function useMarketplaceActions() {
       setFavoriteIds(new Set());
       return;
     }
-    const res: any = await marketplaceApi.favoriteList();
+    const res = await marketplaceApi.favoriteList() as FavoriteListResponse;
     const rows = Array.isArray(res?.data) ? res.data : [];
     const next = new Set<string>();
-    rows.forEach((row: any) => {
+    rows.forEach((row) => {
       if (row?.product_id) next.add(String(row.product_id));
     });
     setFavoriteIds(next);
@@ -26,10 +46,10 @@ export function useMarketplaceActions() {
       setCartQtyByProduct({});
       return;
     }
-    const res: any = await marketplaceApi.cartList();
+    const res = await marketplaceApi.cartList() as CartListResponse;
     const rows = Array.isArray(res?.data) ? res.data : [];
     const next: Record<string, number> = {};
-    rows.forEach((row: any) => {
+    rows.forEach((row) => {
       if (!row?.product_id) return;
       next[String(row.product_id)] = Math.max(1, Number(row.qty || 1));
     });
@@ -42,7 +62,7 @@ export function useMarketplaceActions() {
   }, [refreshFavorites, refreshCart]);
 
   const toggleFavorite = useCallback(async (productId: string, productName?: string) => {
-    const res: any = await marketplaceApi.favoriteToggle(productId, productName);
+    const res = await marketplaceApi.favoriteToggle(productId, productName) as FavoriteToggleResponse;
     const active = Boolean(res?.active);
     setFavoriteIds((prev) => {
       const next = new Set(prev);
@@ -54,7 +74,7 @@ export function useMarketplaceActions() {
   }, []);
 
   const addToCart = useCallback(async (productId: string, qty = 1) => {
-    const res: any = await marketplaceApi.cartAdd(productId, qty);
+    const res = await marketplaceApi.cartAdd(productId, qty) as CartAddResponse;
     const nextQty = Math.max(1, Number(res?.qty || qty));
     setCartQtyByProduct((prev) => ({ ...prev, [productId]: nextQty }));
     return {
