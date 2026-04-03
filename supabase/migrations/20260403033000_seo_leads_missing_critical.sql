@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS public.lead_fingerprint (
   ip TEXT,
   device_id TEXT,
   hash TEXT NOT NULL UNIQUE,
-  attempts INTEGER NOT NULL DEFAULT 1 CHECK (attempts >= 0),
+  attempts INTEGER NOT NULL DEFAULT 1 CHECK (attempts >= 1),
   is_spam BOOLEAN NOT NULL DEFAULT false,
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

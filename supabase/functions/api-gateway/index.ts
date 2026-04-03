@@ -3761,12 +3761,30 @@ async function handleSeoLeads(method: string, pathParts: string[], body: any, us
       })
     }
 
-    const duplicateFilters: string[] = []
-    if (normalizedEmail) duplicateFilters.push(`email.ilike.${normalizedEmail}`)
-    if (normalizedPhone) duplicateFilters.push(`phone.eq.${normalizedPhone}`)
     let duplicateLead: any = null
-    if (duplicateFilters.length > 0) {
-      const { data: existingDuplicate } = await admin.from('leads').select('id').or(duplicateFilters.join(',')).limit(1).maybeSingle()
+    if (normalizedEmail && normalizedPhone) {
+      const { data: existingDuplicate } = await admin
+        .from('leads')
+        .select('id')
+        .or(`email.eq.${normalizedEmail},phone.eq.${normalizedPhone}`)
+        .limit(1)
+        .maybeSingle()
+      duplicateLead = existingDuplicate || null
+    } else if (normalizedEmail) {
+      const { data: existingDuplicate } = await admin
+        .from('leads')
+        .select('id')
+        .eq('email', normalizedEmail)
+        .limit(1)
+        .maybeSingle()
+      duplicateLead = existingDuplicate || null
+    } else if (normalizedPhone) {
+      const { data: existingDuplicate } = await admin
+        .from('leads')
+        .select('id')
+        .eq('phone', normalizedPhone)
+        .limit(1)
+        .maybeSingle()
       duplicateLead = existingDuplicate || null
     }
 
@@ -3777,7 +3795,9 @@ async function handleSeoLeads(method: string, pathParts: string[], body: any, us
     const isDuplicate = !!duplicateLead
 
     if (isDuplicate || isSpam) {
-      const blockedReason = isDuplicate ? 'duplicate_lead' : fakeEmail || fakePhone ? 'spam_contact' : 'fingerprint_rate_limit'
+      let blockedReason = 'fingerprint_rate_limit'
+      if (isDuplicate) blockedReason = 'duplicate_lead'
+      else if (fakeEmail || fakePhone) blockedReason = 'spam_contact'
       const { data: blockedLead, error: blockedError } = await admin.from('leads').insert({
         name: body.name || '',
         email: normalizedEmail || null,
@@ -3836,18 +3856,22 @@ async function handleSeoLeads(method: string, pathParts: string[], body: any, us
     if (missing) return err(missing, 422, 'VALIDATION_ERROR')
     const keyword = String(body.keyword || '').trim()
     const country = String(body.country || body.region || 'global').trim().toLowerCase()
-    const slug = String(body.slug || `${keyword}-${country}`)
+    const baseSlugSource = String(body.slug || `${keyword}-${country}`)
+    const slug = baseSlugSource
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '')
       .slice(0, 120)
     const urlPath = `/landing/${country}/${slug}`
+    const defaultTitle = country === 'global'
+      ? `${keyword} Landing Page`
+      : `${keyword} in ${country.toUpperCase()}`
     const { data, error } = await admin.from('seo_landing_pages').insert({
       keyword,
       country,
       slug,
       url_path: urlPath,
-      title: body.title || `${keyword} in ${country.toUpperCase()}`,
+      title: body.title || defaultTitle,
       content: body.content || null,
       status: body.status || 'draft',
       is_fast_page: body.is_fast_page !== false,
