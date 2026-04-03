@@ -3767,10 +3767,173 @@ async function handleAutoPilot(method: string, pathParts: string[], body: any, u
   return err('Not found', 404)
 }
 
+function normalizeApkPipelineStatus(rawStatus: unknown): 'pending' | 'building' | 'converting' | 'ready' | 'failed' {
+  const normalized = String(rawStatus || '').toLowerCase()
+  if (normalized === 'pending' || normalized === 'queued') return 'pending'
+  if (normalized === 'building') return 'building'
+  if (normalized === 'converting' || normalized === 'signed' || normalized === 'stored' || normalized === 'distributed') return 'converting'
+  if (normalized === 'completed' || normalized === 'published' || normalized === 'ready') return 'ready'
+  if (normalized === 'failed' || normalized === 'error') return 'failed'
+  return 'pending'
+}
+
+function normalizeApkStoragePath(value: unknown): string | null {
+  const raw = String(value || '').trim()
+  if (!raw) return null
+  if (!/^https?:\/\//i.test(raw)) return raw.replace(/^\/+/, '')
+
+  try {
+    const parsed = new URL(raw)
+    const pathname = parsed.pathname
+    const directIndex = pathname.indexOf('/apks/')
+    if (directIndex >= 0) return pathname.slice(directIndex + '/apks/'.length).replace(/^\/+/, '')
+    return pathname.replace(/^\/+/, '')
+  } catch {
+    return null
+  }
+}
+
+function parseGithubRepo(repoUrl: string): { owner: string; repo: string; ref?: string } | null {
+  try {
+    const parsed = new URL(repoUrl)
+    if (parsed.hostname !== 'github.com') return null
+    const parts = parsed.pathname.split('/').filter(Boolean)
+    if (parts.length < 2) return null
+    const owner = parts[0]
+    const repo = parts[1].replace(/\.git$/, '')
+    const ref = parsed.searchParams.get('ref') || undefined
+    return { owner, repo, ref }
+  } catch {
+    return null
+  }
+}
+
+async function fetchGithubRepoFile(repoUrl: string, filePath: string, token?: string) {
+  const parsed = parseGithubRepo(repoUrl)
+  if (!parsed) return null
+  const refQuery = parsed.ref ? `?ref=${encodeURIComponent(parsed.ref)}` : ''
+  const response = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/contents/${filePath}${refQuery}`, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  })
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(`GitHub scan failed for ${filePath} (${response.status})`)
+  return await response.json()
+}
+
+async function scanGitRepository(repoUrl: string, githubToken?: string) {
+  const packageFile = await fetchGithubRepoFile(repoUrl, 'package.json', githubToken)
+  const viteConfig =
+    (await fetchGithubRepoFile(repoUrl, 'vite.config.ts', githubToken))
+    || (await fetchGithubRepoFile(repoUrl, 'vite.config.js', githubToken))
+    || (await fetchGithubRepoFile(repoUrl, 'vite.config.mjs', githubToken))
+    || (await fetchGithubRepoFile(repoUrl, 'vite.config.cjs', githubToken))
+
+  let packageJson: any = null
+  if (packageFile?.content) {
+    const decoded = atob(String(packageFile.content).replace(/\n/g, ''))
+    try { packageJson = JSON.parse(decoded) } catch { packageJson = null }
+  }
+
+  const deps = {
+    ...(packageJson?.dependencies || {}),
+    ...(packageJson?.devDependencies || {}),
+  }
+
+  const hasReact = !!deps.react
+  const hasVite = !!deps.vite || !!viteConfig
+  const hasBuildScript = !!packageJson?.scripts?.build
+
+  const issues: string[] = []
+  const autoFixActions: string[] = []
+
+  if (!packageFile) {
+    issues.push('missing_package_json')
+    autoFixActions.push('fallback_build_with_vite_if_detected')
+  }
+  if (packageFile && !hasBuildScript) {
+    issues.push('missing_build_script')
+    autoFixActions.push('fallback_to_npx_vite_build')
+  }
+  if (packageFile && !hasVite && !hasReact) {
+    issues.push('framework_not_detected')
+    autoFixActions.push('use_generic_static_build_fallback')
+  }
+
+  return {
+    package_json: !!packageFile,
+    vite_or_react: hasVite || hasReact,
+    build_config: hasBuildScript || !!viteConfig,
+    detected: { hasReact, hasVite, hasBuildScript },
+    issues,
+    auto_fix_actions: autoFixActions,
+    status: issues.length > 0 ? 'fixed' : 'scanned',
+  }
+}
+
 // ===================== 16. APK PIPELINE =====================
 async function handleApk(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const admin = adminClient()
   console.log('API HIT:', `/apk/${pathParts[0] || ''}`)
+
+  // POST /apk/git-scan
+  if (method === 'POST' && pathParts[0] === 'git-scan') {
+    const repoUrl = String(body?.repo_url || '').trim()
+    if (!repoUrl) return err('repo_url is required', 422, 'VALIDATION_ERROR')
+
+    const { data: startedScan, error: scanInsertError } = await admin.from('git_scans').insert({
+      user_id: userId,
+      repo_url: repoUrl,
+      status: 'pending',
+      issues_found: [],
+    }).select('*').single()
+    if (scanInsertError) return err(scanInsertError.message)
+
+    try {
+      const githubToken = Deno.env.get('SAASVALA_GITHUB_TOKEN') || undefined
+      const scan = await scanGitRepository(repoUrl, githubToken)
+      await admin
+        .from('git_scans')
+        .update({
+          status: scan.status,
+          issues_found: scan.issues,
+          detected_stack: {
+            package_json: scan.package_json,
+            vite_or_react: scan.vite_or_react,
+            build_config: scan.build_config,
+            detected: scan.detected,
+            auto_fix_actions: scan.auto_fix_actions,
+          },
+          updated_at: nowIso(),
+        })
+        .eq('id', startedScan.id)
+
+      return ok({
+        id: startedScan.id,
+        repo_url: repoUrl,
+        status: scan.status,
+        issues_found: scan.issues,
+        detected: {
+          package_json: scan.package_json,
+          vite_or_react: scan.vite_or_react,
+          build_config: scan.build_config,
+        },
+        auto_fix_actions: scan.auto_fix_actions,
+      })
+    } catch (scanError: any) {
+      await admin
+        .from('git_scans')
+        .update({
+          status: 'failed',
+          issues_found: [String(scanError?.message || 'scan_failed')],
+          updated_at: nowIso(),
+        })
+        .eq('id', startedScan.id)
+      return fail(scanError?.message || 'Git scan failed', 500, 'GIT_SCAN_FAILED')
+    }
+  }
 
   // POST /apk/build
   if (method === 'POST' && pathParts[0] === 'build') {
@@ -3789,34 +3952,139 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
     }, body.tenant_id || null)
     await logActivity(admin, 'apk', data.id, 'build_queued', userId, { repo: body.repo_name })
 
-    await sb.from('apk_build_queue').update({
-      build_status: 'building',
-      build_started_at: nowIso(),
-      build_error: null,
-    }).eq('id', data.id)
+    let triggerResult: any = null
+    let triggerError = ''
+    let attempts = 0
+    const maxAttempts = 3
 
-    const { data: factoryData, error: factoryError } = await sb.functions.invoke('apk-factory', {
-      body: {
-        action: 'trigger_build',
-        data: {
-          slug: data.slug,
-          repo_url: body.repo_url,
-          product_id: body.product_id || null,
-        },
-      },
-    })
-
-    if (factoryError || factoryData?.error) {
-      const buildError = factoryError?.message || String(factoryData?.error || 'APK build trigger failed')
+    for (let i = 1; i <= maxAttempts; i++) {
+      attempts = i
       await sb.from('apk_build_queue').update({
-        build_status: 'failed',
-        build_error: buildError,
-        build_completed_at: nowIso(),
+        build_status: 'building',
+        build_started_at: nowIso(),
+        build_error: null,
+        build_attempts: i,
       }).eq('id', data.id)
-      return fail(buildError, 500, 'APK_BUILD_TRIGGER_FAILED')
+
+      const { data: factoryData, error: factoryError } = await sb.functions.invoke('apk-factory', {
+        body: {
+          action: 'trigger_build',
+          data: {
+            slug: data.slug,
+            repo_url: body.repo_url,
+            product_id: body.product_id || null,
+          },
+        },
+      })
+
+      if (!factoryError && !factoryData?.error) {
+        triggerResult = factoryData
+        triggerError = ''
+        break
+      }
+
+      triggerError = factoryError?.message || String(factoryData?.error || 'APK build trigger failed')
     }
 
-    return json({ success: true, data: { ...data, factory: factoryData }, error: null }, 201)
+    if (!triggerResult) {
+      await sb.from('apk_build_queue').update({
+        build_status: 'failed',
+        build_error: triggerError,
+        build_completed_at: nowIso(),
+        build_attempts: attempts,
+      }).eq('id', data.id)
+      return fail(triggerError, 500, 'APK_BUILD_TRIGGER_FAILED')
+    }
+
+    return json({ success: true, data: { ...data, build_attempts: attempts, factory: triggerResult }, error: null }, 201)
+  }
+
+  // POST /apk/convert
+  if (method === 'POST' && pathParts[0] === 'convert') {
+    const buildId = String(body?.build_id || '').trim()
+    const slugInput = String(body?.slug || '').trim()
+    let queueRow: any = null
+
+    if (buildId) {
+      const { data: byId } = await sb.from('apk_build_queue').select('*').eq('id', buildId).maybeSingle()
+      queueRow = byId || null
+    }
+
+    if (!queueRow && slugInput) {
+      const { data: bySlug } = await sb.from('apk_build_queue').select('*').eq('slug', slugInput).order('created_at', { ascending: false }).limit(1).maybeSingle()
+      queueRow = bySlug || null
+    }
+
+    if (!queueRow) {
+      const repoName = String(body?.repo_name || slugInput || '').trim()
+      const repoUrl = String(body?.repo_url || '').trim()
+      const slug = slugInput || repoName.toLowerCase().replace(/[^a-z0-9]/g, '-')
+      if (!slug || !repoUrl) return err('build_id or (slug + repo_url) required', 422, 'VALIDATION_ERROR')
+
+      const { data: inserted, error: insertError } = await sb.from('apk_build_queue').insert({
+        repo_name: repoName || slug,
+        repo_url: repoUrl,
+        slug,
+        build_status: 'pending',
+        product_id: body?.product_id || null,
+      }).select('*').single()
+      if (insertError || !inserted) return err(insertError?.message || 'Failed to create build queue entry')
+      queueRow = inserted
+    }
+
+    await sb.from('apk_build_queue').update({
+      build_status: 'converting',
+      build_error: null,
+      updated_at: nowIso(),
+    }).eq('id', queueRow.id)
+
+    let converted = false
+    let convertError = ''
+    let attempts = Number(queueRow.build_attempts || 0)
+    const maxAttempts = 3
+
+    for (let i = 1; i <= maxAttempts; i++) {
+      attempts = Number(queueRow.build_attempts || 0) + i
+      const { data: factoryData, error: factoryError } = await sb.functions.invoke('apk-factory', {
+        body: {
+          action: 'trigger_build',
+          data: {
+            slug: queueRow.slug,
+            repo_url: queueRow.repo_url,
+            product_id: queueRow.product_id || body?.product_id || null,
+          },
+        },
+      })
+      if (!factoryError && !factoryData?.error) {
+        converted = true
+        convertError = ''
+        break
+      }
+      convertError = factoryError?.message || String(factoryData?.error || 'APK conversion trigger failed')
+    }
+
+    if (!converted) {
+      await sb.from('apk_build_queue').update({
+        build_status: 'failed',
+        build_error: convertError,
+        build_completed_at: nowIso(),
+        build_attempts: attempts,
+      }).eq('id', queueRow.id)
+      return fail(convertError, 500, 'APK_CONVERT_FAILED')
+    }
+
+    await sb.from('apk_build_queue').update({
+      build_status: 'converting',
+      build_attempts: attempts,
+      updated_at: nowIso(),
+    }).eq('id', queueRow.id)
+
+    return ok({
+      id: queueRow.id,
+      slug: queueRow.slug,
+      status: 'converting',
+      attempts,
+    })
   }
 
   // GET /apk/history
@@ -3831,30 +4099,174 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
   if (method === 'GET' && pathParts[0] === 'status' && pathParts[1]) {
     const buildId = pathParts[1]
     const { data, error } = await sb.from('apk_build_queue').select('*').eq('id', buildId).maybeSingle()
-    if (!error && data) return ok(data)
+    if (!error && data) {
+      return ok({
+        ...data,
+        status: normalizeApkPipelineStatus(data.build_status),
+        raw_status: data.build_status,
+      })
+    }
 
     // Backward-compat fallback for environments still persisting finalized statuses in apk_builds.
     // Remove this fallback after all environments fully migrate to apk_build_queue-only status storage.
     const { data: fallbackData, error: fallbackError } = await sb.from('apk_builds').select('*').eq('id', buildId).maybeSingle()
     if (fallbackError || !fallbackData) return err('APK build not found', 404, 'NOT_FOUND')
-    return ok(fallbackData)
+    return ok({
+      ...fallbackData,
+      status: normalizeApkPipelineStatus(fallbackData.status),
+      raw_status: fallbackData.status,
+    })
   }
 
   // GET /apk/download/:id
   if (method === 'GET' && pathParts[0] === 'download' && pathParts[1]) {
-    const { data: apk, error } = await admin.from('apks').select('file_url, product_id')
-      .eq('id', pathParts[1]).single()
-    if (error || !apk?.file_url) return err('APK not found', 404)
+    const identifier = String(pathParts[1] || '').trim()
+    const now = new Date()
 
-    const { data: signedUrl } = await admin.storage.from('apks')
-      .createSignedUrl(apk.file_url, 300)
-    if (!signedUrl?.signedUrl) return err('Failed to generate download URL', 500)
+    const { data: productDirect } = await admin
+      .from('products')
+      .select('id, name, apk_url, price')
+      .eq('id', identifier)
+      .maybeSingle()
+
+    let product = productDirect || null
+    let apkPath = normalizeApkStoragePath(productDirect?.apk_url)
+
+    if (!product || !apkPath) {
+      const { data: apkById } = await admin
+        .from('apks')
+        .select('id, product_id, file_url')
+        .eq('id', identifier)
+        .maybeSingle()
+
+      if (apkById?.product_id) {
+        const { data: linkedProduct } = await admin
+          .from('products')
+          .select('id, name, apk_url, price')
+          .eq('id', apkById.product_id)
+          .maybeSingle()
+        if (linkedProduct) {
+          product = linkedProduct
+          apkPath = normalizeApkStoragePath(apkById.file_url) || normalizeApkStoragePath(linkedProduct.apk_url)
+        }
+      }
+    }
+
+    if (!product || !apkPath) return json({ allowed: false, error: 'APK not found' }, 404)
+
+    let hasPaidAccess = false
+
+    const { data: orderPaid } = await admin
+      .from('orders')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('product_id', product.id)
+      .eq('status', 'success')
+      .limit(1)
+      .maybeSingle()
+    if (orderPaid?.id) hasPaidAccess = true
+
+    if (!hasPaidAccess) {
+      const { data: priorDownload } = await admin
+        .from('apk_downloads')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('product_id', product.id)
+        .eq('is_blocked', false)
+        .limit(1)
+        .maybeSingle()
+      if (priorDownload?.id) hasPaidAccess = true
+    }
+
+    if (!hasPaidAccess) {
+      const { data: activeSubscription } = await admin
+        .from('subscriptions')
+        .select('id, current_period_end')
+        .eq('user_id', userId)
+        .eq('product_id', product.id)
+        .eq('status', 'active')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      const periodEnd = activeSubscription?.current_period_end ? new Date(activeSubscription.current_period_end) : null
+      if (activeSubscription?.id && (!periodEnd || periodEnd > now)) hasPaidAccess = true
+    }
+
+    if (!hasPaidAccess) {
+      const { data: activeLicense } = await admin
+        .from('license_keys')
+        .select('id, expires_at')
+        .eq('created_by', userId)
+        .eq('status', 'active')
+        .or(`product_id.eq.${product.id},meta->>product_id.eq.${product.id}`)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      const expiresAt = activeLicense?.expires_at ? new Date(activeLicense.expires_at) : null
+      if (activeLicense?.id && (!expiresAt || expiresAt > now)) hasPaidAccess = true
+    }
+
+    let walletAutoDeducted = false
+    if (!hasPaidAccess) {
+      const amount = Number(product.price || 0)
+      if (amount > 0) {
+        const { data: wallet } = await admin
+          .from('wallets')
+          .select('id, balance')
+          .eq('user_id', userId)
+          .maybeSingle()
+
+        const balance = Number(wallet?.balance || 0)
+        if (wallet?.id && balance >= amount) {
+          const newBalance = Number((balance - amount).toFixed(2))
+          await admin.from('wallets').update({ balance: newBalance, updated_at: nowIso() }).eq('id', wallet.id)
+          await admin.from('transactions').insert({
+            wallet_id: wallet.id,
+            type: 'debit',
+            amount,
+            balance_after: newBalance,
+            status: 'completed',
+            description: `Auto deduct for APK download: ${product.name || product.id}`,
+            reference_type: 'apk_download_access',
+            reference_id: product.id,
+            created_by: userId,
+            meta: { product_id: product.id, source: 'apk_download_gate' },
+          })
+
+          const generatedLicense = generateLicenseKey()
+          await admin.from('apk_downloads').insert({
+            user_id: userId,
+            product_id: product.id,
+            license_key: generatedLicense,
+            is_verified: true,
+            verification_attempts: 0,
+            is_blocked: false,
+            download_ip: readClientIp(),
+          })
+
+          hasPaidAccess = true
+          walletAutoDeducted = true
+        }
+      }
+    }
+
+    if (!hasPaidAccess) {
+      return json({ allowed: false, message: 'Payment required' }, 403)
+    }
+
+    const { data: signedUrl, error: signedUrlError } = await admin.storage.from('apks')
+      .createSignedUrl(apkPath, 300)
+    if (signedUrlError || !signedUrl?.signedUrl) return err('Failed to generate download URL', 500)
 
     await admin.from('apk_download_logs').insert({
-      product_id: apk.product_id, user_id: userId, license_key: body?.license_key || 'direct',
+      product_id: product.id,
+      user_id: userId,
+      license_key: body?.license_key || (walletAutoDeducted ? 'wallet-auto-deduct' : 'paid-access'),
+      download_ip: readClientIp(),
+      signed_url_expires_at: new Date(Date.now() + 300000).toISOString(),
     })
 
-    return json({ url: signedUrl.signedUrl })
+    return json({ allowed: true, url: signedUrl.signedUrl, download_url: signedUrl.signedUrl })
   }
 
   return err('Not found', 404)
