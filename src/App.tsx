@@ -435,7 +435,7 @@ function AppRoutes() {
         <Route path="/admin/marketplace/analytics" element={<AuthGuard><RoleGuard role="super_admin"><MarketplaceAdmin /></RoleGuard></AuthGuard>} />
         <Route path="/marketplace/product/:id" element={<ProductRouteGuarded />} />
         <Route path="/logout" element={<Logout />} />
-        <Route path="/unauthorized" element={<NotFound />} />
+        <Route path="/unauthorized" element={<Navigate to="/dashboard" replace />} />
         <Route path="/404" element={<NotFound />} />
         <Route path="*" element={<Navigate to="/marketplace" replace />} />
       </Routes>
