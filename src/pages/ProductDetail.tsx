@@ -9,6 +9,7 @@ import { useCart } from '@/hooks/useCart';
 import { useAuth } from '@/hooks/useAuth';
 import { apkApi } from '@/lib/api';
 import { toast } from 'sonner';
+import { formatLocalizedPrice, getCurrencySymbol } from '@/lib/locale';
 
 function hasScreenshots(value: unknown): value is { screenshots?: unknown[] } {
   return typeof value === 'object' && value !== null && 'screenshots' in value;
@@ -47,6 +48,8 @@ export default function ProductDetail() {
   }
 
   const inCart = isInCart(product.id);
+  const priceSymbol = getCurrencySymbol(product.currency);
+  const localizedPrice = formatLocalizedPrice(product.price, product.currency, priceSymbol);
   const screenshots = useMemo(() => {
     const rawScreenshots = hasScreenshots(product) ? product.screenshots : undefined;
     if (Array.isArray(rawScreenshots)) {
@@ -101,7 +104,7 @@ export default function ProductDetail() {
               <h1 className="text-2xl font-black text-foreground">{product.title}</h1>
               <p className="text-sm text-muted-foreground mt-1">{product.subtitle}</p>
             </div>
-            <Badge variant="outline" className="text-base font-black">${product.price}</Badge>
+            <Badge variant="outline" className="text-base font-black">{localizedPrice}</Badge>
           </div>
 
           {screenshots.length > 0 && (

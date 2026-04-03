@@ -28,6 +28,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { marketplaceApi } from '@/lib/api';
+import { currencyApi, geoApi } from '@/lib/api';
+import { DEFAULT_LOCALE, getStoredLocale, storeLocale } from '@/lib/locale';
 import {
   ShoppingCart, CreditCard, Wallet, Loader2, ChevronDown, ChevronUp, Copy, Key, Download
 } from 'lucide-react';
@@ -66,14 +68,92 @@ export default function Marketplace() {
   const { checkUserStatus } = useFraudDetection();
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [localeResolved, setLocaleResolved] = useState(false);
+  const [locale, setLocale] = useState(() => getStoredLocale());
   
-  const { products } = useMarketplaceProducts();
+  const { products } = useMarketplaceProducts({
+    country: locale.country,
+    lang: locale.language,
+    currency: locale.currency,
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [priceFilter, setPriceFilter] = useState('all');
   const [languageFilter, setLanguageFilter] = useState('all');
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResultRow[] | null>(null);
+  const [currencyRatesReady, setCurrencyRatesReady] = useState(false);
+
+  useEffect(() => {
+    const fromQueryCountry = (searchParams.get('country') || '').toUpperCase()
+    const fromQueryLang = (searchParams.get('lang') || '').toLowerCase()
+    const fromStorage = getStoredLocale()
+    const bootstrap = {
+      country: fromQueryCountry || fromStorage.country || DEFAULT_LOCALE.country,
+      language: fromQueryLang || fromStorage.language || DEFAULT_LOCALE.language,
+      currency: fromStorage.currency || DEFAULT_LOCALE.currency,
+    }
+    setLocale(bootstrap)
+
+    const run = async () => {
+      try {
+        const detected = await geoApi.detect()
+        const next = storeLocale({
+          country: (fromQueryCountry || detected.country_code || bootstrap.country).toUpperCase(),
+          language: (fromQueryLang || detected.language || bootstrap.language).toLowerCase(),
+          currency: (fromStorage.currency || detected.currency || bootstrap.currency).toUpperCase(),
+        })
+        setLocale(next)
+      } catch {
+        setLocale(storeLocale(bootstrap))
+      } finally {
+        setLocaleResolved(true)
+      }
+    }
+    void run()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (!localeResolved) return
+    const next = new URLSearchParams(searchParams)
+    let changed = false
+    if (next.get('country') !== locale.country) {
+      next.set('country', locale.country)
+      changed = true
+    }
+    if (next.get('lang') !== locale.language) {
+      next.set('lang', locale.language)
+      changed = true
+    }
+    if (changed) {
+      setSearchParams(next, { replace: true })
+    }
+  }, [localeResolved, locale.country, locale.language, searchParams, setSearchParams])
+
+  useEffect(() => {
+    const onLocaleChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ country?: string; language?: string; currency?: string }>).detail || {}
+      setLocale((prev) => ({
+        country: String(detail.country || prev.country || DEFAULT_LOCALE.country).toUpperCase(),
+        language: String(detail.language || prev.language || DEFAULT_LOCALE.language).toLowerCase(),
+        currency: String(detail.currency || prev.currency || DEFAULT_LOCALE.currency).toUpperCase(),
+      }))
+    }
+    window.addEventListener('global-locale-changed', onLocaleChanged as EventListener)
+    return () => window.removeEventListener('global-locale-changed', onLocaleChanged as EventListener)
+  }, [])
+
+  useEffect(() => {
+    const run = async () => {
+      try {
+        await currencyApi.rates()
+      } finally {
+        setCurrencyRatesReady(true)
+      }
+    }
+    void run()
+  }, [])
 
   // Handle ?buy=PRODUCT_ID query param coming from cart checkout
   useEffect(() => {
@@ -146,7 +226,11 @@ export default function Marketplace() {
   }, []);
 
   useEffect(() => {
-    const filters: Record<string, unknown> = {};
+    const filters: Record<string, unknown> = {
+      country: locale.country,
+      lang: locale.language,
+      currency: locale.currency,
+    };
     if (categoryFilter !== 'all') filters.category = categoryFilter;
     if (priceFilter !== 'all') filters.price = Number(priceFilter);
     if (languageFilter !== 'all') filters.language = languageFilter;
@@ -170,7 +254,7 @@ export default function Marketplace() {
     }, 300);
 
     return () => clearTimeout(debounceTimer);
-  }, [searchQuery, categoryFilter, priceFilter, languageFilter]);
+  }, [searchQuery, categoryFilter, priceFilter, languageFilter, locale.country, locale.language, locale.currency]);
 
   const filteredProducts = useMemo(() => {
     if (!searchResults) return products;
@@ -238,7 +322,7 @@ export default function Marketplace() {
               </SelectContent>
             </Select>
           </div>
-          {searchLoading && <p className="mt-2 text-xs text-muted-foreground">Searching...</p>}
+          {(searchLoading || !currencyRatesReady) && <p className="mt-2 text-xs text-muted-foreground">Searching...</p>}
         </section>
 
         <section className="py-2">
