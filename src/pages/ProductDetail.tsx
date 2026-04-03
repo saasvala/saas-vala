@@ -10,6 +10,10 @@ import { useAuth } from '@/hooks/useAuth';
 import { apkApi } from '@/lib/api';
 import { toast } from 'sonner';
 
+function hasScreenshots(value: unknown): value is { screenshots?: unknown[] } {
+  return typeof value === 'object' && value !== null && 'screenshots' in value;
+}
+
 export default function ProductDetail() {
   const navigate = useNavigate();
   const { id } = useParams();
@@ -43,7 +47,14 @@ export default function ProductDetail() {
   }
 
   const inCart = isInCart(product.id);
-  const screenshots = [product.image, product.image, product.image].filter(Boolean);
+  const screenshots = useMemo(() => {
+    const rawScreenshots = hasScreenshots(product) ? product.screenshots : undefined;
+    if (Array.isArray(rawScreenshots)) {
+      const unique = rawScreenshots.filter((shot: unknown) => typeof shot === 'string' && shot.trim());
+      return Array.from(new Set(unique));
+    }
+    return product.image ? [product.image] : [];
+  }, [product]);
 
   const handleBuyNow = () => {
     if (!user) {
@@ -60,12 +71,12 @@ export default function ProductDetail() {
       navigate('/auth');
       return;
     }
-    if (!(product as any).apk_enabled) {
+    if (!product.apk_enabled) {
       toast.info('Coming Soon');
       return;
     }
     try {
-      const res = await apkApi.download(product.id) as any;
+      const res = await apkApi.download(product.id);
       if (res?.allowed && (res?.download_url || res?.url)) {
         window.open(res.download_url || res.url, '_blank');
         return;
@@ -96,7 +107,7 @@ export default function ProductDetail() {
           {screenshots.length > 0 && (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
               {screenshots.map((shot, idx) => (
-                <div key={`${shot}-${idx}`} className="overflow-hidden rounded-lg border border-border/40">
+                <div key={`screenshot-${idx}`} className="overflow-hidden rounded-lg border border-border/40">
                   <img src={shot} alt={`Screenshot ${idx + 1}`} className="w-full h-40 object-cover" loading="lazy" />
                 </div>
               ))}
@@ -107,7 +118,7 @@ export default function ProductDetail() {
             {(product.features || []).map((feature, index) => (
               <Badge key={index} variant="secondary">{feature.text}</Badge>
             ))}
-            {Array.isArray((product as any).tags) && (product as any).tags.map((tag: string) => (
+            {Array.isArray(product.tags) && product.tags.map((tag: string) => (
               <Badge key={tag} variant="outline">{tag}</Badge>
             ))}
           </div>
@@ -130,7 +141,7 @@ export default function ProductDetail() {
             <Button onClick={handleBuyNow}>
               <CreditCard className="h-4 w-4 mr-2" /> Buy Now
             </Button>
-            <Button variant="secondary" onClick={handleDownload} disabled={!(product as any).apk_enabled}>
+            <Button variant="secondary" onClick={handleDownload} disabled={!product.apk_enabled}>
               <Download className="h-4 w-4 mr-2" /> Download APK
             </Button>
             <Button variant="ghost" onClick={() => navigate(`/app/${product.id}`)}>

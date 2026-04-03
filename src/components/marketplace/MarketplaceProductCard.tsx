@@ -29,6 +29,11 @@ const catColors: Record<string, string> = {
   Retail: '#fb923c', Food: '#f87171', Transport: '#22d3ee',
   Marketing: '#e879f9', HR: '#818cf8', Logistics: '#facc15',
 };
+const CARD_HOVER_TRANSITION_SECONDS = 0.24;
+const CARD_HOVER_SCALE = 1.05;
+const CARD_HOVER_SHADOW = '0 14px 38px rgba(37,99,235,0.24)';
+const CARD_HOVER_BORDER = 'rgba(37,99,235,0.45)';
+const CARD_BASE_BORDER = 'rgba(255,255,255,0.07)';
 
 export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
   product, index = 0, onBuyNow, rank,
@@ -117,9 +122,9 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
         toast.error('License expired. Please renew.'); setDownloadChecking(false); return;
       }
       const isUuid = /^[0-9a-f]{8}-/.test(product.id);
-      if (isUuid) {
+        if (isUuid) {
         try {
-          const data = await apkApi.download(product.id) as any;
+          const data = await apkApi.download(product.id);
           if (data?.allowed && (data?.download_url || data?.url)) {
             window.open(data.download_url || data.url, '_blank');
             setDownloadChecking(false);
@@ -151,6 +156,16 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
   }, [user, product, onBuyNow, apkEnabled]);
 
   const demoUrl = getDemoUrl();
+  const displayTags = (() => {
+    if (Array.isArray((product as any).tags) && (product as any).tags.length > 0) {
+      return (product as any).tags.slice(0, 3);
+    }
+    const cat = String(product.category || '').toLowerCase();
+    if (cat.includes('ai')) return ['AI'];
+    if (cat.includes('seo') || cat.includes('marketing')) return ['SEO'];
+    if (apkEnabled) return ['APK'];
+    return [];
+  })();
 
   return (
     <>
@@ -159,12 +174,12 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
         style={{
           width: 280,
           background: 'rgba(255,255,255,0.03)',
-          border: '1px solid rgba(255,255,255,0.07)',
-          transition: 'transform 0.24s ease, box-shadow 0.24s ease, border-color 0.24s ease',
+          border: `1px solid ${CARD_BASE_BORDER}`,
+          transition: `transform ${CARD_HOVER_TRANSITION_SECONDS}s ease, box-shadow ${CARD_HOVER_TRANSITION_SECONDS}s ease, border-color ${CARD_HOVER_TRANSITION_SECONDS}s ease`,
         }}
         onClick={() => navigate(`/product/${encodeURIComponent(product.id)}`)}
-        onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.05)'; e.currentTarget.style.boxShadow = '0 14px 38px rgba(37,99,235,0.24)'; e.currentTarget.style.borderColor = 'rgba(37,99,235,0.45)'; }}
-        onMouseLeave={e => { e.currentTarget.style.transform = ''; e.currentTarget.style.boxShadow = ''; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.07)'; }}
+        onMouseEnter={e => { e.currentTarget.style.transform = `scale(${CARD_HOVER_SCALE})`; e.currentTarget.style.boxShadow = CARD_HOVER_SHADOW; e.currentTarget.style.borderColor = CARD_HOVER_BORDER; }}
+        onMouseLeave={e => { e.currentTarget.style.transform = ''; e.currentTarget.style.boxShadow = ''; e.currentTarget.style.borderColor = CARD_BASE_BORDER; }}
       >
         <div className="absolute top-2 left-2 right-2 z-10 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
           <Button
@@ -236,7 +251,7 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
             </div>
           </div>
           <div className="flex flex-wrap gap-1 pt-1">
-            {(Array.isArray((product as any).tags) ? (product as any).tags : ['AI', 'SEO', 'APK']).slice(0, 3).map((tag: string) => (
+            {displayTags.map((tag: string) => (
               <Badge key={tag} variant="outline" className="text-[9px] uppercase border-white/20 text-white/80">
                 {tag}
               </Badge>

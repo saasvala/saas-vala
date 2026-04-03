@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/integrations/supabase/client';
 import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 
 interface HeroSlide {
   id: string;
@@ -29,6 +30,7 @@ const fallbackTickers: TickerItem[] = [
   { id: 'ft-1', text: '🔥 ALL SOFTWARE $5 ONLY' },
   { id: 'ft-2', text: '⚡ 2000+ Software Products' },
 ];
+const TRUSTED_EXTERNAL_HOSTS = ['saasvala.com', 'www.saasvala.com'];
 
 async function getUserCountry(): Promise<{ country: string; region: string }> {
   try {
@@ -148,7 +150,17 @@ export function HeroBannerSlider({ autoPlayInterval = 4000 }: { autoPlayInterval
     const to = (target || '').trim();
     if (!to) return;
     if (/^https?:\/\//i.test(to)) {
-      window.open(to, '_blank', 'noopener,noreferrer');
+      try {
+        const parsed = new URL(to);
+        if (!TRUSTED_EXTERNAL_HOSTS.includes(parsed.hostname)) {
+          toast.error('Blocked untrusted external link');
+          return;
+        }
+        window.open(parsed.toString(), '_blank', 'noopener,noreferrer');
+      } catch {
+        toast.error('Invalid link target');
+        return;
+      }
       return;
     }
     navigate(to);

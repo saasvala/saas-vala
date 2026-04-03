@@ -333,11 +333,18 @@ export const socialApi = {
 };
 
 // ===================== APK =====================
+export interface ApkDownloadResponse {
+  allowed?: boolean;
+  url?: string;
+  download_url?: string;
+  message?: string;
+}
+
 export const apkApi = {
   build: (data: any) => apiCall('POST', 'apk/build', data),
   history: () => apiCall('GET', 'apk/history'),
   status: (id: string) => apiCall('GET', `apk/status/${id}`),
-  download: (id: string) => apiCall('GET', `apk/download/${id}`),
+  download: (id: string) => apiCall<ApkDownloadResponse>('GET', `apk/download/${id}`),
 };
 
 // ===================== ULTRA BUILDER =====================

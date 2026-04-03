@@ -37,6 +37,7 @@ interface Product {
   id: string; title: string; subtitle: string; image: string;
   status: 'upcoming' | 'live' | 'bestseller' | 'draft'; price: number;
 }
+interface SearchResultRow { id: string }
 
 const bankDetails = {
   accountName: 'SOFTWARE VALA', bankName: 'INDIAN BANK',
@@ -46,6 +47,7 @@ const bankDetails = {
 
 
 type BuyPayMethod = 'wallet' | 'upi' | 'bank' | 'crypto';
+const TRENDING_RATING_THRESHOLD = 4.8;
 
 export default function Marketplace() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
@@ -71,7 +73,7 @@ export default function Marketplace() {
   const [priceFilter, setPriceFilter] = useState('all');
   const [languageFilter, setLanguageFilter] = useState('all');
   const [searchLoading, setSearchLoading] = useState(false);
-  const [searchResults, setSearchResults] = useState<any[] | null>(null);
+  const [searchResults, setSearchResults] = useState<SearchResultRow[] | null>(null);
 
   // Handle ?buy=PRODUCT_ID query param coming from cart checkout
   useEffect(() => {
@@ -151,7 +153,7 @@ export default function Marketplace() {
     const hasFilters = Object.keys(filters).length > 0;
     const hasSearch = searchQuery.trim().length > 0;
 
-    const t = setTimeout(async () => {
+    const debounceTimer = setTimeout(async () => {
       if (!hasSearch && !hasFilters) {
         setSearchResults(null);
         return;
@@ -167,7 +169,7 @@ export default function Marketplace() {
       }
     }, 300);
 
-    return () => clearTimeout(t);
+    return () => clearTimeout(debounceTimer);
   }, [searchQuery, categoryFilter, priceFilter, languageFilter]);
 
   const filteredProducts = useMemo(() => {
@@ -176,7 +178,10 @@ export default function Marketplace() {
     return products.filter((p) => ids.has(String(p.id)));
   }, [products, searchResults]);
 
-  const trendingProducts = useMemo(() => filteredProducts.filter((p: any) => p.trending || p.rating >= 4.8).slice(0, 30), [filteredProducts]);
+  const trendingProducts = useMemo(
+    () => filteredProducts.filter((p: any) => p.trending || p.rating >= TRENDING_RATING_THRESHOLD).slice(0, 30),
+    [filteredProducts]
+  );
   const newLaunchProducts = useMemo(() => {
     return [...filteredProducts]
       .sort((a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
