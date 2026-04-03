@@ -17,12 +17,7 @@ export default function Automation() {
     return 'autopilot';
   }, [location.pathname]);
 
-  const handleTabChange = (nextTab: string) => {
-    if (nextTab === 'apk-pipeline') {
-      navigate('/auto-pilot/apk-pipeline');
-      return;
-    }
-    if (nextTab === 'monitor') {
+
       navigate('/auto-pilot/system-monitor');
       return;
     }
