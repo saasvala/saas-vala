@@ -28,7 +28,13 @@ export interface MarketplaceProduct {
   apk_enabled: boolean;
   license_enabled: boolean;
   build_status?: string;
+  build_id?: string;
   createdAt?: string;
+  currency?: string;
+  language?: string;
+  country_code?: string;
+  price_base_usd?: number;
+  price_converted?: number;
 }
 
 const stockImages = [
@@ -52,6 +58,7 @@ const defaultFeatures = [
 ];
 
 const defaultTechStack = ['React', 'Node.js', 'PostgreSQL'];
+const DEFAULT_PRODUCT_PRICE = 5;
 
 export const CATEGORY_ROW_MAP: Record<string, string[]> = {
   upcoming: ['upcoming', 'coming_soon', 'pipeline'],
@@ -90,14 +97,16 @@ export function mapDbProduct(product: any, index: number): MarketplaceProduct {
   const features = Array.isArray(product.features) && product.features.length > 0
     ? product.features.slice(0, 4).map((f: any) => typeof f === 'string' ? { icon: 'CheckCircle2', text: f } : f)
     : defaultFeatures;
-  const isAvailable = product.status === 'active' && product.deploy_status !== 'failed';
+  const normalizedBuildStatus = String(product.build_status || '').toLowerCase();
+  const isBuildReady = !product.build_status || normalizedBuildStatus === 'success';
+  const isAvailable = product.status === 'active' && product.deploy_status !== 'failed' && isBuildReady;
   return {
     id: product.id,
     title: formatProductName(product.name || product.slug || 'Software Product'),
     subtitle: product.short_description || product.description?.substring(0, 80) || 'Professional Software Solution',
     image: product.thumbnail_url || stockImages[index % stockImages.length],
     status: product.status === 'draft' ? 'draft' : product.trending ? 'bestseller' : 'live',
-    price: Number(product.price) || 5,
+    price: Number(product.price_converted ?? product.price) || DEFAULT_PRODUCT_PRICE,
     features, techStack: defaultTechStack,
     category: product.business_type || 'Software',
     businessType: product.business_type || '',
@@ -108,11 +117,17 @@ export function mapDbProduct(product: any, index: number): MarketplaceProduct {
     discount_percent: Number(product.discount_percent) || 0, rating: Number(product.rating) || 4.5,
     tags: product.tags || [], apk_enabled: product.apk_enabled !== false, license_enabled: product.license_enabled !== false,
     build_status: product.build_status || undefined,
+    build_id: product.build_id || undefined,
     createdAt: product.created_at || undefined,
+    currency: product.currency || undefined,
+    language: product.language || undefined,
+    country_code: product.country_code || undefined,
+    price_base_usd: Number(product.price_base_usd ?? product.price) || DEFAULT_PRODUCT_PRICE,
+    price_converted: Number(product.price_converted ?? product.price) || DEFAULT_PRODUCT_PRICE,
   };
 }
 
-export function useMarketplaceProducts() {
+export function useMarketplaceProducts(locale?: { country?: string; lang?: string; currency?: string }) {
   const [products, setProducts] = useState<MarketplaceProduct[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -120,17 +135,27 @@ export function useMarketplaceProducts() {
     const fetchProducts = async () => {
       setLoading(true);
       try {
-        const res = await marketplaceApi.products();
+        const res = await marketplaceApi.productList({
+          country: locale?.country,
+          lang: locale?.lang,
+          currency: locale?.currency,
+        });
         const mapped = (res.data || []).map((p: any, i: number) => mapDbProduct(p, i));
         setProducts(prioritizeProducts(mapped));
       } catch (e) {
         console.error('Failed to fetch marketplace products:', e);
-        setProducts([]);
+        try {
+          const fallback = await marketplaceApi.products();
+          const mapped = (fallback.data || []).map((p: any, i: number) => mapDbProduct(p, i));
+          setProducts(prioritizeProducts(mapped));
+        } catch {
+          setProducts([]);
+        }
       }
       setLoading(false);
     };
     fetchProducts();
-  }, []);
+  }, [locale?.country, locale?.lang, locale?.currency]);
 
   const dbRow1 = products.slice(0, 30);
   const remaining = products.slice(30);
@@ -162,7 +187,7 @@ export function useProductsByCategory(categories: string[]) {
     const fetchProducts = async () => {
       setLoading(true);
       const { data, error } = await supabase.from('products')
-        .select('id, name, slug, description, short_description, price, status, features, thumbnail_url, git_repo_url, marketplace_visible, apk_url, demo_url, demo_login, demo_password, demo_enabled, featured, trending, business_type, deploy_status, discount_percent, rating, tags, apk_enabled, license_enabled')
+        .select('id, name, slug, description, short_description, price, status, features, thumbnail_url, git_repo_url, marketplace_visible, apk_url, build_id, build_status, demo_url, demo_login, demo_password, demo_enabled, featured, trending, business_type, deploy_status, discount_percent, rating, tags, apk_enabled, license_enabled')
         .eq('marketplace_visible', true).order('created_at', { ascending: false }).limit(500);
       if (error) { setProducts([]); } else {
         const mapped = (data || []).map((p, i) => mapDbProduct(p, i));

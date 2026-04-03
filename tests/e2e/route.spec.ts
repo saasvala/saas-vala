@@ -1,20 +1,35 @@
 import { test, expect } from '@playwright/test';
 
 const routes = [
+  // Public
+  '/marketplace',
+  '/product/test123',
+  '/search',
+  '/login',
+  '/signup',
+  // User
   '/dashboard',
-  '/products',
-  '/products/create',
-  '/products/upload',
-  '/keys',
-  '/keys/generate',
-  '/servers',
-  '/servers/deploy',
-  '/ai',
-  '/ai/chat',
-  '/ai/apis',
-  '/builder',
-  '/billing/credits',
-  '/logout',
+  '/wallet',
+  '/cart',
+  '/checkout',
+  '/orders',
+  '/app/test123',
+  // Reseller
+  '/reseller/dashboard',
+  '/reseller/wallet',
+  '/reseller/leads',
+  '/reseller/keys',
+  '/reseller/products',
+  // Admin
+  '/admin',
+  '/admin/marketplace',
+  '/admin/products',
+  '/admin/orders',
+  '/admin/keys',
+  '/admin/servers',
+  '/admin/seo',
+  '/admin/ai',
+  '/admin/resellers',
 ];
 
 test.describe('route coverage', () => {
@@ -30,4 +45,9 @@ test.describe('route coverage', () => {
       expect(errors, `console errors on ${route}`).toEqual([]);
     });
   }
+
+  test('unknown route redirects to marketplace', async ({ page }) => {
+    await page.goto('/this-route-does-not-exist');
+    await expect(page).toHaveURL(/\/marketplace$/);
+  });
 });

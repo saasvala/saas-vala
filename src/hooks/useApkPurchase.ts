@@ -86,7 +86,7 @@ export function useApkPurchase() {
       // Step 4: Generate secure crypto-random license key
       const licenseKey = generateSecureLicenseKey();
 
-      // Step 5: Create APK download record (only for real DB products)
+
       if (!isGeneratedProduct) {
         await supabase.from('apk_downloads').insert({
           user_id: user.id,

@@ -1,6 +1,6 @@
 import { supabase } from '@/integrations/supabase/client';
 
-const API_BASE = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway`;
+const API_BASE = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v1`;
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
   const { data: { session } } = await supabase.auth.getSession();
@@ -166,6 +166,8 @@ export const marketplaceApi = {
   products: () => apiCall('GET', 'marketplace/products'),
   productSearch: (q?: string, filter?: string | Record<string, unknown>) =>
     apiCall('GET', 'product/search', { q, filter: typeof filter === 'string' ? filter : filter ? JSON.stringify(filter) : undefined }),
+  productList: (params?: { country?: string; lang?: string; currency?: string }) =>
+    apiCall('GET', 'product/list', params),
   approve: (productId: string) => apiCall('PUT', 'marketplace/approve', { product_id: productId }),
   orders: () => apiCall('GET', 'marketplace/orders'),
   orderHistory: () => apiCall('GET', 'marketplace/order-history'),
@@ -181,6 +183,22 @@ export const marketplaceApi = {
   markPaid: (paymentId: string) => apiCall('POST', 'marketplace/payment/mark-paid', { payment_id: paymentId }),
   retryPayment: (paymentId: string) => apiCall('POST', 'marketplace/payment/retry', { payment_id: paymentId }),
   refundPayment: (paymentId: string) => apiCall('POST', 'marketplace/payment/refund', { payment_id: paymentId }),
+  favoriteToggle: (productId: string, productName?: string) =>
+    apiCall('POST', 'marketplace/favorite/toggle', { product_id: productId, product_name: productName }),
+  favoriteList: () => apiCall('GET', 'marketplace/favorite/list'),
+  cartAdd: (productId: string, qty = 1) => apiCall('POST', 'marketplace/cart/add', { product_id: productId, qty }),
+  cartList: () => apiCall('GET', 'marketplace/cart/list'),
+  ratingAdd: (data: { product_id: string; rating: number; product_title?: string; review?: string }) =>
+    apiCall('POST', 'marketplace/rating/add', data),
+  ratingList: (productId: string) => apiCall('GET', 'marketplace/rating/list', { product_id: productId }),
+  commentAdd: (data: { product_id: string; message: string }) => apiCall('POST', 'marketplace/comment/add', data),
+  commentList: (productId: string) => apiCall('GET', 'marketplace/comment/list', { product_id: productId }),
+  promoCreate: (productId: string) => apiCall('POST', 'marketplace/promo/create', { product_id: productId }),
+  promoList: () => apiCall('GET', 'marketplace/promo/list'),
+  promoTrackClick: (code: string) => apiCall('POST', 'marketplace/promo/track-click', { code }),
+  promoTrackConversion: (code: string, amount: number) =>
+    apiCall('POST', 'marketplace/promo/track-conversion', { code, amount }),
+  promoResolve: (code: string) => apiCall('GET', 'marketplace/promo/resolve', { code }),
 };
 
 export const bannerApi = {
@@ -417,9 +435,36 @@ export const seoApi = {
     apiCall('POST', 'seo/google-sync', data),
   generateMeta: (data?: { product_id?: string; urls?: string[] }) =>
     apiCall('POST', 'seo/generate-meta', data),
+  generate: (data?: { product_id?: string; country?: string; language?: string; product?: Record<string, unknown> }) =>
+    apiCall('POST', 'seo/generate', data),
   analytics: () => apiCall('GET', 'seo/analytics'),
 
 };
+
+export interface GeoDetectResponse {
+  country_code: string
+  currency: string
+  language: string
+}
+
+export interface CurrencyRatesResponse {
+  base: string
+  rates: Record<string, number>
+  updated_at?: string
+}
+
+export const geoApi = {
+  detect: () => apiCall<GeoDetectResponse>('GET', 'geo/detect'),
+}
+
+export const translationApi = {
+  translate: (data: { text: string; target_lang: string; source_lang?: string }) =>
+    apiCall<{ translated_text: string; target_lang: string; cached?: boolean }>('POST', 'translate', data),
+}
+
+export const currencyApi = {
+  rates: () => apiCall<CurrencyRatesResponse>('GET', 'currency/rates'),
+}
 
 export const dashboardApi = {
   get: () => apiCall('GET', 'dashboard'),

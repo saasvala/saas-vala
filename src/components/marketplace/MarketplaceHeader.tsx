@@ -20,30 +20,21 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import saasValaLogo from '@/assets/saas-vala-logo.jpg';
-
-const currencies = [
-  { code: 'USD', symbol: '$', flag: '🇺🇸', name: 'US Dollar' },
-  { code: 'INR', symbol: '₹', flag: '🇮🇳', name: 'Indian Rupee' },
-  { code: 'EUR', symbol: '€', flag: '🇪🇺', name: 'Euro' },
-  { code: 'GBP', symbol: '£', flag: '🇬🇧', name: 'British Pound' },
-  { code: 'AED', symbol: 'د.إ', flag: '🇦🇪', name: 'UAE Dirham' },
-  { code: 'SAR', symbol: '﷼', flag: '🇸🇦', name: 'Saudi Riyal' },
-];
-
-const languages = [
-  { code: 'en', name: 'English', flag: '🇺🇸' },
-  { code: 'hi', name: 'हिन्दी', flag: '🇮🇳' },
-  { code: 'es', name: 'Español', flag: '🇪🇸' },
-  { code: 'ar', name: 'العربية', flag: '🇸🇦' },
-  { code: 'zh', name: '中文', flag: '🇨🇳' },
-];
+import { AVAILABLE_CURRENCIES, AVAILABLE_LANGUAGES, DEFAULT_LOCALE, getStoredLocale, storeLocale } from '@/lib/locale';
 
 export function MarketplaceHeader() {
   const navigate = useNavigate();
   const { user, isReseller } = useAuth();
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCurrency, setSelectedCurrency] = useState(currencies[0]);
+  const [selectedCurrency, setSelectedCurrency] = useState(() => {
+    const stored = getStoredLocale()
+    return AVAILABLE_CURRENCIES.find((c) => c.code === stored.currency) || AVAILABLE_CURRENCIES[0]
+  });
+  const [selectedLanguage, setSelectedLanguage] = useState(() => {
+    const stored = getStoredLocale()
+    return AVAILABLE_LANGUAGES.find((l) => l.code === stored.language) || AVAILABLE_LANGUAGES[0]
+  });
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -51,6 +42,18 @@ export function MarketplaceHeader() {
       searchInputRef.current.focus();
     }
   }, [searchOpen]);
+
+  useEffect(() => {
+    const onLocaleChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ currency?: string; language?: string }>).detail || {}
+      const nextCurrency = AVAILABLE_CURRENCIES.find((c) => c.code === detail.currency)
+      const nextLanguage = AVAILABLE_LANGUAGES.find((l) => l.code === detail.language)
+      if (nextCurrency) setSelectedCurrency(nextCurrency)
+      if (nextLanguage) setSelectedLanguage(nextLanguage)
+    }
+    window.addEventListener('global-locale-changed', onLocaleChanged as EventListener)
+    return () => window.removeEventListener('global-locale-changed', onLocaleChanged as EventListener)
+  }, [])
 
   const handleSearch = () => {
     if (searchQuery.trim()) {
@@ -66,7 +69,7 @@ export function MarketplaceHeader() {
         <div
           className="flex items-center gap-3 cursor-pointer shrink-0"
           onClick={() => {
-            navigate('/');
+            navigate('/marketplace');
             window.scrollTo({ top: 0, behavior: 'smooth' });
           }}
         >
@@ -105,6 +108,18 @@ export function MarketplaceHeader() {
 
         {/* Right Actions */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <Button variant="ghost" size="sm" className="text-xs hidden lg:flex" onClick={() => navigate('/marketplace')}>
+            Home
+          </Button>
+          <Button variant="ghost" size="sm" className="text-xs hidden lg:flex" onClick={() => navigate('/marketplace?cat=all')}>
+            Categories
+          </Button>
+          {user && (
+            <Button variant="ghost" size="sm" className="text-xs hidden lg:flex" onClick={() => navigate('/user/orders')}>
+              My Purchases
+            </Button>
+          )}
+
           {/* Mobile search toggle */}
           <Button
             variant="ghost"
@@ -138,15 +153,23 @@ export function MarketplaceHeader() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-[160px]">
-              {currencies.map((c) => (
+              {AVAILABLE_CURRENCIES.map((c) => (
                 <DropdownMenuItem
                   key={c.code}
                   className="gap-2 text-sm"
-                  onClick={() => setSelectedCurrency(c)}
+                  onClick={() => {
+                    setSelectedCurrency(c)
+                    storeLocale({
+                      currency: c.code,
+                      language: selectedLanguage?.code || DEFAULT_LOCALE.language,
+                    })
+                  }}
                 >
                   <span>{c.flag}</span>
                   <span>{c.symbol} {c.code}</span>
-                  {c.code === selectedCurrency.code && <span className="ml-auto text-primary">✓</span>}
+                  {c.code === selectedCurrency.code && (
+                    <span className="ml-auto text-primary" role="img" aria-label="Selected">✓</span>
+                  )}
                 </DropdownMenuItem>
               ))}
             </DropdownMenuContent>
@@ -161,10 +184,23 @@ export function MarketplaceHeader() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {languages.map((lang) => (
-                <DropdownMenuItem key={lang.code} className="gap-2">
+              {AVAILABLE_LANGUAGES.map((lang) => (
+                <DropdownMenuItem
+                  key={lang.code}
+                  className="gap-2"
+                  onClick={() => {
+                    setSelectedLanguage(lang)
+                    storeLocale({
+                      language: lang.code,
+                      currency: selectedCurrency?.code || DEFAULT_LOCALE.currency,
+                    })
+                  }}
+                >
                   <span>{lang.flag}</span>
                   <span>{lang.name}</span>
+                  {lang.code === selectedLanguage.code && (
+                    <span className="ml-auto text-primary" role="img" aria-label="Selected">✓</span>
+                  )}
                 </DropdownMenuItem>
               ))}
             </DropdownMenuContent>
@@ -198,7 +234,7 @@ export function MarketplaceHeader() {
 
           {/* Auth */}
           {user ? (
-            <Button variant="ghost" size="icon" onClick={() => navigate('/dashboard')} className="h-9 w-9">
+            <Button variant="ghost" size="icon" onClick={() => navigate('/settings')} className="h-9 w-9">
               <User className="h-4 w-4" />
             </Button>
           ) : (
