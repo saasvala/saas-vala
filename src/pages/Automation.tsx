@@ -1,13 +1,33 @@
-import { useState } from 'react';
+import { useMemo } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { AutoPilotDashboard } from '@/components/automation/AutoPilotDashboard';
 import { SystemMonitorPanel } from '@/components/automation/SystemMonitorPanel';
 import { AutoApkPipelinePanel } from '@/components/automation/AutoApkPipelinePanel';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Bot, Shield, Smartphone } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 export default function Automation() {
-  const [tab, setTab] = useState('autopilot');
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const tab = useMemo(() => {
+    if (location.pathname === '/auto-pilot/apk-pipeline') return 'apk-pipeline';
+    if (location.pathname === '/auto-pilot/system-monitor') return 'monitor';
+    return 'autopilot';
+  }, [location.pathname]);
+
+  const handleTabChange = (nextTab: string) => {
+    if (nextTab === 'apk-pipeline') {
+      navigate('/auto-pilot/apk-pipeline');
+      return;
+    }
+    if (nextTab === 'monitor') {
+      navigate('/auto-pilot/system-monitor');
+      return;
+    }
+    navigate('/auto-pilot');
+  };
 
   return (
     <DashboardLayout>
@@ -19,7 +39,7 @@ export default function Automation() {
           </p>
         </div>
 
-        <Tabs value={tab} onValueChange={setTab}>
+        <Tabs value={tab} onValueChange={handleTabChange}>
           <TabsList className="w-full grid grid-cols-3 bg-muted/30 p-1.5 rounded-xl">
             <TabsTrigger value="autopilot" className="gap-2 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Bot className="h-4 w-4" /> Auto-Pilot

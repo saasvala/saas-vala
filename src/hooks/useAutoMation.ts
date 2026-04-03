@@ -4,40 +4,37 @@ import { toast } from 'sonner';
 
 interface ClientRequest {
   id: string;
-  client_name: string;
-  client_email: string | null;
-  request_type: string;
-  request_details: string;
-  priority: string;
+  name: string;
+  business_type: string;
+  country: string;
+  language: string;
+  budget: number | null;
+  features_required: string;
   status: string;
-  ai_response: string | null;
-  ai_action_taken: string | null;
-  estimated_cost: number | null;
+  ai_score: number | null;
+  assigned_to: string | null;
+  queue_status: string | null;
   created_at: string;
 }
 
 interface SoftwareQueue {
   id: string;
-  software_name: string;
-  software_type: string;
-  target_industry: string;
-  features: unknown;
+  type: string;
+  priority: number;
   status: string;
-  scheduled_date: string;
-  ai_generated_description: string | null;
+  logs: string | null;
+  retry_count: number;
+  created_at: string;
 }
 
 interface BillingTracker {
   id: string;
-  service_type: string;
+  user_id: string | null;
   service_name: string;
-  provider: string | null;
   amount: number;
-  currency: string;
   billing_cycle: string;
-  next_due_date: string;
-  auto_pay: boolean;
   status: string;
+  created_at: string;
 }
 
 interface SeoBacklink {
@@ -66,8 +63,8 @@ export function useAutomation() {
     
     const [requestsRes, queueRes, billingRes, backlinksRes] = await Promise.all([
       supabase.from('client_requests').select('*').order('created_at', { ascending: false }).limit(50),
-      supabase.from('auto_software_queue').select('*').order('scheduled_date', { ascending: false }).limit(50),
-      supabase.from('billing_tracker').select('*').order('next_due_date', { ascending: true }),
+      supabase.from('build_queue').select('*').order('created_at', { ascending: false }).limit(50),
+      supabase.from('billing_items').select('*').order('created_at', { ascending: false }).limit(100),
       supabase.from('seo_backlinks').select('*').order('created_at', { ascending: false }).limit(100)
     ]);
 
@@ -81,11 +78,12 @@ export function useAutomation() {
 
   // Submit new client request
   const submitClientRequest = async (request: {
-    client_name: string;
-    client_email?: string;
-    request_type: string;
-    request_details: string;
-    priority?: string;
+    name: string;
+    business_type: string;
+    country: string;
+    language: string;
+    budget?: number;
+    features_required: string;
   }) => {
     setProcessing(true);
     
@@ -94,11 +92,12 @@ export function useAutomation() {
       const { data: newRequest, error } = await supabase
         .from('client_requests')
         .insert({
-          client_name: request.client_name,
-          client_email: request.client_email,
-          request_type: request.request_type,
-          request_details: request.request_details,
-          priority: request.priority || 'medium',
+          name: request.name,
+          business_type: request.business_type,
+          country: request.country,
+          language: request.language,
+          budget: request.budget ?? null,
+          features_required: request.features_required,
           status: 'pending'
         })
         .select()
@@ -112,9 +111,12 @@ export function useAutomation() {
           action: 'handle_client_request',
           data: {
             requestId: newRequest.id,
-            requestType: request.request_type,
-            requestDetails: request.request_details,
-            clientName: request.client_name
+            name: request.name,
+            businessType: request.business_type,
+            country: request.country,
+            language: request.language,
+            budget: request.budget ?? null,
+            featuresRequired: request.features_required
           }
         }
       });
@@ -215,25 +217,18 @@ export function useAutomation() {
 
   // Add billing item
   const addBillingItem = async (item: {
-    service_type: string;
+    user_id?: string;
     service_name: string;
-    provider?: string;
     amount: number;
     billing_cycle?: string;
-    next_due_date: string;
-    auto_pay?: boolean;
-    notes?: string;
   }) => {
     try {
-      const { error } = await supabase.from('billing_tracker').insert({
-        service_type: item.service_type,
+      const { error } = await supabase.from('billing_items').insert({
+        user_id: item.user_id ?? null,
         service_name: item.service_name,
-        provider: item.provider,
         amount: item.amount,
         billing_cycle: item.billing_cycle || 'monthly',
-        next_due_date: item.next_due_date,
-        auto_pay: item.auto_pay || false,
-        notes: item.notes
+        status: 'pending'
       });
 
       if (error) throw error;
@@ -248,25 +243,21 @@ export function useAutomation() {
 
   // Get upcoming bills (next 7 days)
   const getUpcomingBills = () => {
-    const today = new Date();
-    const weekFromNow = new Date(today);
-    weekFromNow.setDate(today.getDate() + 7);
-
-    return billingItems.filter(bill => {
-      const dueDate = new Date(bill.next_due_date);
-      return dueDate >= today && dueDate <= weekFromNow && bill.status === 'active';
-    });
+    return billingItems.filter(bill => bill.status !== 'paid').slice(0, 7);
   };
 
   // Get pending client requests
   const getPendingRequests = () => {
-    return clientRequests.filter(req => req.status === 'pending' || req.status === 'in_progress');
+    return clientRequests.filter(req => req.status === 'pending' || req.status === 'approved');
   };
 
   // Get today's software queue
   const getTodaysQueue = () => {
-    const today = new Date().toISOString().split('T')[0];
-    return softwareQueue.filter(sw => sw.scheduled_date === today);
+    const today = new Date();
+    return softwareQueue.filter(sw => {
+      const created = new Date(sw.created_at);
+      return created.toDateString() === today.toDateString();
+    });
   };
 
   useEffect(() => {

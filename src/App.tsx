@@ -363,6 +363,9 @@ function AppRoutes() {
         <Route path="/audit-logs" element={<AuthGuard><RoleGuard role="super_admin"><AuditLogs /></RoleGuard></AuthGuard>} />
         <Route path="/system-health" element={<AuthGuard><RoleGuard role="super_admin"><SystemHealth /></RoleGuard></AuthGuard>} />
         <Route path="/automation" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/auto-pilot" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/auto-pilot/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/auto-pilot/system-monitor" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
         <Route path="/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
         <Route path="/admin/add-product" element={<AuthGuard><RoleGuard role="super_admin"><AddProduct /></RoleGuard></AuthGuard>} />
         <Route path="/admin/marketplace" element={<AuthGuard><RoleGuard role="super_admin"><MarketplaceAdmin /></RoleGuard></AuthGuard>} />
