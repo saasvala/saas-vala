@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { autoPilotApi } from '@/lib/api';
@@ -65,7 +65,7 @@ export function useAutomation() {
   });
 
   // Fetch all data
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     
     const [requestsRes, queueRes, billingRes, backlinksRes] = await Promise.all([
@@ -81,19 +81,15 @@ export function useAutomation() {
     if (backlinksRes.data) setBacklinks(backlinksRes.data as SeoBacklink[]);
     
     setLoading(false);
-  };
+  }, []);
 
-  const refreshDashboard = async () => {
+  const refreshData = useCallback(async () => {
     await fetchData();
-  };
+  }, [fetchData]);
 
-  const refreshQueue = async () => {
-    await fetchData();
-  };
-
-  const refreshBilling = async () => {
-    await fetchData();
-  };
+  const refreshDashboard = refreshData;
+  const refreshQueue = refreshData;
+  const refreshBilling = refreshData;
 
   // Submit new client request
   const submitClientRequest = async (request: {
@@ -291,7 +287,7 @@ export function useAutomation() {
     }
   };
 
-  const handleBillingCheck = async () => {
+  const handleBillingCheck = useCallback(async () => {
     setQuickActionLoading((prev) => ({ ...prev, billingCheck: true }));
     try {
       const response = await autoPilotApi.billingCheck();
@@ -312,7 +308,7 @@ export function useAutomation() {
     } finally {
       setQuickActionLoading((prev) => ({ ...prev, billingCheck: false }));
     }
-  };
+  }, [refreshBilling]);
 
   // Add billing item
   const addBillingItem = async (item: {

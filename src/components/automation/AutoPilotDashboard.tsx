@@ -84,7 +84,7 @@ export function AutoPilotDashboard() {
     }
   };
 
-  const handleSubmitBilling = async () => {
+  const handleBillingFormSubmit = async () => {
     if (!newBilling.user_id || !newBilling.service_name || newBilling.amount <= 0 || !newBilling.billing_cycle) {
       toast.error('Please fill in all required billing fields');
       return;
@@ -104,7 +104,7 @@ export function AutoPilotDashboard() {
   // Check billing alerts on mount
   useEffect(() => {
     handleBillingCheck();
-  }, []);
+  }, [handleBillingCheck]);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -393,7 +393,7 @@ export function AutoPilotDashboard() {
                 />
               </div>
               <div className="flex gap-2">
-                <Button onClick={handleSubmitBilling} disabled={quickActionLoading.addBilling} className="gap-2">
+                <Button onClick={handleBillingFormSubmit} disabled={quickActionLoading.addBilling} className="gap-2">
                   {quickActionLoading.addBilling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Calendar className="h-4 w-4" />}
                   Add & Enable 4-Day Alert
                 </Button>

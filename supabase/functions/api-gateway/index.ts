@@ -3262,7 +3262,7 @@ async function handleAutoPilot(method: string, pathParts: string[], body: any, u
     if (walletUpdateErr) return fail(walletUpdateErr.message, 500, 'DB_ERROR')
 
     const billingReferenceId = String(createdItem?.id || '')
-    await admin.from('transactions').insert({
+    const { error: txErr } = await admin.from('transactions').insert({
       wallet_id: wallet.id,
       type: 'debit',
       amount,
@@ -3275,7 +3275,9 @@ async function handleAutoPilot(method: string, pathParts: string[], body: any, u
       reference_type: 'billing_item',
       meta: { service_name: String(body.service_name) },
     })
-    await admin.from('wallet_ledger').insert({
+    if (txErr) return fail(txErr.message, 500, 'DB_ERROR')
+
+    const { error: ledgerErr } = await admin.from('wallet_ledger').insert({
       wallet_id: wallet.id,
       user_id: wallet.user_id,
       entry_type: 'debit',
@@ -3286,6 +3288,7 @@ async function handleAutoPilot(method: string, pathParts: string[], body: any, u
       reference_id: billingReferenceId || null,
       metadata: { service_name: String(body.service_name) },
     })
+    if (ledgerErr) return fail(ledgerErr.message, 500, 'DB_ERROR')
 
     await logActivity(admin, 'auto_pilot', billingReferenceId || 'billing_item', 'add_billing', userId, {
       target_user_id: String(body.user_id),
