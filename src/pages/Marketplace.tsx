@@ -35,13 +35,14 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatUserTime, getTypoSuggestions } from '@/lib/edgeGuards';
-import { useButtonEngine } from '@/hooks/useButtonEngine';
+
 
 interface Product {
   id: string; title: string; subtitle: string; image: string;
   status: 'upcoming' | 'live' | 'bestseller' | 'draft'; price: number;
 }
 interface SearchResultRow { id: string }
+interface ProductSearchResponse { data?: SearchResultRow[] }
 
 const bankDetails = {
   accountName: 'SOFTWARE VALA', bankName: 'INDIAN BANK',
@@ -87,6 +88,20 @@ export default function Marketplace() {
   const [searchResults, setSearchResults] = useState<SearchResultRow[] | null>(null);
   const [currencyRatesReady, setCurrencyRatesReady] = useState(false);
   const { runAction, isProcessing } = useButtonEngine();
+
+  useEffect(() => {
+    registerKnownRoutes([
+      '/',
+      '/marketplace',
+      '/search',
+      '/checkout',
+      '/cart',
+      '/subscription',
+      '/auth',
+      '/product/:id',
+      '/category/:macro/:sub/:micro',
+    ]);
+  }, []);
 
   const queryCountry = (searchParams.get('country') || '').toUpperCase()
   const queryLang = (searchParams.get('lang') || '').toLowerCase()
@@ -183,17 +198,7 @@ export default function Marketplace() {
   }, [searchParams]);
 
   const handleBuyNow = async (product: Product) => {
-    const result = await runAction(
-      { action: `BUY_${product.id}`, button: 'Buy Now', route: `/checkout?product_id=${encodeURIComponent(product.id)}`, api: 'payment/create', debounce: 150, idempotent: true, retries: 0 },
-      async () => {
-        if (!user) throw new Error('Please sign in to purchase');
-        const fraud = await checkUserStatus(user.id, user.email || '');
-        if (fraud.isBlocked) throw new Error(fraud.message);
-        navigate(`/checkout?product_id=${encodeURIComponent(product.id)}`);
-        return { redirected: true };
-      },
-    );
-    if (!result.ok && !result.skipped) toast.error(result.error?.message || 'Unable to continue');
+
   };
 
   const handleWalletPayment = async () => {
@@ -302,8 +307,16 @@ export default function Marketplace() {
       }
       try {
         setSearchLoading(true);
-        const res = await marketplaceApi.productSearch(searchQuery.trim(), filters);
-        setSearchResults(Array.isArray((res as any)?.data) ? (res as any).data : []);
+        const res = await executeButtonAction<ProductSearchResponse>({
+          config: { action: 'SEARCH_SUBMIT', route: '/search', api: '/product/search', debounceMs: 150, throttleMs: 200, idempotent: false, retries: 1, retryBackoffMs: 1000 },
+          run: async () => marketplaceApi.productSearch(searchQuery.trim(), filters),
+        });
+        if (!res) {
+          setSearchResults([]);
+          toast.error('Search failed');
+          return;
+        }
+        setSearchResults(Array.isArray(res?.data) ? res.data : []);
       } catch (_e) {
         setSearchResults([]);
       } finally {

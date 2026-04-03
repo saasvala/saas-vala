@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
 import * as LucideIcons from 'lucide-react';
+import { createPressHandlers, executeButtonAction, getButtonInteractionClassName } from '@/lib/buttonEngine';
 
 interface Product {
   id: string;
@@ -84,18 +85,37 @@ export function ProductSlider({ title, products, onBuyNow, onFavorite, onNotify,
   };
 
   const scroll = (direction: 'left' | 'right') => {
-    if (scrollRef.current) {
-      const scrollAmount = scrollRef.current.clientWidth * 0.8;
-      scrollRef.current.scrollBy({
-        left: direction === 'left' ? -scrollAmount : scrollAmount,
-        behavior: 'smooth'
-      });
-      setTimeout(checkScroll, 300);
-    }
+    void executeButtonAction<void>({
+      config: {
+        action: direction === 'left' ? 'SLIDER_LEFT' : 'SLIDER_RIGHT',
+        route: '/marketplace',
+        debounceMs: 150,
+        throttleMs: 200,
+        idempotent: false,
+      },
+      run: () => {
+        if (scrollRef.current) {
+          const scrollAmount = scrollRef.current.clientWidth * 0.8;
+          scrollRef.current.scrollBy({
+            left: direction === 'left' ? -scrollAmount : scrollAmount,
+            behavior: 'smooth'
+          });
+          setTimeout(checkScroll, 300);
+        }
+      },
+      validateResponse: false,
+    });
   };
 
   // Extract category from title
   const categoryName = title.replace(/^[^\s]+\s/, '').toLowerCase();
+  const makeAction = (action: string, route: string, api: string | undefined, run: () => void) => () => {
+    void executeButtonAction<void>({
+      config: { action, route, api, debounceMs: 150, throttleMs: 200, idempotent: action !== 'VIEW_DETAILS_DEMO' },
+      run,
+      validateResponse: false,
+    });
+  };
 
   return (
     <div className="relative group py-4">
@@ -110,11 +130,11 @@ export function ProductSlider({ title, products, onBuyNow, onFavorite, onNotify,
         <Button
           variant="ghost"
           size="icon"
-          className={cn(
+          className={getButtonInteractionClassName(cn(
             'absolute left-0 top-1/2 -translate-y-1/2 z-10 h-full rounded-none bg-gradient-to-r from-background to-transparent opacity-0 group-hover:opacity-100 transition-opacity',
             !canScrollLeft && 'hidden'
-          )}
-          onClick={() => scroll('left')}
+          ))}
+          {...createPressHandlers('slider-left', () => scroll('left'))}
         >
           <ChevronLeft className="h-8 w-8" />
         </Button>
@@ -243,8 +263,8 @@ export function ProductSlider({ title, products, onBuyNow, onFavorite, onNotify,
                         <>
                           <Button
                             size="sm"
-                            className="flex-1 h-10 text-[11px] gap-1.5 bg-yellow-500 hover:bg-yellow-400 text-black font-bold rounded-xl"
-                            onClick={() => onNotify?.(product)}
+                            className={getButtonInteractionClassName("flex-1 h-10 text-[11px] gap-1.5 bg-yellow-500 hover:bg-yellow-400 text-black font-bold rounded-xl")}
+                            {...createPressHandlers(`slider-notify-${product.id}`, makeAction('NOTIFY_ME', `/product/${encodeURIComponent(product.id)}`, undefined, () => onNotify?.(product)))}
                           >
                             <Bell className="h-3.5 w-3.5" />
                             NOTIFY ME
@@ -252,8 +272,8 @@ export function ProductSlider({ title, products, onBuyNow, onFavorite, onNotify,
                           <Button
                             size="sm"
                             variant="outline"
-                            className="h-10 w-11 p-0 rounded-xl border-pink-400/40 text-pink-400 hover:bg-pink-500/10"
-                            onClick={() => onFavorite?.(product)}
+                            className={getButtonInteractionClassName("h-10 w-11 p-0 rounded-xl border-pink-400/40 text-pink-400 hover:bg-pink-500/10")}
+                            {...createPressHandlers(`slider-favorite-${product.id}`, makeAction('FAVORITE', '/marketplace', '/marketplace/favorite/toggle', () => onFavorite?.(product)))}
                             title="Add to Cart"
                           >
                             <Heart className="h-4 w-4" />
@@ -264,8 +284,8 @@ export function ProductSlider({ title, products, onBuyNow, onFavorite, onNotify,
                           <Button
                             variant="outline"
                             size="sm"
-                            className="flex-1 h-10 text-[11px] gap-1.5 rounded-xl border-border hover:border-primary/50 hover:text-primary font-bold"
-                            onClick={(e) => { e.stopPropagation(); onLiveDemo?.(product); }}
+                            className={getButtonInteractionClassName("flex-1 h-10 text-[11px] gap-1.5 rounded-xl border-border hover:border-primary/50 hover:text-primary font-bold")}
+                            {...createPressHandlers(`slider-demo-${product.id}`, makeAction('VIEW_DETAILS_DEMO', `/product/${encodeURIComponent(product.id)}`, undefined, () => onLiveDemo?.(product)))}
                           >
                             <Play className="h-3.5 w-3.5" />
                             DEMO
@@ -273,16 +293,16 @@ export function ProductSlider({ title, products, onBuyNow, onFavorite, onNotify,
                           <Button
                             size="sm"
                             variant="outline"
-                            className="h-10 w-11 p-0 rounded-xl border-pink-400/40 text-pink-400 hover:bg-pink-500/10"
-                            onClick={(e) => { e.stopPropagation(); onFavorite?.(product); }}
+                            className={getButtonInteractionClassName("h-10 w-11 p-0 rounded-xl border-pink-400/40 text-pink-400 hover:bg-pink-500/10")}
+                            {...createPressHandlers(`slider-favorite-live-${product.id}`, makeAction('FAVORITE', '/marketplace', '/marketplace/favorite/toggle', () => onFavorite?.(product)))}
                             title="Add to Cart"
                           >
                             <Heart className="h-4 w-4" />
                           </Button>
                           <Button
                             size="sm"
-                            className="flex-1 h-10 text-[11px] gap-1.5 rounded-xl font-black"
-                            onClick={(e) => { e.stopPropagation(); onBuyNow?.(product); }}
+                            className={getButtonInteractionClassName("flex-1 h-10 text-[11px] gap-1.5 rounded-xl font-black")}
+                            {...createPressHandlers(`slider-buy-${product.id}`, makeAction('BUY_NOW', '/checkout', '/payment/intent', () => onBuyNow?.(product)))}
                           >
                             <ShoppingCart className="h-3.5 w-3.5" />
                             BUY $5
@@ -301,11 +321,11 @@ export function ProductSlider({ title, products, onBuyNow, onFavorite, onNotify,
         <Button
           variant="ghost"
           size="icon"
-          className={cn(
+          className={getButtonInteractionClassName(cn(
             'absolute right-0 top-1/2 -translate-y-1/2 z-10 h-full rounded-none bg-gradient-to-l from-background to-transparent opacity-0 group-hover:opacity-100 transition-opacity',
             !canScrollRight && 'hidden'
-          )}
-          onClick={() => scroll('right')}
+          ))}
+          {...createPressHandlers('slider-right', () => scroll('right'))}
         >
           <ChevronRight className="h-8 w-8" />
         </Button>

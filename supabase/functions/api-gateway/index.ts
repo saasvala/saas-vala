@@ -121,6 +121,7 @@ const NOTIFY_TRIGGER_SET = new Set<string>(NOTIFY_ALLOWED_TRIGGERS)
 const NOTIFY_MAX_TITLE_LENGTH = 120
 const MAX_IMAGE_OPTIMIZE_WIDTH = 4096
 const MAX_IMAGE_OPTIMIZE_QUALITY = 100
+const SUPPORTED_API_VERSIONS = new Set(['v1', 'v2'])
 const FINAL_RESELLER_GAP_FEATURE_KEYS = [
   'tier_based_dynamic_commission_engine',
   'per_product_commission_override',
@@ -357,6 +358,56 @@ function readClientIp(req?: Request) {
   const forwarded = req.headers.get('x-forwarded-for') || ''
   if (forwarded) return forwarded.split(',')[0].trim()
   return req.headers.get('x-real-ip') || 'unknown'
+}
+
+function extractDeviceFingerprint(req: Request, body: any) {
+  const headerFingerprint = String(req.headers.get('x-device-fingerprint') || req.headers.get('x-device-id') || '').trim()
+  const bodyFingerprint = String(body?.device_fingerprint || body?.deviceFingerprint || '').trim()
+  const fingerprint = headerFingerprint || bodyFingerprint
+  if (!fingerprint) return null
+  return fingerprint.slice(0, 512)
+}
+
+function requiresDeviceFingerprint(endpointKey: string, method: string) {
+  if (!['POST', 'PUT', 'DELETE'].includes(method)) return false
+  return [
+    'marketplace/payment',
+    'payment/verify',
+    'payment/create',
+    'wallet/add',
+    'wallet/withdraw',
+    'wallet/refund',
+    'wallet/lock',
+    'wallet/unlock',
+  ].some((prefix) => endpointKey.startsWith(prefix))
+}
+
+// Writes security telemetry without breaking request flow if log persistence fails.
+async function writeSecurityLogSafe(
+  admin: any,
+  params: {
+    user_id?: string | null
+    action: string
+    risk_level: 'low' | 'medium' | 'high' | 'critical'
+    ip_address?: string | null
+    device_fingerprint?: string | null
+    anomaly_score?: number | null
+    metadata?: Record<string, unknown>
+  },
+) {
+  try {
+    await admin.from('security_logs').insert({
+      user_id: params.user_id || null,
+      action: params.action,
+      risk_level: params.risk_level,
+      ip_address: params.ip_address || null,
+      device_fingerprint: params.device_fingerprint || null,
+      anomaly_score: params.anomaly_score ?? null,
+      metadata: params.metadata || {},
+    })
+  } catch {
+    // no-op
+  }
 }
 
 async function sha256Hex(value: string) {
@@ -891,6 +942,111 @@ async function authenticate(req: Request) {
   if (error || !data?.claims) return null
 
   return { userId: data.claims.sub as string, supabase: sb }
+}
+
+async function enforceSessionBinding(
+  admin: any,
+  userId: string,
+  req: Request,
+  body: any,
+  endpointKey: string,
+  method: string,
+) {
+  const ipAddress = readClientIp(req)
+  const deviceFingerprint = extractDeviceFingerprint(req, body)
+  const sessionToken = String(
+    req.headers.get('x-session-token') ||
+    req.headers.get('x-session-id') ||
+    body?.session_token ||
+    body?.session_id ||
+    '',
+  ).trim()
+
+  if (requiresDeviceFingerprint(endpointKey, method) && !deviceFingerprint) {
+    await writeSecurityLogSafe(admin, {
+      user_id: userId,
+      action: 'device_fingerprint_missing',
+      risk_level: 'high',
+      ip_address: ipAddress,
+      metadata: { endpoint: endpointKey, method },
+    })
+    return fail('Device fingerprint required', 401, 'DEVICE_FINGERPRINT_REQUIRED')
+  }
+
+  if (!sessionToken) {
+    await writeSecurityLogSafe(admin, {
+      user_id: userId,
+      action: 'session_token_missing',
+      risk_level: 'medium',
+      ip_address: ipAddress,
+      device_fingerprint: deviceFingerprint,
+      metadata: { endpoint: endpointKey, method },
+    })
+    return fail('Session token required', 401, 'SESSION_TOKEN_REQUIRED')
+  }
+
+  const { data: session, error: sessionError } = await admin
+    .from('user_sessions')
+    .select('id,user_id,is_active,ip_address,last_activity,session_token,device_type')
+    .eq('user_id', userId)
+    .eq('session_token', sessionToken)
+    .maybeSingle()
+
+  if (sessionError && !isTableMissingError(sessionError)) {
+    return fail('Session validation unavailable', 503, 'SESSION_VALIDATION_UNAVAILABLE')
+  }
+
+  if (isTableMissingError(sessionError)) return null
+  if (!session || session.is_active === false) {
+    await writeSecurityLogSafe(admin, {
+      user_id: userId,
+      action: 'session_token_invalid',
+      risk_level: 'high',
+      ip_address: ipAddress,
+      device_fingerprint: deviceFingerprint,
+      metadata: { endpoint: endpointKey, method },
+    })
+    return fail('Invalid session binding', 401, 'SESSION_BINDING_INVALID')
+  }
+
+  const storedIp = String(session.ip_address || '').trim()
+  const storedDevice = String(session.device_type || '').trim()
+  const ipMismatch = !!storedIp && storedIp !== 'unknown' && ipAddress !== 'unknown' && storedIp !== ipAddress
+  const deviceMismatch =
+    !!deviceFingerprint &&
+    !!storedDevice &&
+    storedDevice !== deviceFingerprint
+
+  if (ipMismatch || deviceMismatch) {
+    await writeSecurityLogSafe(admin, {
+      user_id: userId,
+      action: 'session_binding_mismatch',
+      risk_level: 'high',
+      ip_address: ipAddress,
+      device_fingerprint: deviceFingerprint,
+      metadata: {
+        endpoint: endpointKey,
+        method,
+        mismatch: {
+          ip: ipMismatch,
+          device: deviceMismatch,
+        },
+      },
+    })
+    return fail('Session binding mismatch', 401, 'SESSION_BINDING_MISMATCH')
+  }
+
+  await admin
+    .from('user_sessions')
+    .update({
+      last_activity: nowIso(),
+      ip_address: ipAddress !== 'unknown' ? ipAddress : session.ip_address || null,
+      device_type: deviceFingerprint || session.device_type || null,
+      updated_at: nowIso(),
+    })
+    .eq('id', session.id)
+
+  return null
 }
 
 function adminClient() {
@@ -9005,6 +9161,45 @@ async function handleSessionManagement(method: string, pathParts: string[], body
     return json({ success: true, data })
   }
 
+  // POST /session/bind
+  if (method === 'POST' && action === 'bind') {
+    const sessionToken = String(body?.session_token || body?.session_id || '').trim()
+    if (!sessionToken) return err('session_token is required', 422, 'VALIDATION_ERROR')
+    const ipAddress = String(body?.ip_address || '').trim() || null
+    const userAgent = String(body?.user_agent || '').trim() || null
+    const deviceFingerprint = String(body?.device_fingerprint || body?.deviceFingerprint || '').trim() || null
+    const now = nowIso()
+    const { data, error } = await sb
+      .from('user_sessions')
+      .upsert({
+        user_id: userId,
+        session_token: sessionToken,
+        ip_address: ipAddress,
+        user_agent: userAgent,
+        device_type: deviceFingerprint,
+        is_active: true,
+        last_activity: now,
+        revoked_at: null,
+        revoked_by: null,
+        updated_at: now,
+      }, { onConflict: 'session_token' })
+      .select('id,user_id,ip_address,user_agent,device_type,is_active,last_activity,created_at,updated_at')
+      .maybeSingle()
+    if (error) {
+      if (isTableMissingError(error)) return err('Session store unavailable', 503, 'SESSION_STORE_UNAVAILABLE')
+      return err(error.message)
+    }
+    await writeSecurityLogSafe(adminClient(), {
+      user_id: userId,
+      action: 'session_bound',
+      risk_level: 'low',
+      ip_address: ipAddress,
+      device_fingerprint: deviceFingerprint,
+      metadata: { session_id: data?.id || null },
+    })
+    return json({ success: true, data })
+  }
+
   return err('Not found', 404)
 }
 
@@ -9320,6 +9515,11 @@ Deno.serve(async (req) => {
   try {
     const url = new URL(req.url)
     const fullPath = url.pathname.replace(/^\/api-gateway\/?/, '').replace(/\/$/, '')
+    const versionMatch = fullPath.match(/^api\/(v\d+)(?:\/|$)/)
+    const requestedVersion = versionMatch?.[1] || 'v1'
+    if (!SUPPORTED_API_VERSIONS.has(requestedVersion)) {
+      return fail('Unsupported API version', 400, 'UNSUPPORTED_API_VERSION', { supported: Array.from(SUPPORTED_API_VERSIONS) })
+    }
     const normalizedPath = fullPath.replace(/^api\/v\d+\/?/, '')
     const parts = normalizedPath.split('/').filter(Boolean)
     const module = parts[0]
@@ -9407,6 +9607,8 @@ Deno.serve(async (req) => {
       if (!allowed) return err('unauthorized', 403, 'UNAUTHORIZED')
     }
     const endpointKey = `${module}/${subParts[0] || ''}`
+    const sessionBindingError = await enforceSessionBinding(admin, userId, req, body, endpointKey, req.method)
+    if (sessionBindingError) return sessionBindingError
     const rateLimitRes = await enforceRateLimit(adminClient(), userId, endpointKey, req)
     if (rateLimitRes) return rateLimitRes
 
@@ -9556,7 +9758,12 @@ Deno.serve(async (req) => {
         routeResponse = await handleSeoLeads(req.method, [module, ...subParts], body, userId, sb, req)
         break
       default:
-        routeResponse = err(`Unknown module: ${module}`, 404)
+        routeResponse = fail('Route not found', 404, 'ROUTE_NOT_FOUND', {
+          module: module || null,
+          endpoint: endpointKey,
+          version: requestedVersion,
+          is_graceful_not_found: true,
+        })
         break
     }
 

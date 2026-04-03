@@ -49,7 +49,7 @@ describe('ULTRA NEXT - REAL-TIME VALIDATION', () => {
   });
 
   test('event names presence check for login/payment/error event conventions', () => {
-    const requiredEvents = ['login_event', 'payment_event', 'error_event'];
+    const requiredEvents = ['login_event', 'payment_event', 'error_event', 'reconciliation_event', 'security_event'];
     for (const event of requiredEvents) {
       expect(event.endsWith('_event')).toBeTruthy();
     }

@@ -16,6 +16,7 @@ const apiCases: ApiCase[] = [
   { key: 'subscription', paths: ['/api/subscription', '/subscriptions'], expectedStatuses: [200, 401, 403] },
   { key: 'admin', paths: ['/api/admin', '/admin/metrics'], expectedStatuses: [200, 401, 403] },
   { key: 'reseller', paths: ['/api/reseller', '/resellers'], expectedStatuses: [200, 401, 403] },
+  { key: 'session', paths: ['/api/v1/session', '/api/v1/sessions', '/session'], expectedStatuses: [200, 401, 403] },
 ];
 
 function makeHeaders() {
