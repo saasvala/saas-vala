@@ -90,6 +90,13 @@ export default function Marketplace() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [products, searchParams]);
 
+  useEffect(() => {
+    const cat = (searchParams.get('cat') || '').trim().toLowerCase();
+    if (!cat) return;
+    const allowedCategories = new Set(['all', 'ai', 'seo', 'apk', 'finance', 'education']);
+    setCategoryFilter(allowedCategories.has(cat) ? cat : 'all');
+  }, [searchParams]);
+
   const handleBuyNow = async (product: Product) => {
     if (!user) { toast.error('Please sign in to purchase'); return; }
     const fraud = await checkUserStatus(user.id, user.email || '');
