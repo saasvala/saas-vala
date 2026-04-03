@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -135,22 +135,12 @@ export default function AuditLogs() {
   const [dateFilter, setDateFilter] = useState<DateFilter>('all');
   const [selectedLogId, setSelectedLogId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const loadingRef = useRef(true);
-  const refreshingRef = useRef(false);
-
-  useEffect(() => {
-    loadingRef.current = loading;
-  }, [loading]);
-
-  useEffect(() => {
-    refreshingRef.current = isRefreshing;
-  }, [isRefreshing]);
 
   const fetchLogs = useCallback(async (showLoader = true) => {
     if (showLoader) {
       setLoading(true);
     } else {
-      if (refreshingRef.current || loadingRef.current) {
+      if (isRefreshing || loading) {
         return;
       }
       setIsRefreshing(true);
@@ -169,7 +159,7 @@ export default function AuditLogs() {
         setIsRefreshing(false);
       }
     }
-  }, []);
+  }, [isRefreshing, loading]);
 
   useEffect(() => {
     fetchLogs();
@@ -398,17 +388,17 @@ export default function AuditLogs() {
             </div>
           </aside>
 
-          <section className="glass-card rounded-xl overflow-hidden">
+          <section role="table" aria-label="Audit logs list" className="glass-card rounded-xl overflow-hidden">
             <div
-              role="row"
+              role="rowgroup"
               className="grid grid-cols-[150px_120px_120px_1fr_110px_2fr] border-b border-border bg-muted/20 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
             >
-              <span role="columnheader">Time</span>
-              <span role="columnheader">Role</span>
-              <span role="columnheader">Action</span>
-              <span role="columnheader">Module</span>
-              <span role="columnheader">Status</span>
-              <span role="columnheader">Message</span>
+              <span role="columnheader" aria-colindex={1}>Time</span>
+              <span role="columnheader" aria-colindex={2}>Role</span>
+              <span role="columnheader" aria-colindex={3}>Action</span>
+              <span role="columnheader" aria-colindex={4}>Module</span>
+              <span role="columnheader" aria-colindex={5}>Status</span>
+              <span role="columnheader" aria-colindex={6}>Message</span>
             </div>
 
             {loading ? (
@@ -425,7 +415,6 @@ export default function AuditLogs() {
               <div
                 role="rowgroup"
                 aria-label="Audit log rows"
-                tabIndex={0}
                 className="h-[70vh] overflow-y-auto"
               >
                 {filteredLogs.map((log) => (
