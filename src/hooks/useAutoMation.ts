@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { autoPilotApi } from '@/lib/api';
 
 interface ClientRequest {
   id: string;
@@ -56,6 +57,12 @@ export function useAutomation() {
   const [backlinks, setBacklinks] = useState<SeoBacklink[]>([]);
   const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [quickActionLoading, setQuickActionLoading] = useState({
+    newRequest: false,
+    generate: false,
+    billingCheck: false,
+    addBilling: false,
+  });
 
   // Fetch all data
   const fetchData = async () => {
@@ -74,6 +81,18 @@ export function useAutomation() {
     if (backlinksRes.data) setBacklinks(backlinksRes.data as SeoBacklink[]);
     
     setLoading(false);
+  };
+
+  const refreshDashboard = async () => {
+    await fetchData();
+  };
+
+  const refreshQueue = async () => {
+    await fetchData();
+  };
+
+  const refreshBilling = async () => {
+    await fetchData();
   };
 
   // Submit new client request
@@ -135,6 +154,38 @@ export function useAutomation() {
     setProcessing(false);
   };
 
+  const handleNewRequest = async (request: {
+    name: string;
+    business_type: string;
+    country: string;
+    language: string;
+    budget?: number;
+    features_required: string;
+  }) => {
+    setQuickActionLoading((prev) => ({ ...prev, newRequest: true }));
+
+    try {
+      const response = await autoPilotApi.newRequest(request);
+      if (response?.success) {
+        toast.success('Request Created');
+        await refreshDashboard();
+        return true;
+      }
+
+      const msg = typeof response?.error === 'string'
+        ? response.error
+        : response?.error?.message || 'Failed to create request';
+      toast.error(msg);
+      return false;
+    } catch (error) {
+      console.error('handleNewRequest error:', error);
+      toast.error('Server Error');
+      return false;
+    } finally {
+      setQuickActionLoading((prev) => ({ ...prev, newRequest: false }));
+    }
+  };
+
   // Generate daily software (2 per day)
   const generateDailySoftware = async () => {
     setProcessing(true);
@@ -159,6 +210,31 @@ export function useAutomation() {
     }
     
     setProcessing(false);
+  };
+
+  const handleGenerateSoftware = async () => {
+    setQuickActionLoading((prev) => ({ ...prev, generate: true }));
+
+    try {
+      const response = await autoPilotApi.generate();
+      if (response?.success) {
+        toast.success('Software Generation Started');
+        await refreshQueue();
+        return true;
+      }
+
+      const msg = typeof response?.error === 'string'
+        ? response.error
+        : response?.error?.message || 'Failed to start software generation';
+      toast.error(msg);
+      return false;
+    } catch (error) {
+      console.error('handleGenerateSoftware error:', error);
+      toast.error('Server Error');
+      return false;
+    } finally {
+      setQuickActionLoading((prev) => ({ ...prev, generate: false }));
+    }
   };
 
   // Generate SEO for a product
@@ -215,6 +291,29 @@ export function useAutomation() {
     }
   };
 
+  const handleBillingCheck = async () => {
+    setQuickActionLoading((prev) => ({ ...prev, billingCheck: true }));
+    try {
+      const response = await autoPilotApi.billingCheck();
+      if (response?.success) {
+        toast.success('Billing Checked');
+        await refreshBilling();
+        return response.data?.alerts || [];
+      }
+      const msg = typeof response?.error === 'string'
+        ? response.error
+        : response?.error?.message || 'Billing check failed';
+      toast.error(msg);
+      return [];
+    } catch (error) {
+      console.error('handleBillingCheck error:', error);
+      toast.error('Server Error');
+      return [];
+    } finally {
+      setQuickActionLoading((prev) => ({ ...prev, billingCheck: false }));
+    }
+  };
+
   // Add billing item
   const addBillingItem = async (item: {
     user_id?: string;
@@ -238,6 +337,35 @@ export function useAutomation() {
     } catch (error) {
       console.error('Add billing error:', error);
       toast.error('Failed to add billing item');
+    }
+  };
+
+  const handleAddBilling = async (item: {
+    user_id?: string;
+    service_name: string;
+    amount: number;
+    billing_cycle?: string;
+  }) => {
+    setQuickActionLoading((prev) => ({ ...prev, addBilling: true }));
+    try {
+      const response = await autoPilotApi.addBilling(item);
+      if (response?.success) {
+        toast.success('Billing Added');
+        await refreshBilling();
+        return true;
+      }
+
+      const msg = typeof response?.error === 'string'
+        ? response.error
+        : response?.error?.message || 'Failed to add billing';
+      toast.error(msg);
+      return false;
+    } catch (error) {
+      console.error('handleAddBilling error:', error);
+      toast.error('Server Error');
+      return false;
+    } finally {
+      setQuickActionLoading((prev) => ({ ...prev, addBilling: false }));
     }
   };
 
@@ -273,12 +401,20 @@ export function useAutomation() {
     backlinks,
     loading,
     processing,
+    quickActionLoading,
     fetchData,
+    refreshDashboard,
+    refreshQueue,
+    refreshBilling,
     submitClientRequest,
+    handleNewRequest,
     generateDailySoftware,
+    handleGenerateSoftware,
     generateSeo,
     checkBillingAlerts,
+    handleBillingCheck,
     addBillingItem,
+    handleAddBilling,
     getUpcomingBills,
     getPendingRequests,
     getTodaysQueue

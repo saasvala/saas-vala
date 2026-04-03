@@ -3166,6 +3166,145 @@ async function handleAuto(method: string, pathParts: string[], body: any, userId
   return err('Not found', 404)
 }
 
+async function handleAutoPilot(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const admin = adminClient()
+  const action = pathParts[0]
+
+  if (method !== 'POST') return fail('Not found', 404, 'NOT_FOUND')
+
+  if (action === 'new-request') {
+    const missing = validateRequired(body, ['name', 'business_type', 'country', 'language', 'features_required'])
+    if (missing) return fail(missing, 422, 'VALIDATION_ERROR')
+
+    const { data, error } = await sb.functions.invoke('ai-auto-pilot', {
+      body: {
+        action: 'handle_client_request',
+        data: {
+          name: sanitizeTextInput(body.name),
+          businessType: sanitizeTextInput(body.business_type),
+          country: sanitizeTextInput(body.country),
+          language: sanitizeTextInput(body.language),
+          budget: Number.isFinite(Number(body.budget)) ? Number(body.budget) : null,
+          featuresRequired: sanitizeTextInput(body.features_required),
+        },
+      },
+    })
+    if (error) return fail(error.message, 500, 'AUTO_PILOT_ERROR')
+
+    await logActivity(admin, 'auto_pilot', 'system', 'new_request', userId)
+    return ok(data || {})
+  }
+
+  if (action === 'generate') {
+    const { data, error } = await sb.functions.invoke('ai-auto-pilot', {
+      body: {
+        action: 'generate_daily_software',
+        data: body || {},
+      },
+    })
+    if (error) return fail(error.message, 500, 'AUTO_PILOT_ERROR')
+
+    await logActivity(admin, 'auto_pilot', 'system', 'generate_daily_software', userId)
+    return ok(data || {})
+  }
+
+  if (action === 'billing-check') {
+    const { data, error } = await sb.functions.invoke('ai-auto-pilot', {
+      body: {
+        action: 'check_billing_alerts',
+        data: body || {},
+      },
+    })
+    if (error) return fail(error.message, 500, 'AUTO_PILOT_ERROR')
+
+    await logActivity(admin, 'auto_pilot', 'system', 'billing_check', userId)
+    return ok(data || {})
+  }
+
+  if (action === 'add-billing') {
+    const missing = validateRequired(body, ['user_id', 'service_name', 'amount'])
+    if (missing) return fail(missing, 422, 'VALIDATION_ERROR')
+
+    const amount = Number(body.amount || 0)
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return fail('amount must be greater than 0', 422, 'VALIDATION_ERROR')
+    }
+
+    const { data: wallet, error: walletErr } = await admin
+      .from('wallets')
+      .select('id, user_id, balance')
+      .eq('user_id', String(body.user_id))
+      .maybeSingle()
+    if (walletErr) return fail(walletErr.message, 500, 'DB_ERROR')
+    if (!wallet) return fail('Wallet not found for user', 404, 'NOT_FOUND')
+
+    const currentBalance = Number(wallet.balance || 0)
+    if (currentBalance < amount) return fail('Insufficient wallet balance', 422, 'INSUFFICIENT_BALANCE')
+
+    const { data: createdItem, error: billingErr } = await admin
+      .from('billing_items')
+      .insert({
+        user_id: String(body.user_id),
+        service_name: sanitizeTextInput(body.service_name),
+        amount,
+        billing_cycle: sanitizeTextInput(body.billing_cycle || 'monthly'),
+        status: 'active',
+      })
+      .select('*')
+      .single()
+    if (billingErr) return fail(billingErr.message, 500, 'DB_ERROR')
+
+    const newBalance = currentBalance - amount
+    const { error: walletUpdateErr } = await admin
+      .from('wallets')
+      .update({ balance: newBalance, updated_at: nowIso() })
+      .eq('id', wallet.id)
+    if (walletUpdateErr) return fail(walletUpdateErr.message, 500, 'DB_ERROR')
+
+    const billingReferenceId = String(createdItem?.id || '')
+    await admin.from('transactions').insert({
+      wallet_id: wallet.id,
+      type: 'debit',
+      amount,
+      balance_after: newBalance,
+      status: 'completed',
+      description: `Billing charge: ${String(body.service_name)}`,
+      created_by: userId,
+      source: 'billing_item',
+      reference_id: billingReferenceId || null,
+      reference_type: 'billing_item',
+      meta: { service_name: String(body.service_name) },
+    })
+    await admin.from('wallet_ledger').insert({
+      wallet_id: wallet.id,
+      user_id: wallet.user_id,
+      entry_type: 'debit',
+      amount,
+      balance_before: currentBalance,
+      balance_after: newBalance,
+      reference_type: 'billing_item',
+      reference_id: billingReferenceId || null,
+      metadata: { service_name: String(body.service_name) },
+    })
+
+    await logActivity(admin, 'auto_pilot', billingReferenceId || 'billing_item', 'add_billing', userId, {
+      target_user_id: String(body.user_id),
+      amount,
+      wallet_balance_after: newBalance,
+    })
+    return ok({
+      billing_item: createdItem || {},
+      wallet: {
+        id: wallet.id,
+        balance_before: currentBalance,
+        balance_after: newBalance,
+      },
+    })
+  }
+
+  return fail('Not found', 404, 'NOT_FOUND')
+}
+
 // ===================== 16. APK PIPELINE =====================
 async function handleApk(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const admin = adminClient()
@@ -4196,6 +4335,7 @@ Deno.serve(async (req) => {
       case 'api-usage':
         return await handleApiKeys(req.method, ['usage'], body, userId, sb)
       case 'auto': return await handleAuto(req.method, subParts, body, userId, sb)
+      case 'auto-pilot': return await handleAutoPilot(req.method, subParts, body, userId, sb)
       case 'apk': return await handleApk(req.method, subParts, body, userId, sb)
       case 'wallet': return await handleWallet(req.method, subParts, body, userId, sb)
       case 'subscriptions': return await handleSubscriptions(req.method, subParts, body, userId, sb)
