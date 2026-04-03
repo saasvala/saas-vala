@@ -82,4 +82,20 @@ describe('ZERO DEAD FLOW acceptance gates', () => {
     expect(source.includes("status: retryCount < MAX_PAYMENT_RETRY_ATTEMPTS ? 'queued' : 'dead_letter'")).toBeTruthy();
     expect(source.includes("job_type: 'webhook_retry'")).toBeTruthy();
   });
+
+  test('zero-trust request checks enforce session binding + device fingerprint', () => {
+    const source = mustRead(gatewayPath);
+    expect(source.includes('function enforceSessionBinding')).toBeTruthy();
+    expect(source.includes('DEVICE_FINGERPRINT_REQUIRED')).toBeTruthy();
+    expect(source.includes('SESSION_BINDING_MISMATCH')).toBeTruthy();
+    expect(source.includes("action: 'session_bound'")).toBeTruthy();
+  });
+
+  test('api contract safety includes version guard + safe route fallback envelope', () => {
+    const source = mustRead(gatewayPath);
+    expect(source.includes('SUPPORTED_API_VERSIONS')).toBeTruthy();
+    expect(source.includes('UNSUPPORTED_API_VERSION')).toBeTruthy();
+    expect(source.includes('ROUTE_NOT_FOUND')).toBeTruthy();
+    expect(source.includes('safe_fallback: true')).toBeTruthy();
+  });
 });
