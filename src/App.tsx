@@ -337,6 +337,7 @@ function AppRoutes() {
         <Route path="/products/upload" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/add-product" replace /></RoleGuard></AuthGuard>} />
         <Route path="/products/:id" element={<ProductRouteGuarded />} />
         <Route path="/keys" element={<AuthGuard><Keys /></AuthGuard>} />
+        <Route path="/admin/keys" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/keys" replace /></RoleGuard></AuthGuard>} />
         <Route path="/keys/generate" element={<AuthGuard><Navigate to="/keys" replace /></AuthGuard>} />
         <Route path="/servers" element={<AuthGuard><Servers /></AuthGuard>} />
 

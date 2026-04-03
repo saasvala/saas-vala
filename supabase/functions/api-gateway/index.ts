@@ -195,6 +195,35 @@ function generateLicenseKey() {
   return key
 }
 
+function maskLicenseKey(value: string) {
+  const raw = String(value || '')
+  if (!raw) return ''
+  return raw.replace(/[^\s]/g, '•')
+}
+
+async function generateHashedLicenseKey(userId: string) {
+  const seed = `${userId}|${Date.now()}|${crypto.randomUUID()}`
+  const digest = await sha256Hex(seed)
+  const source = digest.toUpperCase().replace(/[^A-Z0-9]/g, '')
+  const segments = [
+    source.slice(0, 4),
+    source.slice(4, 8),
+    source.slice(8, 12),
+    source.slice(12, 16),
+  ]
+  return segments.join('-')
+}
+
+async function expireKeysIfNeeded(sb: any) {
+  const now = nowIso()
+  await sb
+    .from('license_keys')
+    .update({ status: 'expired', updated_at: now })
+    .neq('status', 'expired')
+    .not('expires_at', 'is', null)
+    .lt('expires_at', now)
+}
+
 function toMoney(value: number) {
   return Number((value || 0).toFixed(2))
 }
@@ -2762,26 +2791,86 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
   const admin = adminClient()
   const action = pathParts[0]
   const subAction = pathParts[1]
+  const roles = await getUserRoles(userId)
+  const isAdmin = roles.includes('admin') || roles.includes('super_admin')
+  const { data: resellerState } = await admin
+    .from('resellers')
+    .select('id, status, is_active')
+    .eq('user_id', userId)
+    .maybeSingle()
+  const isReseller = !!resellerState?.id && roles.includes('reseller')
 
-  // GET /keys
-  if (method === 'GET' && !action) {
-    const { data, error } = await sb.from('license_keys').select('*').order('created_at', { ascending: false })
+  if (isReseller && (resellerState?.status !== 'active' || resellerState?.is_active === false)) {
+    return err('Reseller account suspended', 403, 'RESELLER_SUSPENDED')
+  }
+
+  await expireKeysIfNeeded(admin)
+
+  const applyKeyScope = (query: any) => {
+    if (isAdmin) return query
+    if (isReseller && resellerState?.id) return query.eq('reseller_id', resellerState.id)
+    return query.eq('created_by', userId)
+  }
+
+  // GET /keys and GET /keys/search
+  if (method === 'GET' && (!action || action === 'search')) {
+    const search = sanitizeSearchTerm(sanitizeTextInput(body?.search || body?.q || '', 200))
+    const status = sanitizeSearchTerm(sanitizeTextInput(body?.status || '', 40))
+    const keyType = sanitizeSearchTerm(sanitizeTextInput(body?.type || body?.key_type || '', 40))
+    const owner = sanitizeSearchTerm(sanitizeTextInput(body?.user || body?.owner || body?.owner_email || '', 120))
+    const resellerId = sanitizeSearchTerm(sanitizeTextInput(body?.reseller || body?.reseller_id || '', 80))
+
+    let query = applyKeyScope(
+      admin.from('license_keys').select('*').order('created_at', { ascending: false }),
+    )
+
+    if (status) query = query.eq('status', status)
+    if (keyType) query = query.eq('key_type', keyType)
+    if (owner) query = query.or(`owner_email.ilike.%${owner}%,owner_name.ilike.%${owner}%`)
+    if (isAdmin && resellerId) query = query.eq('reseller_id', resellerId)
+    if (search) {
+      query = query.or(
+        `owner_name.ilike.%${search}%,owner_email.ilike.%${search}%,notes.ilike.%${search}%`,
+      )
+    }
+
+    const { data, error } = await query
     if (error) return err(error.message)
-    return json({ data })
+
+    const normalized = (data || []).map((row: any) => {
+      const meta = row?.meta && typeof row.meta === 'object' ? row.meta : {}
+      const usageLimit = Math.max(0, Number(meta?.usage_limit ?? row?.max_devices ?? 0) || 0)
+      const usedCount = Math.max(0, Number(meta?.used_count ?? 0) || 0)
+      const masked = maskLicenseKey(row.license_key)
+      return {
+        ...row,
+        key_id: row.id,
+        key_value: masked,
+        type: row.key_type,
+        user_id: row.created_by || null,
+        usage_limit: usageLimit,
+        used_count: usedCount,
+        expiry_date: row.expires_at || null,
+        license_key: masked,
+      }
+    })
+
+    return json({ data: normalized })
   }
 
   // POST /keys/generate
   if (method === 'POST' && action === 'generate') {
+    const quantity = Math.max(1, Number(body.quantity || 1))
+    const usageLimit = Math.max(0, Number(body.usage_limit ?? body.max_devices ?? 0) || 0)
+    const useAtomicFlow = isReseller
+      || quantity > 1
+      || !!body.client_name
+      || !!body.idempotency_key
+      || !!body.cost_per_key
+      || !!body.min_balance
 
-    const quantity = Number(body.quantity || 1)
-    const useAtomicFlow = quantity > 1 || !!body.client_name || !!body.idempotency_key || !!body.cost_per_key || !!body.min_balance
-    const { data: resellerState } = await admin
-      .from('resellers')
-      .select('id, status, is_active')
-      .eq('user_id', userId)
-      .maybeSingle()
-    if (resellerState && (resellerState.status !== 'active' || resellerState.is_active === false)) {
-      return err('Reseller account suspended', 403, 'RESELLER_SUSPENDED')
+    if (isReseller && (body.use_credit || body.credit_used || body.credit_limit)) {
+      return err('Credit system disabled. Wallet only.', 422, 'CREDIT_DISABLED')
     }
 
     if (useAtomicFlow) {
@@ -2801,9 +2890,13 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
       const { data: rpcData, error: rpcError } = await sb.rpc('generate_reseller_keys_atomic', rpcPayload)
       if (rpcError) return err(rpcError.message)
       if (!rpcData?.success) {
+        const isLowBalance = rpcData?.code === 'INSUFFICIENT_BALANCE' || rpcData?.code === 'MIN_BALANCE_REQUIRED'
+        const lowBalanceMessage = rpcData?.code === 'MIN_BALANCE_REQUIRED'
+          ? 'Low Balance: minimum wallet balance requirement not met'
+          : 'Low Balance: insufficient available wallet balance'
         return json({
-          error: rpcData?.message || 'Atomic key generation failed',
-          code: rpcData?.code || 'ATOMIC_GENERATION_FAILED',
+          error: isLowBalance ? lowBalanceMessage : (rpcData?.message || 'Atomic key generation failed'),
+          code: isLowBalance ? 'LOW_BALANCE' : (rpcData?.code || 'ATOMIC_GENERATION_FAILED'),
           deficit: rpcData?.deficit ?? null,
           minimum_balance: rpcData?.minimum_balance ?? null,
           balance: rpcData?.balance ?? null,
@@ -2811,6 +2904,37 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
           required_total: rpcData?.required_total ?? null,
         }, 422)
       }
+
+      if (usageLimit > 0 && rpcData?.idempotency_key) {
+        const { data: createdRows } = await admin
+          .from('license_keys')
+          .select('id, meta')
+          .eq('created_by', userId)
+          .eq('idempotency_key', rpcData.idempotency_key)
+        await Promise.all((createdRows || []).map((row: any) => {
+          const existingMeta = row?.meta && typeof row.meta === 'object' ? row.meta : {}
+          const nextMeta = {
+            ...existingMeta,
+            usage_limit: usageLimit,
+            used_count: Number(existingMeta?.used_count || 0),
+          }
+          return admin.from('license_keys').update({ meta: nextMeta }).eq('id', row.id)
+        }))
+      }
+
+      const maskedKeys = Array.isArray(rpcData.keys)
+        ? rpcData.keys.map((k: any) => ({
+          ...k,
+          key_value: maskLicenseKey(String(k?.license_key || '')),
+          license_key: maskLicenseKey(String(k?.license_key || '')),
+        }))
+        : []
+
+      await logActivity(admin, 'license_key', String(rpcData.order_id || 'bulk'), 'generated_atomic', userId, {
+        idempotency_key: rpcData.idempotency_key,
+        quantity: rpcData.quantity,
+        total_cost: rpcData.total_cost,
+      })
 
       return json({
         data: {
@@ -2821,19 +2945,14 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
           total_cost: rpcData.total_cost,
           commission_amount: rpcData.commission_amount,
           commission_rate: rpcData.commission_rate,
-          keys: rpcData.keys || [],
+          keys: maskedKeys,
         },
         duplicate: rpcData.duplicate === true,
       }, 201)
     }
 
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-    let key = ''
-    for (let j = 0; j < 4; j++) {
-      if (j > 0) key += '-'
-      for (let i = 0; i < 4; i++) key += chars.charAt(Math.floor(Math.random() * chars.length))
-    }
-    const licenseKey = body.license_key || key
+    const licenseKey = body.license_key || await generateHashedLicenseKey(userId)
+    const keyMeta = body?.meta && typeof body.meta === 'object' ? body.meta : {}
     const { data, error } = await sb.from('license_keys').insert({
       product_id: body.product_id || '',
       license_key: licenseKey,
@@ -2845,27 +2964,86 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
       expires_at: body.expires_at,
       notes: body.notes,
       created_by: userId,
-      reseller_id: body.reseller_id || null,
+      reseller_id: isReseller ? resellerState?.id : (body.reseller_id || null),
       client_id: body.client_id || null,
       idempotency_key: body.idempotency_key || null,
+      meta: {
+        ...keyMeta,
+        usage_limit: usageLimit,
+        used_count: 0,
+      },
     }).select().single()
     if (error) return err(error.message)
-    await logActivity(admin, 'license_key', data.id, 'generated', userId, { key: licenseKey })
-    return json({ data }, 201)
+    await logActivity(admin, 'license_key', data.id, 'generated', userId, { key: maskLicenseKey(licenseKey) })
+    return json({
+      data: {
+        ...data,
+        key_id: data.id,
+        key_value: maskLicenseKey(licenseKey),
+        type: data.key_type,
+        user_id: data.created_by,
+        usage_limit: usageLimit,
+        used_count: 0,
+        expiry_date: data.expires_at || null,
+        license_key: maskLicenseKey(licenseKey),
+      },
+    }, 201)
   }
 
   // POST /keys/validate
   if (method === 'POST' && action === 'validate') {
+    const incomingKey = String(body?.license_key || '').trim()
+    if (!incomingKey) return err('License key is required', 422, 'VALIDATION_ERROR')
+
     const { data, error } = await admin.from('license_keys').select('*')
-      .eq('license_key', body.license_key).single()
+      .eq('license_key', incomingKey).maybeSingle()
     if (error || !data) return err('Invalid license key', 404)
-    const valid = data.status === 'active' && (!data.expires_at || new Date(data.expires_at) > new Date())
-    return json({ valid, key: data })
+
+    const now = new Date()
+    const isExpiredNow = !!data.expires_at && new Date(data.expires_at) <= now
+    if (isExpiredNow && data.status !== 'expired') {
+      await admin.from('license_keys').update({ status: 'expired', updated_at: nowIso() }).eq('id', data.id)
+      data.status = 'expired'
+    }
+
+    const meta = data?.meta && typeof data.meta === 'object' ? { ...data.meta } : {}
+    const usageLimit = Math.max(0, Number(meta?.usage_limit ?? data?.max_devices ?? 0) || 0)
+    const usedCount = Math.max(0, Number(meta?.used_count ?? 0) || 0)
+    if (usageLimit > 0 && usedCount >= usageLimit) {
+      return err('Usage limit reached', 429, 'USAGE_LIMIT_REACHED')
+    }
+
+    const valid = data.status === 'active' && !isExpiredNow
+    if (!valid) return json({ valid: false, key: null, reason: data.status || 'invalid' })
+
+    const nextUsedCount = usedCount + 1
+    const nextMeta = { ...meta, usage_limit: usageLimit, used_count: nextUsedCount }
+    await admin.from('license_keys').update({ meta: nextMeta, last_validated_at: nowIso() }).eq('id', data.id)
+
+    return json({
+      valid: true,
+      key: {
+        ...data,
+        key_id: data.id,
+        key_value: maskLicenseKey(data.license_key),
+        type: data.key_type,
+        user_id: data.created_by || null,
+        usage_limit: usageLimit,
+        used_count: nextUsedCount,
+        expiry_date: data.expires_at || null,
+        license_key: maskLicenseKey(data.license_key),
+      },
+      usage_limit: usageLimit,
+      used_count: nextUsedCount,
+      remaining: usageLimit > 0 ? Math.max(0, usageLimit - nextUsedCount) : null,
+    })
   }
 
   // PUT /keys/:id/activate
   if (method === 'PUT' && action && subAction === 'activate') {
-    const { error } = await sb.from('license_keys').update({ status: 'active' }).eq('id', action)
+    let query = admin.from('license_keys').update({ status: 'active', updated_at: nowIso() }).eq('id', action)
+    query = applyKeyScope(query)
+    const { error } = await query
     if (error) return err(error.message)
     await logActivity(admin, 'license_key', action, 'activated', userId)
     return json({ success: true })
@@ -2873,15 +3051,29 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
 
   // PUT /keys/:id/deactivate
   if (method === 'PUT' && action && subAction === 'deactivate') {
-    const { error } = await sb.from('license_keys').update({ status: 'suspended' }).eq('id', action)
+    let query = admin.from('license_keys').update({ status: 'suspended', updated_at: nowIso() }).eq('id', action)
+    query = applyKeyScope(query)
+    const { error } = await query
     if (error) return err(error.message)
     await logActivity(admin, 'license_key', action, 'deactivated', userId)
     return json({ success: true })
   }
 
+  // PUT /keys/:id/revoke
+  if (method === 'PUT' && action && subAction === 'revoke') {
+    let query = admin.from('license_keys').update({ status: 'revoked', updated_at: nowIso() }).eq('id', action)
+    query = applyKeyScope(query)
+    const { error } = await query
+    if (error) return err(error.message)
+    await logActivity(admin, 'license_key', action, 'revoked', userId)
+    return json({ success: true })
+  }
+
   // DELETE /keys/:id
   if (method === 'DELETE' && action) {
-    const { error } = await sb.from('license_keys').delete().eq('id', action)
+    let query = admin.from('license_keys').delete().eq('id', action)
+    query = applyKeyScope(query)
+    const { error } = await query
     if (error) return err(error.message)
     await logActivity(admin, 'license_key', action, 'deleted', userId)
     return json({ success: true })
@@ -5661,6 +5853,7 @@ async function handleScheduler(method: string, pathParts: string[], body: any, s
       { job_name: 'billing_check', run: minute % 5 === 0, schedule_hint: '*/5 * * * *' },
       { job_name: 'ai_tasks', run: minute % 10 === 0, schedule_hint: '*/10 * * * *' },
       { job_name: 'seo_scan', run: minute === 0, schedule_hint: '0 * * * *' },
+      { job_name: 'key_expiry', run: minute === 0, schedule_hint: '0 * * * *' },
     ].filter((j) => j.run)
 
     const inserted: any[] = []
@@ -5695,6 +5888,9 @@ async function handleScheduler(method: string, pathParts: string[], body: any, s
         status: 'queued',
         payload: { trigger: 'scheduler', kind: 'seo_scan' },
       })
+    }
+    if (dueJobs.some((j) => j.job_name === 'key_expiry')) {
+      await expireKeysIfNeeded(sb)
     }
 
     for (const row of inserted.filter(Boolean)) {
@@ -5775,6 +5971,14 @@ Deno.serve(async (req) => {
     }
 
     let routeResponse: Response
+    if (module === 'reseller' && subParts[0] === 'key' && subParts[1] === 'generate' && req.method === 'POST') {
+      routeResponse = await handleKeys(req.method, ['generate'], { ...body, force_reseller_flow: true }, userId, sb)
+      if (isMutation && idempotencyKey && routeResponse.status >= 200 && routeResponse.status < 300) {
+        await writeIdempotentResponse(admin, userId, endpointKey, idempotencyKey, routeResponse)
+      }
+      return routeResponse
+    }
+
     switch (module) {
 
       case 'products':
@@ -5807,6 +6011,9 @@ Deno.serve(async (req) => {
           routeResponse = await handleManagedApiKeys(req.method, subParts, body, userId, sb)
           break
         }
+        routeResponse = await handleKeys(req.method, subParts, body, userId, sb)
+        break
+      case 'key':
         routeResponse = await handleKeys(req.method, subParts, body, userId, sb)
         break
       case 'models': routeResponse = await handleModels(req.method, subParts, body, userId, sb); break

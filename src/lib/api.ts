@@ -209,9 +209,14 @@ export const categoryApi = {
 // ===================== KEYS =====================
 export const keysApi = {
   list: () => apiCall('GET', 'keys'),
+  search: (params?: { search?: string; user?: string; reseller?: string; status?: string; type?: string }) =>
+    apiCall('GET', 'key/search', params),
   generate: (data: any) => apiCall('POST', 'keys/generate', data),
+  generateCompat: (data: any) => apiCall('POST', 'key/generate', data),
+  generateReseller: (data: any) => apiCall('POST', 'reseller/key/generate', data),
   activate: (id: string) => apiCall('PUT', `keys/${id}/activate`),
   deactivate: (id: string) => apiCall('PUT', `keys/${id}/deactivate`),
+  revoke: (id: string) => apiCall('PUT', `keys/${id}/revoke`),
   validate: (licenseKey: string) => apiCall('POST', 'keys/validate', { license_key: licenseKey }),
   delete: (id: string) => apiCall('DELETE', `keys/${id}`),
 };
