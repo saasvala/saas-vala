@@ -77,7 +77,7 @@ export function useApkPurchase() {
         throw new Error('Failed to initialize payment');
       }
       try {
-        sessionStorage.setItem('sv_pending_payment', JSON.stringify({ paymentId, productId: product.id, amount: product.price, ts: Date.now() }));
+        sessionStorage.setItem('sv_pending_payment', JSON.stringify({ paymentId, ts: Date.now() }));
       } catch {}
 
       // Step 3: Verify payment and activate services

@@ -385,13 +385,13 @@ export default function Marketplace() {
         <section className="py-2">
           <SectionHeader icon="🔥" title="Trending" subtitle="Most demanded products right now" badge="TRENDING" badgeVariant="trending" totalCount={trendingProducts.length} />
           <SectionSlider>
-            {trendingCards.map((product, i) => (
+            {trendingCards.map((product, index) => (
               <MarketplaceProductCard
                 key={`trending-${product.id}`}
                 product={product}
-                index={i}
+                index={index}
                 onBuyNow={handleBuyNow}
-                rank={i + 1}
+                rank={index + 1}
               />
             ))}
           </SectionSlider>

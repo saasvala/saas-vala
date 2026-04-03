@@ -27,6 +27,14 @@ export function getTypoSuggestions(query: string, options: string[], limit = 3) 
     .map((row) => row.item);
 }
 
+const USER_TIMEZONE = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return undefined;
+  }
+})();
+
 export function formatUserTime(iso?: string | null, locale?: string) {
   if (!iso) return '';
   const date = new Date(iso);
@@ -38,7 +46,7 @@ export function formatUserTime(iso?: string | null, locale?: string) {
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      timeZone: USER_TIMEZONE,
     }).format(date);
   } catch {
     return date.toLocaleString();

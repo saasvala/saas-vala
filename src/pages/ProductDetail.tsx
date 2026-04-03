@@ -5,7 +5,6 @@ import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, ShoppingCart, CreditCard, ExternalLink, Download } from 'lucide-react';
 import { MarketplaceHeader } from '@/components/marketplace/MarketplaceHeader';
 import { useMarketplaceProducts } from '@/hooks/useMarketplaceProducts';
-import type { MarketplaceProduct } from '@/hooks/useMarketplaceProducts';
 import { useMarketplaceActions } from '@/hooks/useMarketplaceActions';
 import { useCart } from '@/hooks/useCart';
 import { useAuth } from '@/hooks/useAuth';
@@ -19,7 +18,9 @@ function hasScreenshots(value: unknown): value is { screenshots?: unknown[] } {
   return typeof value === 'object' && value !== null && 'screenshots' in value;
 }
 
-type ProductDetailMeta = MarketplaceProduct & { deleted_at?: string | null; expires_at?: string | null };
+function hasProductMeta(value: unknown): value is { deleted_at?: string | null; expires_at?: string | null; status?: string } {
+  return typeof value === 'object' && value !== null;
+}
 
 export default function ProductDetail() {
   const navigate = useNavigate();
@@ -30,7 +31,7 @@ export default function ProductDetail() {
   const { trackPromoClick, addToCart: addToCartServer } = useMarketplaceActions();
 
   const product = useMemo(() => products.find((item) => item.id === id), [products, id]);
-  const productMeta = product as ProductDetailMeta | undefined;
+  const productMeta = hasProductMeta(product) ? product : undefined;
   const isDeleted = Boolean(productMeta?.deleted_at) || String(productMeta?.status || '').toLowerCase() === 'deleted';
   const isExpired = Boolean(productMeta?.expires_at) && new Date(String(productMeta.expires_at)) <= new Date();
   const needsSubscriptionRedirect = !isDeleted && (product?.isAvailable === false || isExpired);
@@ -51,7 +52,7 @@ export default function ProductDetail() {
       navigate('/marketplace', { replace: true });
       return;
     }
-    if (product && needsSubscriptionRedirect && product.status !== 'draft') {
+    if (product && needsSubscriptionRedirect) {
       navigate('/subscription', { replace: true });
     }
   }, [loading, id, product, needsSubscriptionRedirect, navigate]);

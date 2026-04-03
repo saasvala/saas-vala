@@ -22,7 +22,7 @@ export function OfflineRetryBanner() {
   const onRetry = async () => {
     setRetrying(true);
     try {
-      const res = await fetch(window.location.href, { method: 'HEAD', cache: 'no-store' });
+      const res = await fetch('/auth', { method: 'HEAD', cache: 'no-store' });
       if (res.ok) {
         setOffline(false);
         window.location.reload();

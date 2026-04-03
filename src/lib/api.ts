@@ -97,8 +97,8 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
     if (res.status === 401 || code === 'TOKEN_EXPIRED') {
       savePreLogoutState(window.location.pathname, window.location.search, window.location.hash);
       savePostLoginRedirect(`${window.location.pathname}${window.location.search}${window.location.hash}`);
-      if (window.location.pathname !== '/auth' && window.location.pathname !== '/login') {
-        window.location.assign('/login');
+      if (window.location.pathname !== '/auth') {
+        window.location.assign('/auth');
       }
     }
     consecutiveFailures += 1;
