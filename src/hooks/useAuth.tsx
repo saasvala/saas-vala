@@ -249,7 +249,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = async () => {
     savePreLogoutState(window.location.pathname, window.location.search, window.location.hash);
-    savePostLoginRedirect('/login');
+    savePostLoginRedirect('/auth');
     await supabase.auth.signOut();
     setUser(null);
     setSession(null);

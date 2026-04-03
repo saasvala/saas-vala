@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, ShoppingCart, CreditCard, ExternalLink, Download, PlayCircle } from 'lucide-react';
@@ -85,6 +85,10 @@ export default function ProductDetail() {
         </main>
       </div>
     );
+  }
+
+  if (needsSubscriptionRedirect) {
+    return <Navigate to="/subscription" replace />;
   }
 
 
