@@ -69,7 +69,7 @@ export function MarketplaceHeader() {
         <div
           className="flex items-center gap-3 cursor-pointer shrink-0"
           onClick={() => {
-            navigate('/');
+            navigate('/marketplace');
             window.scrollTo({ top: 0, behavior: 'smooth' });
           }}
         >
@@ -108,6 +108,18 @@ export function MarketplaceHeader() {
 
         {/* Right Actions */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <Button variant="ghost" size="sm" className="text-xs hidden lg:flex" onClick={() => navigate('/marketplace')}>
+            Home
+          </Button>
+          <Button variant="ghost" size="sm" className="text-xs hidden lg:flex" onClick={() => navigate('/marketplace?cat=all')}>
+            Categories
+          </Button>
+          {user && (
+            <Button variant="ghost" size="sm" className="text-xs hidden lg:flex" onClick={() => navigate('/user/orders')}>
+              My Purchases
+            </Button>
+          )}
+
           {/* Mobile search toggle */}
           <Button
             variant="ghost"
@@ -222,7 +234,7 @@ export function MarketplaceHeader() {
 
           {/* Auth */}
           {user ? (
-            <Button variant="ghost" size="icon" onClick={() => navigate('/dashboard')} className="h-9 w-9">
+            <Button variant="ghost" size="icon" onClick={() => navigate('/settings')} className="h-9 w-9">
               <User className="h-4 w-4" />
             </Button>
           ) : (
