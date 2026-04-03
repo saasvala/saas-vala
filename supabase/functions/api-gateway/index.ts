@@ -2049,6 +2049,318 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
   const admin = adminClient()
   const action = pathParts[0]
 
+  // POST /marketplace/favorite/toggle
+  if (method === 'POST' && action === 'favorite' && pathParts[1] === 'toggle') {
+    const missing = validateRequired(body, ['product_id'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+    const productId = String(body.product_id || '').trim()
+    if (!productId) return err('product_id is required', 422, 'VALIDATION_ERROR')
+
+    const { data: product } = await sb.from('products').select('id, name').eq('id', productId).maybeSingle()
+    const productName = String(product?.name || body.product_name || productId).slice(0, 180)
+
+    const { data: existing, error: findError } = await sb
+      .from('product_wishlists')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('product_id', productId)
+      .maybeSingle()
+    if (findError) return err(findError.message)
+
+    if (existing?.id) {
+      const { error: delError } = await sb.from('product_wishlists').delete().eq('id', existing.id)
+      if (delError) return err(delError.message)
+      await logActivity(admin, 'product_wishlist', existing.id, 'removed', userId, { product_id: productId })
+      return json({ success: true, active: false, action: 'removed' })
+    }
+
+    const { data: inserted, error: insError } = await sb
+      .from('product_wishlists')
+      .insert({ user_id: userId, product_id: productId, product_name: productName })
+      .select('id')
+      .single()
+    if (insError) return err(insError.message)
+    await logActivity(admin, 'product_wishlist', inserted.id, 'added', userId, { product_id: productId })
+    return json({ success: true, active: true, action: 'added' })
+  }
+
+  // GET /marketplace/favorite/list
+  if (method === 'GET' && action === 'favorite' && pathParts[1] === 'list') {
+    const { data, error } = await sb
+      .from('product_wishlists')
+      .select('id, product_id, product_name, created_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(500)
+    if (error) return err(error.message)
+    return json({ data: data || [] })
+  }
+
+  // POST /marketplace/cart/add
+  if (method === 'POST' && action === 'cart' && pathParts[1] === 'add') {
+    const missing = validateRequired(body, ['product_id'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+    const productId = String(body.product_id || '').trim()
+    if (!productId) return err('product_id is required', 422, 'VALIDATION_ERROR')
+    const qty = Math.max(1, Number(body.qty || 1))
+
+    const { data: existing, error: findError } = await sb
+      .from('cart_items')
+      .select('id, qty')
+      .eq('user_id', userId)
+      .eq('product_id', productId)
+      .maybeSingle()
+    if (findError) return err(findError.message)
+
+    let itemId = existing?.id || ''
+    let nextQty = qty
+
+    if (existing?.id) {
+      nextQty = Math.max(1, Number(existing.qty || 0) + qty)
+      const { error: updError } = await sb
+        .from('cart_items')
+        .update({ qty: nextQty, updated_at: nowIso() })
+        .eq('id', existing.id)
+      if (updError) return err(updError.message)
+      itemId = existing.id
+    } else {
+      const { data: inserted, error: insError } = await sb
+        .from('cart_items')
+        .insert({ user_id: userId, product_id: productId, qty: nextQty })
+        .select('id')
+        .single()
+      if (insError) return err(insError.message)
+      itemId = inserted.id
+    }
+
+    const { count } = await sb
+      .from('cart_items')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+
+    await logActivity(admin, 'cart_item', itemId, 'upserted', userId, { product_id: productId, qty: nextQty })
+    return json({ success: true, item_id: itemId, qty: nextQty, cart_count: Number(count || 0) })
+  }
+
+  // GET /marketplace/cart/list
+  if (method === 'GET' && action === 'cart' && pathParts[1] === 'list') {
+    const { data, error } = await sb
+      .from('cart_items')
+      .select('id, product_id, qty, created_at, updated_at')
+      .eq('user_id', userId)
+      .order('updated_at', { ascending: false })
+      .limit(500)
+    if (error) return err(error.message)
+    return json({ data: data || [] })
+  }
+
+  // POST /marketplace/rating/add
+  if (method === 'POST' && action === 'rating' && pathParts[1] === 'add') {
+    const missing = validateRequired(body, ['product_id', 'rating'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+    const productId = String(body.product_id || '').trim()
+    const rating = Number(body.rating)
+    if (!productId) return err('product_id is required', 422, 'VALIDATION_ERROR')
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      return err('rating must be integer between 1 and 5', 422, 'VALIDATION_ERROR')
+    }
+
+    const review = sanitizeTextInput(body.review || '', 1200)
+    const productTitle = String(body.product_title || '').slice(0, 180) || null
+
+    const { data: upserted, error: upsertError } = await sb
+      .from('product_ratings')
+      .upsert(
+        { user_id: userId, product_id: productId, rating, review: review || null, product_title: productTitle, updated_at: nowIso() },
+        { onConflict: 'user_id,product_id' }
+      )
+      .select('id')
+      .single()
+    if (upsertError) return err(upsertError.message)
+
+    const { data: aggregateRows, error: aggregateError } = await sb
+      .from('product_ratings')
+      .select('rating')
+      .eq('product_id', productId)
+    if (aggregateError) return err(aggregateError.message)
+    const ratings = (aggregateRows || []).map((r: any) => Number(r.rating || 0)).filter((v: number) => Number.isFinite(v))
+    const avgRating = ratings.length ? Number((ratings.reduce((s: number, v: number) => s + v, 0) / ratings.length).toFixed(2)) : rating
+
+    await sb.from('products').update({ rating: avgRating }).eq('id', productId)
+    await logActivity(admin, 'product_rating', upserted.id, 'upserted', userId, { product_id: productId, rating, avg_rating: avgRating })
+
+    return json({ success: true, rating, avg_rating: avgRating, total_ratings: ratings.length })
+  }
+
+  // GET /marketplace/rating/list
+  if (method === 'GET' && action === 'rating' && pathParts[1] === 'list') {
+    const productId = String(body.product_id || '').trim()
+    if (!productId) return err('product_id is required', 422, 'VALIDATION_ERROR')
+    const { data, error } = await sb
+      .from('product_ratings')
+      .select('id, user_id, product_id, product_title, rating, review, created_at, updated_at')
+      .eq('product_id', productId)
+      .order('updated_at', { ascending: false })
+      .limit(200)
+    if (error) return err(error.message)
+    const ratings = (data || []).map((r: any) => Number(r.rating || 0)).filter((v: number) => Number.isFinite(v))
+    const avgRating = ratings.length ? Number((ratings.reduce((s: number, v: number) => s + v, 0) / ratings.length).toFixed(2)) : 0
+    return json({ data: data || [], avg_rating: avgRating, total_ratings: ratings.length })
+  }
+
+  // POST /marketplace/comment/add
+  if (method === 'POST' && action === 'comment' && pathParts[1] === 'add') {
+    const missing = validateRequired(body, ['product_id', 'message'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+    const productId = String(body.product_id || '').trim()
+    const message = sanitizeTextInput(body.message || '', 1000)
+    if (!productId) return err('product_id is required', 422, 'VALIDATION_ERROR')
+    if (!message) return err('message is required', 422, 'VALIDATION_ERROR')
+
+    const spamErr = await enforceRateLimit(admin, userId, `comment/${productId}`, undefined)
+    if (spamErr) return spamErr
+
+    const { data: inserted, error: insError } = await sb
+      .from('product_comments')
+      .insert({ user_id: userId, product_id: productId, message })
+      .select('id, user_id, product_id, message, created_at')
+      .single()
+    if (insError) return err(insError.message)
+    await logActivity(admin, 'product_comment', inserted.id, 'added', userId, { product_id: productId })
+    return json({ success: true, data: inserted }, 201)
+  }
+
+  // GET /marketplace/comment/list?product_id=
+  if (method === 'GET' && action === 'comment' && pathParts[1] === 'list') {
+    const productId = String(body.product_id || '').trim()
+    if (!productId) return err('product_id is required', 422, 'VALIDATION_ERROR')
+    const { data, error } = await sb
+      .from('product_comments')
+      .select('id, user_id, product_id, message, created_at')
+      .eq('product_id', productId)
+      .order('created_at', { ascending: false })
+      .limit(300)
+    if (error) return err(error.message)
+    return json({ data: data || [] })
+  }
+
+  // POST /marketplace/promo/create
+  if (method === 'POST' && action === 'promo' && pathParts[1] === 'create') {
+    const missing = validateRequired(body, ['product_id'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+    const productId = String(body.product_id || '').trim()
+    if (!productId) return err('product_id is required', 422, 'VALIDATION_ERROR')
+    const ownerId = String(body.reseller_id || body.user_id || userId)
+    if (ownerId !== userId) return err('owner mismatch', 403, 'FORBIDDEN')
+
+    const baseCode = Math.random().toString(36).slice(2, 8).toUpperCase()
+    const code = `${baseCode}${Math.random().toString(36).slice(2, 4).toUpperCase()}`
+
+    const { data: inserted, error: insError } = await sb
+      .from('promo_links')
+      .insert({ code, product_id: productId, owner_id: ownerId })
+      .select('id, code, product_id, owner_id, clicks, conversions, revenue')
+      .single()
+    if (insError) return err(insError.message)
+
+    const productUrl = `/product/${encodeURIComponent(productId)}?ref=${encodeURIComponent(code)}`
+    await logActivity(admin, 'promo_link', inserted.id, 'created', userId, { product_id: productId, code })
+    return json({ success: true, data: { ...inserted, url: productUrl } }, 201)
+  }
+
+  // GET /marketplace/promo/list
+  if (method === 'GET' && action === 'promo' && pathParts[1] === 'list') {
+    const { data, error } = await sb
+      .from('promo_links')
+      .select('id, code, product_id, owner_id, clicks, conversions, revenue, created_at, updated_at')
+      .eq('owner_id', userId)
+      .order('updated_at', { ascending: false })
+      .limit(500)
+    if (error) return err(error.message)
+    const mapped = (data || []).map((row: any) => ({
+      ...row,
+      url: `/product/${encodeURIComponent(String(row.product_id))}?ref=${encodeURIComponent(String(row.code))}`,
+    }))
+    return json({ data: mapped })
+  }
+
+  // POST /marketplace/promo/track-click
+  if (method === 'POST' && action === 'promo' && pathParts[1] === 'track-click') {
+    const missing = validateRequired(body, ['code'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+    const code = String(body.code || '').trim().toUpperCase()
+    if (!code) return err('code is required', 422, 'VALIDATION_ERROR')
+
+    const { data: row, error: findError } = await sb
+      .from('promo_links')
+      .select('id, code, product_id, owner_id, clicks')
+      .eq('code', code)
+      .maybeSingle()
+    if (findError) return err(findError.message)
+    if (!row?.id) return err('Promo code not found', 404, 'NOT_FOUND')
+
+    const nextClicks = Number(row.clicks || 0) + 1
+    const { error: updError } = await sb
+      .from('promo_links')
+      .update({ clicks: nextClicks, updated_at: nowIso() })
+      .eq('id', row.id)
+    if (updError) return err(updError.message)
+
+    return json({
+      success: true,
+      data: {
+        id: row.id,
+        code: row.code,
+        product_id: row.product_id,
+        owner_id: row.owner_id,
+        clicks: nextClicks,
+        redirect: `/product/${encodeURIComponent(String(row.product_id))}?ref=${encodeURIComponent(code)}`,
+      },
+    })
+  }
+
+  // POST /marketplace/promo/track-conversion
+  if (method === 'POST' && action === 'promo' && pathParts[1] === 'track-conversion') {
+    const missing = validateRequired(body, ['code'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+    const code = String(body.code || '').trim().toUpperCase()
+    const amount = Number(body.revenue || body.amount || 0)
+    if (!code) return err('code is required', 422, 'VALIDATION_ERROR')
+
+    const { data: row, error: findError } = await sb
+      .from('promo_links')
+      .select('id, conversions, revenue, owner_id, product_id')
+      .eq('code', code)
+      .maybeSingle()
+    if (findError) return err(findError.message)
+    if (!row?.id) return err('Promo code not found', 404, 'NOT_FOUND')
+
+    const nextConversions = Number(row.conversions || 0) + 1
+    const nextRevenue = Number(row.revenue || 0) + (Number.isFinite(amount) ? amount : 0)
+    const { error: updError } = await sb
+      .from('promo_links')
+      .update({ conversions: nextConversions, revenue: nextRevenue, updated_at: nowIso() })
+      .eq('id', row.id)
+    if (updError) return err(updError.message)
+
+    await logActivity(admin, 'promo_link', row.id, 'conversion', userId, { code, amount: Number.isFinite(amount) ? amount : 0 })
+    return json({ success: true, data: { id: row.id, conversions: nextConversions, revenue: nextRevenue } })
+  }
+
+  // GET /marketplace/promo/resolve?code=
+  if (method === 'GET' && action === 'promo' && pathParts[1] === 'resolve') {
+    const code = String(body.code || '').trim().toUpperCase()
+    if (!code) return err('code is required', 422, 'VALIDATION_ERROR')
+    const { data: row, error } = await sb
+      .from('promo_links')
+      .select('id, code, product_id, owner_id, clicks, conversions, revenue')
+      .eq('code', code)
+      .maybeSingle()
+    if (error) return err(error.message)
+    if (!row?.id) return err('Promo code not found', 404, 'NOT_FOUND')
+    return json({ data: row })
+  }
+
   // GET /marketplace/products
   if (method === 'GET' && action === 'products') {
     const redisKey = 'cache:marketplace:products'

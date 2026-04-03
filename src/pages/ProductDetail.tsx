@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -9,7 +9,7 @@ import { useCart } from '@/hooks/useCart';
 import { useAuth } from '@/hooks/useAuth';
 import { apkApi } from '@/lib/api';
 import { toast } from 'sonner';
-import { formatLocalizedPrice, getCurrencySymbol } from '@/lib/locale';
+
 
 function hasScreenshots(value: unknown): value is { screenshots?: unknown[] } {
   return typeof value === 'object' && value !== null && 'screenshots' in value;
@@ -21,8 +21,19 @@ export default function ProductDetail() {
   const { products, loading } = useMarketplaceProducts();
   const { toggleItem, isInCart } = useCart();
   const { user } = useAuth();
+  const { trackPromoClick, addToCart: addToCartServer } = useMarketplaceActions();
 
   const product = useMemo(() => products.find((item) => item.id === id), [products, id]);
+  const refCode = useMemo(() => new URLSearchParams(window.location.search).get('ref') || '', []);
+  const trackedPromoRef = useRef('');
+
+  useEffect(() => {
+    if (!refCode) return;
+    if (trackedPromoRef.current === refCode) return;
+    trackedPromoRef.current = refCode;
+    void trackPromoClick(refCode).catch(() => undefined);
+    try { localStorage.setItem('sv_last_promo_ref', refCode); } catch {}
+  }, [refCode, trackPromoClick]);
 
   if (loading) {
     return (
@@ -65,7 +76,7 @@ export default function ProductDetail() {
       navigate('/auth');
       return;
     }
-    navigate(`/marketplace?buy=${encodeURIComponent(product.id)}`);
+    navigate(`/checkout?product_id=${encodeURIComponent(product.id)}`);
   };
 
   const handleDownload = async () => {
@@ -129,14 +140,19 @@ export default function ProductDetail() {
           <div className="flex flex-wrap gap-3 pt-2">
             <Button
               variant={inCart ? 'secondary' : 'outline'}
-              onClick={() => toggleItem({
-                id: product.id,
-                title: product.title,
-                subtitle: product.subtitle || '',
-                image: product.image || '',
-                price: product.price,
-                category: product.category || 'Software',
-              })}
+              onClick={async () => {
+                toggleItem({
+                  id: product.id,
+                  title: product.title,
+                  subtitle: product.subtitle || '',
+                  image: product.image || '',
+                  price: product.price,
+                  category: product.category || 'Software',
+                });
+                if (!inCart && user) {
+                  try { await addToCartServer(product.id, 1); } catch {}
+                }
+              }}
             >
               <ShoppingCart className="h-4 w-4 mr-2" />
               {inCart ? 'Remove from Cart' : 'Add to Cart'}
