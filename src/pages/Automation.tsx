@@ -18,6 +18,7 @@ export default function Automation() {
   }, [location.pathname]);
 
   const handleTabChange = (value: string) => {
+
     if (value === 'apk-pipeline') {
       navigate('/auto-pilot/apk-pipeline');
       return;

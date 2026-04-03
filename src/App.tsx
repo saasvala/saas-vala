@@ -310,8 +310,7 @@ function AppRoutes() {
         <Route path="/category/:macro/:sub/:micro" element={<CategoryRouteGuarded />} />
         <Route path="/product/:id" element={<ProductRouteGuarded />} />
         <Route path="/product/:productId" element={<ProductRouteGuarded />} />
-        <Route path="/marketplace/product/:id" element={<ProductRouteGuarded />} />
-        <Route path="/marketplace/product/:productId" element={<ProductRouteGuarded />} />
+
 
         {/* Protected routes */}
         <Route path="/dashboard" element={<AuthGuard><Dashboard /></AuthGuard>} />
@@ -326,6 +325,7 @@ function AppRoutes() {
         <Route path="/app/:productId" element={<AppRouteGuarded />} />
         <Route path="/products" element={<AuthGuard><Products /></AuthGuard>} />
         <Route path="/products/create" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/add-product" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/products/update/:id" element={<ProductEditRouteGuarded />} />
         <Route path="/products/edit/:id" element={<ProductEditRouteGuarded />} />
         <Route path="/products/upload" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/add-product" replace /></RoleGuard></AuthGuard>} />
         <Route path="/keys" element={<AuthGuard><Keys /></AuthGuard>} />
@@ -347,6 +347,8 @@ function AppRoutes() {
         <Route path="/ai/chat" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/chat" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/ai-chat" element={<AuthGuard><AiChat /></AuthGuard>} />
+        <Route path="/chat" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
+        <Route path="/chat/history" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/saas-ai-dashboard" element={<AuthGuard><SaasAiDashboard /></AuthGuard>} />
         <Route path="/marketplace-admin" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/marketplace" replace /></RoleGuard></AuthGuard>} />
         <Route path="/ai/apis" element={<AuthGuard><Navigate to="/ai-apis" replace /></AuthGuard>} />
@@ -357,7 +359,7 @@ function AppRoutes() {
         <Route path="/seo-leads" element={<AuthGuard><SeoLeads /></AuthGuard>} />
         <Route path="/reseller-dashboard" element={<AuthGuard><RoleGuard role="reseller"><ResellerDashboard /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/dashboard" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard" replace /></RoleGuard></AuthGuard>} />
-        <Route path="/reseller/products" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard?tab=products" replace /></RoleGuard></AuthGuard>} />
+
         <Route path="/reseller/buy" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/marketplace" replace /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/users" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard?tab=users" replace /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/earnings" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard?tab=commissions" replace /></RoleGuard></AuthGuard>} />
@@ -371,6 +373,11 @@ function AppRoutes() {
         <Route path="/settings" element={<AuthGuard><RoleGuard role="super_admin"><Settings /></RoleGuard></AuthGuard>} />
         <Route path="/audit-logs" element={<AuthGuard><RoleGuard role="super_admin"><AuditLogs /></RoleGuard></AuthGuard>} />
         <Route path="/system-health" element={<AuthGuard><RoleGuard role="super_admin"><SystemHealth /></RoleGuard></AuthGuard>} />
+        <Route path="/auto-pilot" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/auto-pilot/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/auto-pilot/system-monitor" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot/apk-pipeline" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/system-monitor" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot/system-monitor" replace /></RoleGuard></AuthGuard>} />
 
         <Route path="/admin/add-product" element={<AuthGuard><RoleGuard role="super_admin"><AddProduct /></RoleGuard></AuthGuard>} />
         <Route path="/admin/marketplace" element={<AuthGuard><RoleGuard role="super_admin"><MarketplaceAdmin /></RoleGuard></AuthGuard>} />
