@@ -47,8 +47,8 @@ const navItems: NavItem[] = [
 
   { title: 'Resellers', icon: UsersRound, href: '/reseller-manager', activePaths: ['/reseller-manager', '/resellers'], adminOnly: true, section: 'admin' },
   { title: 'Marketplace', icon: Store, href: '/admin/marketplace', adminOnly: true, section: 'admin' },
-  { title: 'Auto-Pilot', icon: BotMessageSquare, href: '/automation', adminOnly: true, section: 'admin' },
-  { title: 'APK Pipeline', icon: Smartphone, href: '/apk-pipeline', adminOnly: true, section: 'admin' },
+  { title: 'Auto-Pilot', icon: BotMessageSquare, href: '/auto-pilot', activePaths: ['/auto-pilot', '/auto-pilot/apk-pipeline', '/auto-pilot/system-monitor'], adminOnly: true, section: 'admin' },
+  { title: 'APK Pipeline', icon: Smartphone, href: '/auto-pilot/apk-pipeline', activePaths: ['/auto-pilot/apk-pipeline'], adminOnly: true, section: 'admin' },
   { title: 'Audit Logs', icon: ScrollText, href: '/audit-logs', adminOnly: true, section: 'admin' },
   { title: 'System Health', icon: HeartPulse, href: '/system-health', adminOnly: true, section: 'admin' },
   { title: 'Settings', icon: Settings, href: '/settings', adminOnly: true, section: 'admin' },

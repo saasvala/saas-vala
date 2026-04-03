@@ -72,7 +72,6 @@ const ItSoftwarePwa = React.lazy(() => import("./pages/ItSoftwarePwa"));
 const CloudDevopsPwa = React.lazy(() => import("./pages/CloudDevopsPwa"));
 const AnalyticsPwa = React.lazy(() => import("./pages/AnalyticsPwa"));
 const Cart = React.lazy(() => import("./pages/Cart"));
-const ApkPipeline = React.lazy(() => import("./pages/ApkPipeline"));
 const OfflineAppTemplate = React.lazy(() => import("./pages/OfflineAppTemplate"));
 const MarketplaceAdmin = React.lazy(() => import("./pages/MarketplaceAdmin"));
 const CategoryFlow = React.lazy(() => import("./pages/CategoryFlow"));
@@ -362,8 +361,11 @@ function AppRoutes() {
         <Route path="/settings" element={<AuthGuard><RoleGuard role="super_admin"><Settings /></RoleGuard></AuthGuard>} />
         <Route path="/audit-logs" element={<AuthGuard><RoleGuard role="super_admin"><AuditLogs /></RoleGuard></AuthGuard>} />
         <Route path="/system-health" element={<AuthGuard><RoleGuard role="super_admin"><SystemHealth /></RoleGuard></AuthGuard>} />
-        <Route path="/automation" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
-        <Route path="/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
+        <Route path="/auto-pilot" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/auto-pilot/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/auto-pilot/system-monitor" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/automation" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot/apk-pipeline" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/add-product" element={<AuthGuard><RoleGuard role="super_admin"><AddProduct /></RoleGuard></AuthGuard>} />
         <Route path="/admin/marketplace" element={<AuthGuard><RoleGuard role="super_admin"><MarketplaceAdmin /></RoleGuard></AuthGuard>} />
         <Route path="/logout" element={<Logout />} />

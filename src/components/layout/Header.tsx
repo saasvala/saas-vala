@@ -37,6 +37,9 @@ const pageTitles: Record<string, string> = {
   '/education': 'Education Systems',
   '/role-detail': 'Role Configuration',
   '/automation': 'Auto-Pilot',
+  '/auto-pilot': 'Auto-Pilot',
+  '/auto-pilot/apk-pipeline': 'APK Pipeline',
+  '/auto-pilot/system-monitor': 'System Monitor',
   '/apk-pipeline': 'APK Pipeline',
   '/vala-builder': 'VALA Builder',
 };
