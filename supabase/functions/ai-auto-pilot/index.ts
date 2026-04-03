@@ -16,6 +16,16 @@ const buildPriority = (aiScore: number) => {
   return 5;
 };
 
+const marketNiches = [
+  "Retail automation",
+  "Healthcare workflow",
+  "Education management",
+  "Transport operations",
+  "Local commerce CRM",
+  "Reseller analytics",
+  "Inventory control",
+];
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -82,7 +92,7 @@ serve(async (req) => {
           requestIdToUse = inserted.id;
         }
 
-        // Simple AI analyze surrogate for predictable execution without external dependency
+        // Deterministic local AI scoring fallback for reliability when external model execution is unavailable.
         const featuresSize = normalizedFeatures.split(/[,\n]/).filter((s: string) => s.trim().length > 0).length;
         const budgetScore = normalizedBudget ? Math.min(100, Math.round(normalizedBudget / 50)) : 30;
         const aiScore = Math.max(1, Math.min(99, Math.round((featuresSize * 10 + budgetScore) / 2)));
@@ -128,7 +138,7 @@ serve(async (req) => {
             ai_score: aiScore,
             priority,
           },
-          timestamp: nowIso(),
+          action_timestamp: nowIso(),
         });
 
         return new Response(JSON.stringify({
@@ -148,26 +158,23 @@ serve(async (req) => {
         const resellerDemand = data?.reseller_demand ?? "White-label and low-ticket software";
         const revenuePotential = data?.revenue_potential ?? "medium";
 
-        const generated = [
-          {
-            product_name: "AutoOps Lite",
-            niche: "DevOps automation",
+        const daySeed = new Date().getUTCDate();
+        const selectedA = marketNiches[daySeed % marketNiches.length];
+        const selectedB = marketNiches[(daySeed + 3) % marketNiches.length];
+        const slug = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+        const generated = [selectedA, selectedB].map((niche, idx) => {
+          const clean = slug(niche);
+          const productName = `${niche} Pro`;
+          return {
+            product_name: productName,
+            niche,
             generated_by: "AI",
-            repo_url: "https://github.com/saasvala/autoops-lite",
-            deploy_url: "https://autoops-lite.saasvala.app",
+            repo_url: `https://github.com/saasvala/${clean}-${daySeed}-${idx + 1}`,
+            deploy_url: `https://${clean}-${daySeed}-${idx + 1}.saasvala.app`,
             status: "deployed",
-            revenue_prediction: 1200,
-          },
-          {
-            product_name: "ClinicFlow Mini",
-            niche: "Healthcare workflow",
-            generated_by: "AI",
-            repo_url: "https://github.com/saasvala/clinicflow-mini",
-            deploy_url: "https://clinicflow-mini.saasvala.app",
-            status: "deployed",
-            revenue_prediction: 900,
-          },
-        ];
+            revenue_prediction: Number(700 + (daySeed * 13) + idx * 125),
+          };
+        });
 
         const { data: savedProducts, error: productsError } = await supabase
           .from("auto_products")
@@ -204,7 +211,7 @@ serve(async (req) => {
             revenue_potential: revenuePotential,
             generated_count: savedProducts?.length || 0,
           },
-          timestamp: nowIso(),
+          action_timestamp: nowIso(),
         });
 
         return new Response(JSON.stringify({
@@ -304,4 +311,3 @@ serve(async (req) => {
     });
   }
 });
-

@@ -129,7 +129,6 @@ CREATE INDEX IF NOT EXISTS idx_system_health_module_last_checked ON public.syste
 -- 7) audit_logs additive compatibility required by spec
 ALTER TABLE public.audit_logs
   ADD COLUMN IF NOT EXISTS module TEXT,
-  ADD COLUMN IF NOT EXISTS "timestamp" TIMESTAMPTZ DEFAULT now();
+  ADD COLUMN IF NOT EXISTS action_timestamp TIMESTAMPTZ DEFAULT now();
 
-CREATE INDEX IF NOT EXISTS idx_audit_logs_module_timestamp ON public.audit_logs(module, "timestamp" DESC);
-
+CREATE INDEX IF NOT EXISTS idx_audit_logs_module_timestamp ON public.audit_logs(module, action_timestamp DESC);

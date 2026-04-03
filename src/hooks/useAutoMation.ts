@@ -253,10 +253,10 @@ export function useAutomation() {
 
   // Get today's software queue
   const getTodaysQueue = () => {
-    const today = new Date();
+    const todayUtc = new Date().toISOString().slice(0, 10);
     return softwareQueue.filter(sw => {
-      const created = new Date(sw.created_at);
-      return created.toDateString() === today.toDateString();
+      const createdUtc = new Date(sw.created_at).toISOString().slice(0, 10);
+      return createdUtc === todayUtc;
     });
   };
 

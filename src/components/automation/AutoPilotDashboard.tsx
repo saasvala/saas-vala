@@ -130,6 +130,15 @@ export function AutoPilotDashboard() {
     }
   };
 
+  const priorityFromScore = (score: number | null | undefined) => {
+    const s = typeof score === 'number' ? score : 0;
+    if (s >= 85) return 1;
+    if (s >= 70) return 2;
+    if (s >= 55) return 3;
+    if (s >= 40) return 4;
+    return 5;
+  };
+
   return (
     <Tabs defaultValue="autopilot" className="space-y-6">
       <TabsList className="grid w-full grid-cols-4 lg:w-auto lg:inline-flex">
@@ -442,8 +451,8 @@ export function AutoPilotDashboard() {
                       <div className="flex items-center gap-2">
                         <p className="font-medium">{request.name}</p>
                         <Badge variant="outline">{request.business_type}</Badge>
-                        <span className={`text-xs font-medium ${getPriorityColor(request.ai_score || 4)}`}>
-                          P{request.ai_score || 4}
+                        <span className={`text-xs font-medium ${getPriorityColor(priorityFromScore(request.ai_score))}`}>
+                          P{priorityFromScore(request.ai_score)}
                         </span>
                       </div>
                       <p className="text-sm text-muted-foreground mt-1">{request.features_required}</p>

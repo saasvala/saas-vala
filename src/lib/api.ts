@@ -246,6 +246,22 @@ export const autoApi = {
   update: (id: string, data: any) => apiCall('PUT', `auto/${id}`, data),
 };
 
+export const adsApi = {
+  optimize: (data: any) => apiCall('POST', 'ads/optimize', data),
+};
+
+export const audienceApi = {
+  discover: (data: any) => apiCall('POST', 'audience/discover', data),
+};
+
+export const videoApi = {
+  create: (data: any) => apiCall('POST', 'video/create', data),
+};
+
+export const socialApi = {
+  publish: (data: any) => apiCall('POST', 'social/publish', data),
+};
+
 // ===================== APK =====================
 export const apkApi = {
   build: (data: any) => apiCall('POST', 'apk/build', data),
@@ -306,6 +322,7 @@ export const leadsApi = {
   list: (params?: { page?: number; limit?: number; search?: string }) =>
     apiCall('GET', 'leads', params),
   create: (data: any) => apiCall('POST', 'leads', data),
+  export: (params?: { format?: 'csv' | 'json' }) => apiCall('GET', 'leads/export', params),
 
 };
 
