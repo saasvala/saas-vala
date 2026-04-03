@@ -115,6 +115,8 @@ const NOTIFY_ALLOWED_CHANNELS = ['in_app', 'email', 'system_alert'] as const
 const NOTIFY_CHANNEL_SET = new Set<string>(NOTIFY_ALLOWED_CHANNELS)
 const NOTIFY_TRIGGER_SET = new Set<string>(NOTIFY_ALLOWED_TRIGGERS)
 const NOTIFY_MAX_TITLE_LENGTH = 120
+const MAX_IMAGE_OPTIMIZE_WIDTH = 4096
+const MAX_IMAGE_OPTIMIZE_QUALITY = 100
 const FINAL_RESELLER_GAP_FEATURE_KEYS = [
   'tier_based_dynamic_commission_engine',
   'per_product_commission_override',
@@ -377,13 +379,12 @@ async function emitDomainEvent(
       status: 'queued',
       tenant_id: tenantId || null,
     })
-    const mappedEventType = eventType === 'build_completed'
-      ? 'apk_ready'
-      : eventType === 'payment_success'
-        ? 'payment_success'
-        : eventType === 'lead_generated'
-          ? 'lead_generated'
-          : null
+    const eventTypeMap: Record<string, string> = {
+      build_completed: 'apk_ready',
+      payment_success: 'payment_success',
+      lead_generated: 'lead_generated',
+    }
+    const mappedEventType = eventTypeMap[eventType] || null
     if (!mappedEventType) return
     const { data: webhookEndpoints } = await admin
       .from('webhook_endpoints')
@@ -8323,14 +8324,16 @@ async function handleScheduler(method: string, pathParts: string[], body: any, s
   if (!expected || !timingSafeEqualText(expected, provided)) return err('Forbidden', 403, 'FORBIDDEN')
 
   if (method === 'POST' && action === 'run') {
-    const minute = new Date().getUTCMinutes()
+    const nowDate = new Date()
+    const minute = nowDate.getUTCMinutes()
+    const hour = nowDate.getUTCHours()
     const dueJobs = [
       { job_name: 'health_check', run: true, schedule_hint: '*/1 * * * *' },
       { job_name: 'billing_check', run: minute % 5 === 0, schedule_hint: '*/5 * * * *' },
       { job_name: 'ai_tasks', run: minute % 10 === 0, schedule_hint: '*/10 * * * *' },
       { job_name: 'seo_scan', run: minute === 0, schedule_hint: '0 * * * *' },
       { job_name: 'key_expiry', run: minute === 0, schedule_hint: '0 * * * *' },
-      { job_name: 'daily_backup', run: minute === 0, schedule_hint: '0 0 * * *' },
+      { job_name: 'daily_backup', run: minute === 0 && hour === 0, schedule_hint: '0 0 * * *' },
     ].filter((j) => j.run)
 
     const inserted: any[] = []
@@ -8688,7 +8691,7 @@ async function handleFileStorageManagement(method: string, pathParts: string[], 
     const byBucket: Record<string, number> = {}
     let totalBytes = 0
     for (const row of rows as any[]) {
-      const bucket = String(row?.bucket || 'unknown')
+      const bucket = String(row?.bucket || 'missing_bucket')
       const size = Number(row?.size_bytes || 0)
       if (!Number.isFinite(size) || size <= 0) continue
       byBucket[bucket] = Number(byBucket[bucket] || 0) + size
@@ -8834,6 +8837,7 @@ async function handleSystemSettingsPanel(method: string, pathParts: string[], bo
     if (!isAdmin) return err('Forbidden', 403, 'FORBIDDEN')
     const featureKey = String(body?.feature_key || body?.flag_key || body?.feature_name || '').trim()
     if (!featureKey) return err('feature_key is required', 422, 'VALIDATION_ERROR')
+    if (!/^[a-zA-Z0-9_.:-]+$/.test(featureKey)) return err('Invalid feature_key', 422, 'VALIDATION_ERROR')
     const enabled = Boolean(body?.enabled)
     const { data, error } = await sb
       .from('feature_flags')
@@ -8863,8 +8867,11 @@ async function handleAssets(method: string, pathParts: string[], body: any, sb: 
   if (method === 'POST' && (action === 'optimize' || action === 'image-optimize')) {
     const filePath = String(body?.path || body?.url || '').trim()
     if (!filePath) return err('path is required', 422, 'VALIDATION_ERROR')
-    const width = Math.max(1, Math.min(4096, Number(body?.width || 0) || 0))
-    const quality = Math.max(1, Math.min(100, Number(body?.quality || 80) || 80))
+    const isHttpUrl = /^https?:\/\//i.test(filePath)
+    const isStoragePath = /^[a-zA-Z0-9/_\-.]+$/.test(filePath)
+    if (!isHttpUrl && !isStoragePath) return err('Invalid path', 422, 'VALIDATION_ERROR')
+    const width = Math.max(1, Math.min(MAX_IMAGE_OPTIMIZE_WIDTH, Number(body?.width || 0) || 0))
+    const quality = Math.max(1, Math.min(MAX_IMAGE_OPTIMIZE_QUALITY, Number(body?.quality || 80) || 80))
     const cdnBase = String(Deno.env.get('CDN_BASE_URL') || '').trim()
     const optimizerBase = String(Deno.env.get('IMAGE_OPTIMIZER_URL') || '').trim()
     const optimizedUrl = optimizerBase

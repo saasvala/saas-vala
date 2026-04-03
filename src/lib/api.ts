@@ -3,7 +3,10 @@ import { savePostLoginRedirect, savePreLogoutState } from './sessionState';
 
 export const API_BASE_V1 = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v1`;
 export const API_BASE_V2 = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v2`;
-const API_VERSION = String(import.meta.env.VITE_API_VERSION || 'v1').toLowerCase() === 'v2' ? 'v2' : 'v1';
+const SUPPORTED_API_VERSIONS = new Set(['v1', 'v2']);
+const DEFAULT_API_VERSION = 'v1';
+const configuredVersion = String(import.meta.env.VITE_API_VERSION || DEFAULT_API_VERSION).toLowerCase();
+const API_VERSION = SUPPORTED_API_VERSIONS.has(configuredVersion) ? configuredVersion : DEFAULT_API_VERSION;
 const API_BASE = API_VERSION === 'v2' ? API_BASE_V2 : API_BASE_V1;
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
