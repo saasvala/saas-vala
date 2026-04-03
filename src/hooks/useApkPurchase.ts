@@ -36,7 +36,7 @@ export function useApkPurchase() {
 
   const purchaseApk = async (
     product: ApkProduct,
-    options?: { paymentMethod?: PaymentMethod },
+    options?: { paymentMethod?: PaymentMethod; idempotencyKey?: string },
   ): Promise<PurchaseResult> => {
     if (!user) {
       return { success: false, error: 'Please sign in to download APK' };
@@ -71,12 +71,14 @@ export function useApkPurchase() {
         currency: 'INR',
         payment_method: paymentMethod,
         gateway: paymentMethod,
+        idempotency_key: options?.idempotencyKey || null,
         lock_wallet: paymentMethod === 'wallet',
         meta: {
           product_id: product.id,
           product_title: product.title,
           flow: 'apk_purchase',
           payment_method: paymentMethod,
+          idempotency_key: options?.idempotencyKey || null,
         },
       });
       paymentId = String((initRes as any)?.data?.payment?.id || '');
