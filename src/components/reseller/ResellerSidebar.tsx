@@ -5,6 +5,7 @@
 import {
   LayoutDashboard,
   BarChart3,
+  LineChart,
   Percent,
   Users,
   Wallet,
@@ -43,7 +44,7 @@ const resellerNavItems: NavItem[] = [
   { title: 'Settings', icon: Settings, href: '/reseller/settings' },
   { title: 'SEO', icon: Search, href: '/reseller/seo' },
   { title: 'AI', icon: Bot, href: '/reseller/ai' },
-  { title: 'Analytics', icon: BarChart3, href: '/reseller/analytics' },
+  { title: 'Analytics', icon: LineChart, href: '/reseller/analytics' },
   { title: 'Withdrawals', icon: ArrowDownToLine, href: '/reseller-dashboard?tab=withdrawals' },
 ];
  
