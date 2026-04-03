@@ -16,6 +16,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
+import { formatLocalizedPrice, getCurrencySymbol } from '@/lib/locale';
 
 interface MarketplaceProductCardProps {
   product: MarketplaceProduct;
@@ -54,9 +55,12 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
 
   // Dynamic fields from DB
   const price = product.price || 5;
+  const priceSymbol = getCurrencySymbol(product.currency);
+  const localizedPrice = formatLocalizedPrice(price, product.currency, priceSymbol);
   const discount = (product as any).discount_percent || 0;
   const rating = (product as any).rating || 4.5;
   const originalPrice = discount > 0 ? Math.round(price / (1 - discount / 100)) : price * 2;
+  const localizedOriginalPrice = formatLocalizedPrice(originalPrice, product.currency, priceSymbol);
   const apkEnabled = (product as any).apk_enabled !== false;
   const licenseEnabled = (product as any).license_enabled !== false;
 
@@ -242,8 +246,8 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
           </div>
           {/* Price row — dynamic from DB */}
           <div className="flex items-center gap-2 mt-auto pt-1">
-            <span className="text-xs line-through text-muted-foreground/40">${originalPrice}</span>
-            <span className="text-xl font-black text-primary">${price}</span>
+            <span className="text-xs line-through text-muted-foreground/40">{localizedOriginalPrice}</span>
+            <span className="text-xl font-black text-primary">{localizedPrice}</span>
             {discount > 0 && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(239,68,68,0.12)', color: '#f87171' }}>{discount}% OFF</span>}
             <div className="ml-auto flex items-center gap-0.5">
               <Star className="fill-yellow-400 text-yellow-400" style={{ width: 11, height: 11 }} />
@@ -287,7 +291,7 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
                 </Button>
               </div>
               <Button size="sm" className="w-full h-9 text-[11px] font-black rounded-lg text-white border-0" style={{ background: 'linear-gradient(90deg,#2563EB,#1D4ED8)' }} onClick={(e) => { e.stopPropagation(); onBuyNow(product); }}>
-                <Package style={{ width: 13, height: 13 }} className="mr-1" /> BUY NOW — ${price}
+                <Package style={{ width: 13, height: 13 }} className="mr-1" /> BUY NOW — {localizedPrice}
               </Button>
             </>
           )}
@@ -355,7 +359,7 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
               </div>
               <div className="flex gap-2">
                 <Button className="flex-1 h-10 text-xs font-black" onClick={() => { setFeaturesOpen(false); onBuyNow(product); }}>
-                  <ShoppingCart style={{ width: 14, height: 14 }} className="mr-1" /> BUY — ${price}
+                  <ShoppingCart style={{ width: 14, height: 14 }} className="mr-1" /> BUY — {localizedPrice}
                 </Button>
                 <Button variant="outline" className="flex-1 h-10 text-xs font-bold" onClick={() => { setFeaturesOpen(false); handleDemo(); }}>
                   <Play style={{ width: 14, height: 14 }} className="mr-1" /> DEMO

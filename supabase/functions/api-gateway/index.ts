@@ -103,6 +103,7 @@ const PRODUCT_LIST_CACHE_TTL_MS = 60 * 1000
 const SERVER_STATUS_CACHE_TTL_MS = 30 * 1000
 const DASHBOARD_STATS_CACHE_TTL_MS = 30 * 1000
 const SEO_ANALYTICS_CACHE_TTL_MS = 60 * 1000
+const PRODUCT_LIST_TRANSLATION_LIMIT = 60
 const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SECONDS') || '60')
 const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
 const DEFAULT_GITHUB_ORG = Deno.env.get('GITHUB_DEFAULT_ORG') || 'saasvala'
@@ -421,6 +422,161 @@ function safeKeywordsFromText(input: unknown) {
     .map((t) => t.trim())
     .filter((t) => t.length >= 4)
   return Array.from(new Set(tokens)).slice(0, 12)
+}
+
+const GEO_FALLBACK_BY_COUNTRY: Record<string, { language: string; currency: string }> = {
+  IN: { language: 'hi', currency: 'INR' },
+  AE: { language: 'ar', currency: 'AED' },
+  SA: { language: 'ar', currency: 'SAR' },
+  US: { language: 'en', currency: 'USD' },
+  GB: { language: 'en', currency: 'GBP' },
+}
+
+function parseAcceptLanguage(req?: Request) {
+  if (!req) return 'en'
+  const header = String(req.headers.get('accept-language') || '').trim()
+  if (!header) return 'en'
+  const first = header.split(',')[0] || 'en'
+  return String(first.split('-')[0] || 'en').toLowerCase().slice(0, 8) || 'en'
+}
+
+function resolveCountryFromRequest(req?: Request) {
+  if (!req) return 'US'
+  const candidates = [
+    req.headers.get('cf-ipcountry'),
+    req.headers.get('x-vercel-ip-country'),
+    req.headers.get('x-country-code'),
+  ]
+  for (const item of candidates) {
+    const country = String(item || '').trim().toUpperCase()
+    if (/^[A-Z]{2}$/.test(country)) return country
+  }
+  return 'US'
+}
+
+async function getLocaleForUser(admin: any, userId?: string | null) {
+  if (!userId) return null
+  try {
+    const { data: profile } = await admin
+      .from('profiles')
+      .select('country_code,country,language,currency')
+      .eq('user_id', userId)
+      .maybeSingle()
+    if (!profile) return null
+    const country = String(profile.country_code || profile.country || '').trim().toUpperCase().slice(0, 2)
+    const language = String(profile.language || '').trim().toLowerCase().slice(0, 8)
+    const currency = String(profile.currency || '').trim().toUpperCase().slice(0, 8)
+    if (!country && !language && !currency) return null
+    return { country, language, currency }
+  } catch {
+    return null
+  }
+}
+
+async function ensureDefaultLanguages(admin: any) {
+  try {
+    await admin.from('languages').select('code').limit(1)
+  } catch {
+    // no-op
+  }
+}
+
+function buildSeoPayloadFromProduct(input: any) {
+  const name = sanitizeTextInput(input?.name || input?.title || 'Product', 180) || 'Product'
+  const description = sanitizeTextInput(input?.description || input?.short_description || '', 500)
+  const country = sanitizeTextInput(input?.country || input?.country_code || 'global', 12).toUpperCase() || 'GLOBAL'
+  const language = sanitizeTextInput(input?.language || input?.lang || 'en', 12).toLowerCase() || 'en'
+  const currency = sanitizeTextInput(input?.currency || 'USD', 8).toUpperCase() || 'USD'
+  const localizedSuffix = country !== 'GLOBAL' ? `${country} ${language}` : language
+  const title = `${name} | SaaS Vala ${localizedSuffix}`.slice(0, 120)
+  const metaDescription = (description || `Buy ${name} on SaaS Vala with localized pricing and language support.`).slice(0, 240)
+  const keywords = safeKeywordsFromText(`${name} ${description} ${country} ${language} ${currency} saas marketplace software`)
+  const slugSource = sanitizeSlug(`${name}-${country}-${language}`) || sanitizeSlug(name) || crypto.randomUUID()
+  return {
+    seo_title: title,
+    meta_description: metaDescription,
+    keywords,
+    slug: slugSource,
+    country_code: country,
+    language_code: language,
+    currency_code: currency,
+  }
+}
+
+async function upsertSeoMeta(admin: any, productId: string, payload: ReturnType<typeof buildSeoPayloadFromProduct>, actorUserId: string) {
+  const row = {
+    product_id: productId,
+    seo_title: payload.seo_title,
+    meta_description: payload.meta_description,
+    keywords: payload.keywords,
+    slug: payload.slug,
+    country_code: payload.country_code,
+    language_code: payload.language_code,
+    currency_code: payload.currency_code,
+    generated_by: actorUserId,
+    updated_at: nowIso(),
+  }
+  const { error } = await admin.from('seo_meta').upsert(row, { onConflict: 'product_id,country_code,language_code' })
+  if (error) throw error
+  return row
+}
+
+async function resolveCurrencyRates(admin: any) {
+  const redisKey = 'cache:currency:rates'
+  const cached = await redisGetJson<{ base: string; rates: Record<string, number>; updated_at: string }>(redisKey)
+  if (cached?.rates) return cached
+
+  const defaults = { base: 'USD', rates: { USD: 1, INR: 83, AED: 3.67, EUR: 0.92, GBP: 0.79, SAR: 3.75 }, updated_at: nowIso() }
+  const { data, error } = await admin
+    .from('currency_rates')
+    .select('base,rates,updated_at')
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error || !data) {
+    await redisSetJson(redisKey, defaults, 60 * 30)
+    return defaults
+  }
+  const payload = {
+    base: String(data.base || 'USD').toUpperCase(),
+    rates: (data.rates && typeof data.rates === 'object' ? data.rates : defaults.rates) as Record<string, number>,
+    updated_at: String(data.updated_at || nowIso()),
+  }
+  await redisSetJson(redisKey, payload, 60 * 30)
+  return payload
+}
+
+async function translateTextWithCache(admin: any, text: string, targetLang: string, sourceLang = 'en', actorUserId?: string | null) {
+  const normalizedText = sanitizeTextInput(text, 12000)
+  const toLang = sanitizeTextInput(targetLang, 12).toLowerCase()
+  const fromLang = sanitizeTextInput(sourceLang, 12).toLowerCase() || 'en'
+  if (!normalizedText) return ''
+  if (!toLang || toLang === fromLang || toLang === 'en') return normalizedText
+
+  const cacheKey = await sha256Hex(`${fromLang}|${toLang}|${normalizedText}`)
+  const { data: cached } = await admin
+    .from('translated_content')
+    .select('translated_text')
+    .eq('cache_key', cacheKey)
+    .maybeSingle()
+  if (cached?.translated_text) return String(cached.translated_text)
+
+  // TODO: replace stub translation with a production AI translation provider.
+  const translated = `[${toLang}] ${normalizedText}`
+  try {
+    await admin.from('translated_content').upsert({
+      cache_key: cacheKey,
+      source_text: normalizedText,
+      source_lang: fromLang,
+      target_lang: toLang,
+      translated_text: translated,
+      created_by: actorUserId || null,
+      updated_at: nowIso(),
+    }, { onConflict: 'cache_key' })
+  } catch {
+    // no-op
+  }
+  return translated
 }
 
 function getPageTitleFromUrl(url: string) {
@@ -968,6 +1124,56 @@ async function handleAuth(method: string, pathParts: string[], body: any, req: R
   }
 
   return err('Not found', 404)
+}
+
+async function handleGeo(method: string, pathParts: string[], _body: any, req: Request) {
+  const action = pathParts[0]
+  if (!(method === 'GET' && action === 'detect')) return err('Not found', 404)
+  const admin = adminClient()
+  const auth = await authenticate(req)
+  const userLocale = await getLocaleForUser(admin, auth?.userId || null)
+  const country = userLocale?.country || resolveCountryFromRequest(req)
+  const geoFallback = GEO_FALLBACK_BY_COUNTRY[country] || { language: parseAcceptLanguage(req), currency: 'USD' }
+  const language = String(userLocale?.language || geoFallback.language || 'en').toLowerCase()
+  const currency = String(userLocale?.currency || geoFallback.currency || 'USD').toUpperCase()
+  return json({ country_code: country, currency, language })
+}
+
+async function handleTranslate(method: string, _pathParts: string[], body: any, req?: Request) {
+  if (method !== 'POST') return err('Not found', 404)
+  const text = sanitizeTextInput(body?.text, 12000)
+  const targetLang = sanitizeTextInput(body?.target_lang, 12).toLowerCase()
+  const sourceLang = sanitizeTextInput(body?.source_lang || 'en', 12).toLowerCase() || 'en'
+  if (!text) return err('Missing field: text', 422, 'VALIDATION_ERROR')
+  if (!targetLang) return err('Missing field: target_lang', 422, 'VALIDATION_ERROR')
+
+  const admin = adminClient()
+  await ensureDefaultLanguages(admin)
+  const { data: langRow } = await admin.from('languages').select('code,status').eq('code', targetLang).maybeSingle()
+  if (langRow && String(langRow.status || '').toLowerCase() !== 'active') {
+    return err('Target language is inactive', 422, 'VALIDATION_ERROR')
+  }
+
+  const auth = req ? await authenticate(req) : null
+  const cacheKey = await sha256Hex(`${sourceLang}|${targetLang}|${text}`)
+  const { data: cachedRow } = await admin
+    .from('translated_content')
+    .select('translated_text,target_lang')
+    .eq('cache_key', cacheKey)
+    .maybeSingle()
+  if (cachedRow?.translated_text) {
+    return json({ translated_text: cachedRow.translated_text, target_lang: cachedRow.target_lang || targetLang, cached: true })
+  }
+  const translatedText = await translateTextWithCache(admin, text, targetLang, sourceLang, auth?.userId || null)
+  return json({ translated_text: translatedText, target_lang: targetLang, cached: false })
+}
+
+async function handleCurrency(method: string, pathParts: string[], _body: any) {
+  const action = pathParts[0]
+  if (!(method === 'GET' && action === 'rates')) return err('Not found', 404)
+  const admin = adminClient()
+  const data = await resolveCurrencyRates(admin)
+  return json(data)
 }
 
 // ===================== 2. PRODUCTS =====================
@@ -2358,7 +2564,7 @@ async function handleOfferAliases(method: string, pathParts: string[], body: any
   return err('Not found', 404)
 }
 
-async function handleProductAliases(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+async function handleProductAliases(method: string, pathParts: string[], body: any, userId: string, sb: any, req?: Request) {
   const admin = adminClient()
   const action = pathParts[0]
 
@@ -2382,18 +2588,79 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
     if (error) return err(error.message)
     invalidateProductCache()
     await logActivity(admin, 'product', data.id, 'created', userId, payload)
+    try {
+      const seoPayload = buildSeoPayloadFromProduct({
+        ...data,
+        country: body.country || body.country_code || 'GLOBAL',
+        language: body.language || body.lang || 'en',
+        currency: body.currency || 'USD',
+      })
+      await upsertSeoMeta(admin, data.id, seoPayload, userId)
+    } catch (seoError: any) {
+      console.warn('SEO meta upsert failed on product create:', seoError?.message || seoError)
+    }
     return json({ data }, 201)
   }
 
   // GET /product/list
   if (method === 'GET' && action === 'list') {
+    const queryCountry = sanitizeTextInput(req ? new URL(req.url).searchParams.get('country') : '', 8)
+    const queryCountryCode = sanitizeTextInput(req ? new URL(req.url).searchParams.get('country_code') : '', 8)
+    const queryLang = sanitizeTextInput(req ? new URL(req.url).searchParams.get('lang') : '', 8)
+    const queryLanguage = sanitizeTextInput(req ? new URL(req.url).searchParams.get('language') : '', 8)
+    const queryCurrency = sanitizeTextInput(req ? new URL(req.url).searchParams.get('currency') : '', 8)
+    const countryCode = sanitizeTextInput(queryCountry || queryCountryCode || body.country || body.country_code || resolveCountryFromRequest(req), 8).toUpperCase() || 'US'
+    const requestedLanguage = sanitizeTextInput(queryLang || queryLanguage || body.lang || body.language || parseAcceptLanguage(req), 8).toLowerCase() || 'en'
+    const requestedCurrency = sanitizeTextInput(queryCurrency || body.currency, 8).toUpperCase()
+    const geoDefaults = GEO_FALLBACK_BY_COUNTRY[countryCode] || { language: requestedLanguage || 'en', currency: 'USD' }
+    const language = requestedLanguage || geoDefaults.language || 'en'
+    const currency = requestedCurrency || geoDefaults.currency || 'USD'
+
     const { data, error } = await sb
       .from('products')
       .select('id, name, slug, description, short_description, price, status, business_type, features, apk_url, discount_percent, rating, created_at, marketplace_visible')
       .order('created_at', { ascending: false })
       .limit(500)
     if (error) return err(error.message)
-    return json({ data })
+    const rows = data || []
+    const ratesPayload = await resolveCurrencyRates(admin)
+    const selectedRate = Number((ratesPayload.rates || {})[currency] || 1)
+    const safeRate = Number.isFinite(selectedRate) && selectedRate > 0 ? selectedRate : 1
+
+    const localized = await Promise.all(rows.map(async (row: any, index: number) => {
+      const defaultName = String(row.name || '')
+      const defaultDescription = String(row.short_description || row.description || '')
+      let localizedTitle = defaultName
+      let localizedDescription = defaultDescription
+
+      if (index < PRODUCT_LIST_TRANSLATION_LIMIT) {
+        try {
+          localizedTitle = await translateTextWithCache(admin, defaultName, language, 'en', userId)
+          localizedDescription = await translateTextWithCache(admin, defaultDescription, language, 'en', userId)
+        } catch {
+          localizedTitle = defaultName
+          localizedDescription = defaultDescription
+        }
+      }
+
+      const basePrice = Number(row.price || 0)
+      const convertedPrice = toMoney(basePrice * safeRate)
+      return {
+        ...row,
+        name: localizedTitle || defaultName,
+        title: localizedTitle || defaultName,
+        short_description: localizedDescription || defaultDescription,
+        description: localizedDescription || row.description || '',
+        price_base_usd: basePrice,
+        price_converted: convertedPrice,
+        price: convertedPrice,
+        currency,
+        language,
+        country_code: countryCode,
+      }
+    }))
+
+    return json({ data: localized, locale: { country_code: countryCode, language, currency }, rates: ratesPayload })
   }
 
   // PUT /product/update
@@ -2413,6 +2680,17 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
     if (error) return err(error.message)
     invalidateProductCache()
     await logActivity(admin, 'product', id, 'updated', userId, updates)
+    try {
+      const seoPayload = buildSeoPayloadFromProduct({
+        ...data,
+        country: body.country || body.country_code || 'GLOBAL',
+        language: body.language || body.lang || 'en',
+        currency: body.currency || 'USD',
+      })
+      await upsertSeoMeta(admin, id, seoPayload, userId)
+    } catch (seoError: any) {
+      console.warn('SEO meta upsert failed on product update:', seoError?.message || seoError)
+    }
     return json({ data })
   }
 
@@ -6115,6 +6393,51 @@ async function handleSeoLeads(method: string, pathParts: string[], body: any, us
     return ok(data || { message: 'Meta generation queued' })
   }
 
+  // POST /seo/generate
+  if (method === 'POST' && segment === 'seo' && pathParts[1] === 'generate') {
+    const productId = sanitizeTextInput(body?.product_id, 128)
+    if (!productId && !body?.product) return err('product_id or product payload is required', 422, 'VALIDATION_ERROR')
+
+    let productPayload: any = body?.product || null
+    if (!productPayload && productId) {
+      const { data: productRow, error: productErr } = await sb
+        .from('products')
+        .select('id,name,slug,description,short_description,price')
+        .eq('id', productId)
+        .maybeSingle()
+      if (productErr) return err(productErr.message)
+      if (!productRow) return err('Product not found', 404)
+      productPayload = productRow
+    }
+
+    const payload = buildSeoPayloadFromProduct({
+      ...(productPayload || {}),
+      country: body?.country || body?.country_code || 'GLOBAL',
+      language: body?.language || body?.lang || 'en',
+      currency: body?.currency || 'USD',
+    })
+    const effectiveProductId = String(productPayload?.id || productId || '').trim()
+
+    if (effectiveProductId) {
+      try {
+        await upsertSeoMeta(admin, effectiveProductId, payload, userId)
+      } catch (e: any) {
+        return err(e?.message || 'Failed to save seo meta')
+      }
+    }
+
+    return ok({
+      product_id: effectiveProductId || null,
+      title: payload.seo_title,
+      meta_description: payload.meta_description,
+      keywords: payload.keywords,
+      slug: payload.slug,
+      country_code: payload.country_code,
+      language_code: payload.language_code,
+      currency_code: payload.currency_code,
+    })
+  }
+
 
   }
 
@@ -6433,6 +6756,17 @@ Deno.serve(async (req) => {
       return await handleAuth(req.method, subParts, body, req)
     }
 
+    // Public global locale + translation endpoints
+    if (module === 'geo') {
+      return await handleGeo(req.method, subParts, body, req)
+    }
+    if (module === 'translate') {
+      return await handleTranslate(req.method, subParts, body, req)
+    }
+    if (module === 'currency') {
+      return await handleCurrency(req.method, subParts, body)
+    }
+
     // External payment webhook endpoint without JWT
     if (module === 'marketplace' && req.method === 'POST' && subParts[0] === 'payment' && subParts[1] === 'webhook') {
       const admin = adminClient()
@@ -6499,7 +6833,7 @@ Deno.serve(async (req) => {
         routeResponse = await handleOfferAliases(req.method, subParts, body, userId, sb)
         break
       case 'product':
-        routeResponse = await handleProductAliases(req.method, subParts, body, userId, sb)
+        routeResponse = await handleProductAliases(req.method, subParts, body, userId, sb, req)
         break
       case 'category':
         routeResponse = await handleCategoryAliases(req.method, subParts, body, userId, sb)
@@ -6541,6 +6875,9 @@ Deno.serve(async (req) => {
       case 'auto': routeResponse = await handleAuto(req.method, subParts, body, userId, sb); break
       case 'auto-pilot': routeResponse = await handleAutoPilot(req.method, subParts, body, userId, sb); break
       case 'apk': routeResponse = await handleApk(req.method, subParts, body, userId, sb); break
+      case 'geo': routeResponse = await handleGeo(req.method, subParts, body, req); break
+      case 'translate': routeResponse = await handleTranslate(req.method, subParts, body, req); break
+      case 'currency': routeResponse = await handleCurrency(req.method, subParts, body); break
       case 'api-usage':
 
       case 'reseller':
