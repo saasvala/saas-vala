@@ -1078,7 +1078,8 @@ async function syncLedgerEntrySafe(admin: any, walletId: string, referenceType: 
 }
 
 async function runWalletLedgerSyncSafe(admin: any, userId: string, endpointKey: string, body: any) {
-  if (!(endpointKey === 'wallet/add' || endpointKey === 'wallet/withdraw' || endpointKey === 'wallet/refund' || endpointKey === 'wallet/lock' || endpointKey === 'wallet/unlock')) return
+  const WALLET_SYNC_ENDPOINTS = ['wallet/add', 'wallet/withdraw', 'wallet/refund', 'wallet/lock', 'wallet/unlock']
+  if (!WALLET_SYNC_ENDPOINTS.includes(endpointKey)) return
   try {
     const requestedWalletId = body?.wallet_id ? String(body.wallet_id).trim() : null
     const walletQuery = requestedWalletId
