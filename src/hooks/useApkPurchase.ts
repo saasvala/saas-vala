@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
 import { useFraudDetection } from './useFraudDetection';
@@ -27,6 +27,7 @@ export function useApkPurchase() {
   const { user } = useAuth();
   const { checkUserStatus, reportViolation } = useFraudDetection();
   const [processing, setProcessing] = useState(false);
+  const inFlightRef = useRef<Set<string>>(new Set());
 
   // Helper: check if an ID looks like a valid UUID
   const isUuid = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
@@ -38,8 +39,15 @@ export function useApkPurchase() {
 
     const isGeneratedProduct = !isUuid(product.id);
 
+    const lockKey = `${user.id}:${product.id}`;
+    if (inFlightRef.current.has(lockKey)) {
+      return { success: false, error: 'Purchase already in progress. Please wait.' };
+    }
+    inFlightRef.current.add(lockKey);
     setProcessing(true);
 
+    let paymentId = '';
+    let transactionId = '';
     try {
       // Step 1: Check if user is blocked
       const fraudStatus = await checkUserStatus(user.id, user.email || '');
@@ -64,10 +72,13 @@ export function useApkPurchase() {
           flow: 'apk_purchase',
         },
       });
-      const paymentId = String((initRes as any)?.data?.payment?.id || '');
+      paymentId = String((initRes as any)?.data?.payment?.id || '');
       if (!paymentId) {
         throw new Error('Failed to initialize payment');
       }
+      try {
+        sessionStorage.setItem('sv_pending_payment', JSON.stringify({ paymentId, ts: Date.now() }));
+      } catch {}
 
       // Step 3: Verify payment and activate services
       const verifyRes = await marketplaceApi.paymentVerify({
@@ -78,10 +89,13 @@ export function useApkPurchase() {
         throw new Error((verifyRes as any)?.error || 'Payment verification failed');
       }
 
-      const transactionId = String((verifyRes as any)?.result?.order_id || '');
+      transactionId = String((verifyRes as any)?.result?.order_id || '');
       if (!transactionId) {
         throw new Error('Payment verification did not return an order id');
       }
+      try {
+        sessionStorage.removeItem('sv_pending_payment');
+      } catch {}
 
       // Step 4: Generate secure crypto-random license key
       const licenseKey = generateSecureLicenseKey();
@@ -155,6 +169,7 @@ export function useApkPurchase() {
       });
 
       setProcessing(false);
+      inFlightRef.current.delete(lockKey);
       
       return {
         success: true,
@@ -164,6 +179,7 @@ export function useApkPurchase() {
       };
     } catch (error: any) {
       setProcessing(false);
+      inFlightRef.current.delete(lockKey);
       const errorMessage = error.message || 'Purchase failed';
       
       // Log error

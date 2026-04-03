@@ -9,11 +9,17 @@ import { useMarketplaceActions } from '@/hooks/useMarketplaceActions';
 import { useCart } from '@/hooks/useCart';
 import { useAuth } from '@/hooks/useAuth';
 import { apkApi } from '@/lib/api';
+import { formatLocalizedPrice } from '@/lib/locale';
+import { isExpiredSignedUrl } from '@/lib/edgeGuards';
 import { toast } from 'sonner';
 
 
 function hasScreenshots(value: unknown): value is { screenshots?: unknown[] } {
   return typeof value === 'object' && value !== null && 'screenshots' in value;
+}
+
+function hasProductMeta(value: unknown): value is { deleted_at?: string | null; expires_at?: string | null; status?: string } {
+  return typeof value === 'object' && value !== null;
 }
 
 export default function ProductDetail() {
@@ -26,6 +32,10 @@ export default function ProductDetail() {
   const [previewMode, setPreviewMode] = useState(false);
 
   const product = useMemo(() => products.find((item) => item.id === id), [products, id]);
+  const productMeta = hasProductMeta(product) ? product : undefined;
+  const isDeleted = Boolean(productMeta?.deleted_at) || String(productMeta?.status || '').toLowerCase() === 'deleted';
+  const isExpired = Boolean(productMeta?.expires_at) && new Date(String(productMeta.expires_at)) <= new Date();
+  const needsSubscriptionRedirect = !isDeleted && (product?.isAvailable === false || isExpired);
   const refCode = useMemo(() => new URLSearchParams(window.location.search).get('ref') || '', []);
   const trackedPromoRef = useRef('');
 
@@ -37,15 +47,7 @@ export default function ProductDetail() {
     try { localStorage.setItem('sv_last_promo_ref', refCode); } catch {}
   }, [refCode, trackPromoClick]);
 
-  const screenshots = useMemo(() => {
-    if (!product) return [];
-    const rawScreenshots = hasScreenshots(product) ? product.screenshots : undefined;
-    if (Array.isArray(rawScreenshots)) {
-      const unique = rawScreenshots.filter((shot: unknown) => typeof shot === 'string' && shot.trim());
-      return Array.from(new Set(unique));
-    }
-    return product.image ? [product.image] : [];
-  }, [product]);
+
 
   if (loading) {
     return (
@@ -70,7 +72,21 @@ export default function ProductDetail() {
     );
   }
 
-  const inCart = isInCart(product.id);
+  if (isDeleted || product.status === 'draft') {
+    return (
+      <div className="min-h-screen bg-background">
+        <MarketplaceHeader />
+        <main className="pt-20 px-4 md:px-8 space-y-4">
+          <p className="text-sm text-muted-foreground">This product is no longer available.</p>
+          <div className="flex gap-2">
+            <Button onClick={() => navigate('/marketplace')}>Go to Marketplace</Button>
+            <Button variant="outline" onClick={() => navigate('/subscription')}>View Subscription</Button>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
 
   const handleBuyNow = () => {
     if (!user) {
@@ -94,7 +110,12 @@ export default function ProductDetail() {
     try {
       const res = await apkApi.download(product.id);
       if (res?.allowed && (res?.download_url || res?.url)) {
-        window.open(res.download_url || res.url, '_blank');
+        const link = String(res.download_url || res.url || '');
+        if (!link || isExpiredSignedUrl(link)) {
+          toast.error('Download link expired. Please retry.');
+          return;
+        }
+        window.open(link, '_blank');
         return;
       }
       toast.error(res?.message || 'Please purchase first');
