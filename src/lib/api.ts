@@ -39,6 +39,8 @@ class ApiError extends Error {
 
 const API_TIMEOUT_MS = Number(import.meta.env.VITE_API_TIMEOUT_MS || 10000);
 const API_MAX_RETRIES = Number(import.meta.env.VITE_API_MAX_RETRIES || 2);
+const API_MAX_RETRY_DELAY_MS = Number(import.meta.env.VITE_API_MAX_RETRY_DELAY_MS || 4000);
+const API_RETRY_JITTER_MS = Number(import.meta.env.VITE_API_RETRY_JITTER_MS || 120);
 const RETRYABLE_STATUS_CODES = new Set([502, 503, 504]);
 const API_CACHE_TTL_MS = 30_000;
 const responseCache = new Map<string, { data: unknown; ts: number }>();
@@ -54,7 +56,7 @@ async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promi
       const res = await fetch(url, { ...config, signal: controller.signal });
       clearTimeout(timeout);
       if (RETRYABLE_STATUS_CODES.has(res.status) && attempt < API_MAX_RETRIES) {
-        const retryDelayMs = Math.min(4000, 250 * (2 ** attempt)) + Math.floor(Math.random() * 120);
+        const retryDelayMs = Math.min(API_MAX_RETRY_DELAY_MS, 250 * (2 ** attempt)) + Math.floor(Math.random() * API_RETRY_JITTER_MS);
         await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         continue;
       }
@@ -63,7 +65,7 @@ async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promi
       clearTimeout(timeout);
       lastError = error;
       if (attempt < API_MAX_RETRIES) {
-        const retryDelayMs = Math.min(4000, 250 * (2 ** attempt)) + Math.floor(Math.random() * 120);
+        const retryDelayMs = Math.min(API_MAX_RETRY_DELAY_MS, 250 * (2 ** attempt)) + Math.floor(Math.random() * API_RETRY_JITTER_MS);
         await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         continue;
       }
