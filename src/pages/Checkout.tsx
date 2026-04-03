@@ -12,6 +12,15 @@ import { toast } from 'sonner';
 import { useMarketplaceActions } from '@/hooks/useMarketplaceActions';
 
 const SAFE_PRODUCT_PARAM = /^[a-zA-Z0-9_-]+$/;
+const PENDING_PAYMENT_MAX_AGE_MS = 15 * 60 * 1000;
+
+function makeIdempotencyKey() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  const rand = Math.random().toString(36).slice(2);
+  return `fallback-${Date.now()}-${rand}`;
+}
 
 export default function Checkout() {
   const navigate = useNavigate();
@@ -56,7 +65,7 @@ export default function Checkout() {
         return;
       }
       const createdAt = Number(parsed.ts || 0);
-      if (createdAt && Date.now() - createdAt > 15 * 60 * 1000) {
+      if (createdAt && Date.now() - createdAt > PENDING_PAYMENT_MAX_AGE_MS) {
         toast.info('Pending payment expired. Please start again.');
         try {
           sessionStorage.removeItem('sv_pending_payment');
@@ -86,12 +95,10 @@ export default function Checkout() {
 
     payInFlightRef.current = true;
     setSubmitting(true);
-    const requestId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const idempotencyKey = makeIdempotencyKey();
 
     try {
-      const result = await purchaseApk(selected, { paymentMethod, idempotencyKey: requestId });
+      const result = await purchaseApk(selected, { paymentMethod, idempotencyKey });
       if (!result.success) {
         toast.error(result.error || 'Payment failed');
         return;
@@ -130,7 +137,7 @@ export default function Checkout() {
       const parsed = JSON.parse(raw) as { paymentId?: string; ts?: number };
       if (!parsed?.paymentId) return;
       const createdAt = Number(parsed.ts || 0);
-      if (createdAt && Date.now() - createdAt > 15 * 60 * 1000) return;
+      if (createdAt && Date.now() - createdAt > PENDING_PAYMENT_MAX_AGE_MS) return;
       void restorePendingPayment();
     } catch {
       // ignore malformed pending data

@@ -71,14 +71,13 @@ export function useApkPurchase() {
         currency: 'INR',
         payment_method: paymentMethod,
         gateway: paymentMethod,
-        idempotency_key: options?.idempotencyKey || null,
+        idempotency_key: options?.idempotencyKey ?? null,
         lock_wallet: paymentMethod === 'wallet',
         meta: {
           product_id: product.id,
           product_title: product.title,
           flow: 'apk_purchase',
           payment_method: paymentMethod,
-          idempotency_key: options?.idempotencyKey || null,
         },
       });
       paymentId = String((initRes as any)?.data?.payment?.id || '');
