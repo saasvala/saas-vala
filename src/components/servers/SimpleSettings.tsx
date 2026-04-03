@@ -6,6 +6,7 @@ import { Settings, GitBranch, Pause, Wrench, Shield, Bell, CheckCircle2, Loader2
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { supabase } from '@/integrations/supabase/client';
+import { serversApi } from '@/lib/api';
 
 
 
@@ -13,6 +14,7 @@ import { supabase } from '@/integrations/supabase/client';
 export function SimpleSettings() {
   const [server, setServer] = useState<{ id: string; auto_deploy: boolean; status: string } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [savingId, setSavingId] = useState<string | null>(null);
   const [localSettings, setLocalSettings] = useState({
     auto_deploy: true,
     maintenance: false,
@@ -51,19 +53,27 @@ export function SimpleSettings() {
       return;
     }
 
+    const previousSettings = localSettings;
     const newValue = !localSettings[settingId as keyof typeof localSettings];
     setLocalSettings(prev => ({ ...prev, [settingId]: newValue }));
 
-    // Persist to DB for server-related settings
+    setSavingId(settingId);
+
+    // Persist to API for server-related settings
     if (server) {
-      if (settingId === 'auto_deploy') {
-        const { error } = await supabase.from('servers').update({ auto_deploy: newValue }).eq('id', server.id);
-        if (error) { toast.error('Failed to update'); return; }
-      }
-      if (settingId === 'paused') {
-        const newStatus = newValue ? 'stopped' : 'live';
-        const { error } = await supabase.from('servers').update({ status: newStatus }).eq('id', server.id);
-        if (error) { toast.error('Failed to update'); return; }
+      try {
+        await serversApi.updateServerSettings({
+          server_id: server.id,
+          auto_deploy: settingId === 'auto_deploy' ? newValue : localSettings.auto_deploy,
+          maintenance: settingId === 'maintenance' ? newValue : localSettings.maintenance,
+          paused: settingId === 'paused' ? newValue : localSettings.paused,
+          ddos: localSettings.ddos,
+        });
+      } catch {
+        setLocalSettings(previousSettings);
+        toast.error('Failed to update');
+        setSavingId(null);
+        return;
       }
     }
 
@@ -74,6 +84,7 @@ export function SimpleSettings() {
       notifications: 'Deploy Notifications',
     };
     toast.success(`${labels[settingId] || settingId} ${newValue ? 'enabled' : 'disabled'}`);
+    setSavingId(null);
   };
 
   const settingsConfig = [
@@ -137,7 +148,7 @@ export function SimpleSettings() {
                 <Switch
                   checked={enabled}
                   onCheckedChange={() => handleToggle(setting.id)}
-                  disabled={isLocked}
+                  disabled={isLocked || savingId !== null}
                   className={cn(isLocked && 'opacity-50')}
                 />
               </div>

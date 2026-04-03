@@ -10,6 +10,7 @@ import {
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { supabase } from '@/integrations/supabase/client';
+import { serversApi } from '@/lib/api';
 
 interface DeploymentRow {
   id: string;
@@ -49,7 +50,7 @@ export function ProjectDeploy() {
     if (!error) setDeployments(data || []);
   };
 
-  const handleDeploy = async () => {
+  const handleDeploy = async (mode: 'start' | 'redeploy' = 'start') => {
     if (servers.length === 0) {
       toast.error('No servers available');
       return;
@@ -58,57 +59,74 @@ export function ProjectDeploy() {
     setProgress(0);
 
     const serverId = servers[0].id;
-    const { data: userData } = await supabase.auth.getUser();
-
-    // Create deployment record
-    const { data: dep, error } = await supabase.from('deployments').insert({
-      server_id: serverId,
-      status: 'building',
-      branch: 'main',
-      commit_message: '🚀 Manual deploy via Server Manager',
-      triggered_by: userData.user?.id,
-    }).select().single();
-
-    if (error) {
+    try {
+      if (mode === 'start') {
+        await serversApi.deployStart(serverId);
+      } else {
+        await serversApi.redeploy(serverId);
+      }
+    } catch (error) {
       toast.error('Failed to trigger deployment');
       setDeploying(false);
       return;
     }
 
-    // Update server status
-    await supabase.from('servers').update({ status: 'deploying', last_deploy_at: new Date().toISOString() }).eq('id', serverId);
-
-    // Simulate progress (real progress would come from agent)
-    let p = 0;
-    const interval = setInterval(() => {
-      p += 10;
+    let p = 10;
+    setProgress(p);
+    const maxPolls = 20;
+    let polls = 0;
+    const interval = setInterval(async () => {
+      polls += 1;
+      p = Math.min(95, p + 5);
       setProgress(p);
-      if (p >= 100) {
-        clearInterval(interval);
-        // Mark deployment as success
-        supabase.from('deployments').update({ 
-          status: 'success', 
-          completed_at: new Date().toISOString(),
-          duration_seconds: Math.round(p / 10),
-        }).eq('id', dep.id).then(() => {
-          supabase.from('servers').update({ status: 'live' }).eq('id', serverId);
-          fetchDeployments();
-        });
-        setDeploying(false);
-        toast.success('Deployment successful!');
+      try {
+        const statusRes: any = await serversApi.deployStatusList(serverId);
+        const rows = Array.isArray(statusRes?.data) ? statusRes.data : [];
+        const latest = rows[0];
+        if (latest?.status === 'success' || latest?.status === 'rolled_back') {
+          clearInterval(interval);
+          setProgress(100);
+          setDeploying(false);
+          await fetchDeployments();
+          await fetchServers();
+          toast.success('Deployment successful!');
+          return;
+        }
+        if (latest?.status === 'failed' || latest?.status === 'cancelled') {
+          clearInterval(interval);
+          setDeploying(false);
+          await fetchDeployments();
+          await fetchServers();
+          toast.error(`Deployment ${latest.status}`);
+          return;
+        }
+      } catch {
+        // continue polling until timeout
       }
-    }, 300);
+
+      if (polls >= maxPolls) {
+        clearInterval(interval);
+        setDeploying(false);
+        fetchDeployments();
+        fetchServers();
+        toast.info('Deployment started. Status will update shortly.');
+      }
+    }, 1000);
   };
 
   const handleRollback = async () => {
-    const lastSuccess = deployments.find(d => d.status === 'success');
-    if (!lastSuccess) {
-      toast.error('No successful deployment to rollback to');
+    if (servers.length === 0) {
+      toast.error('No servers available');
       return;
     }
-    await supabase.from('deployments').update({ status: 'rolled_back' }).eq('id', lastSuccess.id);
-    toast.success('Rolled back to previous version');
-    fetchDeployments();
+    try {
+      await serversApi.rollback(servers[0].id);
+      toast.success('Rolled back to previous version');
+      fetchDeployments();
+      fetchServers();
+    } catch {
+      toast.error('Rollback failed');
+    }
   };
 
   const latestDeploy = deployments[0];
@@ -199,11 +217,11 @@ export function ProjectDeploy() {
 
         {/* Actions */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3">
-          <Button onClick={handleDeploy} disabled={deploying} className="bg-orange-gradient hover:opacity-90 text-white gap-2 h-11 sm:h-12">
+          <Button onClick={() => handleDeploy('start')} disabled={deploying} className="bg-orange-gradient hover:opacity-90 text-white gap-2 h-11 sm:h-12">
             {deploying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
             Deploy Now
           </Button>
-          <Button variant="outline" className="border-border gap-2 h-11 sm:h-12" onClick={handleDeploy} disabled={deploying}>
+          <Button variant="outline" className="border-border gap-2 h-11 sm:h-12" onClick={() => handleDeploy('redeploy')} disabled={deploying}>
             <RotateCcw className="h-4 w-4" />
             Redeploy
           </Button>
