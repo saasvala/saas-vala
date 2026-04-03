@@ -4202,7 +4202,7 @@ Deno.serve(async (req) => {
       case 'leads':
       case 'lead':
       case 'seo':
-
+        return await handleSeoLeads(req.method, [module, ...subParts], body, userId, sb, req)
       default:
         return err(`Unknown module: ${module}`, 404)
     }
