@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -13,9 +13,11 @@ import { useCart } from '@/hooks/useCart';
 import type { MarketplaceProduct } from '@/hooks/useMarketplaceProducts';
 import { apkApi } from '@/lib/api';
 import { useNavigate } from 'react-router-dom';
+import { useMarketplaceActions } from '@/hooks/useMarketplaceActions';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
+import { formatLocalizedPrice, getCurrencySymbol } from '@/lib/locale';
 
 interface MarketplaceProductCardProps {
   product: MarketplaceProduct;
@@ -46,7 +48,13 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
   const [downloadChecking, setDownloadChecking] = useState(false);
   const { user } = useAuth();
   const { isInCart, toggleItem } = useCart();
+  const {
+    isFavorited: isFavoritedServer,
+    toggleFavorite: toggleFavoriteServer,
+    addToCart: addToCartServer,
+  } = useMarketplaceActions();
   const inCart = isInCart(product.id);
+  const favoriteActive = useMemo(() => favorited || isFavoritedServer(product.id), [favorited, isFavoritedServer, product.id]);
 
   const normalizedBuildStatus = String(product.build_status || '').toLowerCase();
   const isBuilding = normalizedBuildStatus === 'pending';
@@ -57,9 +65,12 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
 
   // Dynamic fields from DB
   const price = product.price || 5;
+  const priceSymbol = getCurrencySymbol(product.currency);
+  const localizedPrice = formatLocalizedPrice(price, product.currency, priceSymbol);
   const discount = (product as any).discount_percent || 0;
   const rating = (product as any).rating || 4.5;
   const originalPrice = discount > 0 ? Math.round(price / (1 - discount / 100)) : price * 2;
+  const localizedOriginalPrice = formatLocalizedPrice(originalPrice, product.currency, priceSymbol);
   const apkEnabled = (product as any).apk_enabled !== false;
   const licenseEnabled = (product as any).license_enabled !== false;
 
@@ -78,16 +89,24 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
   const isIframeable = (url: string | null) => url ? !url.includes('github.com') : false;
   const hasDemoAvailable = getDemoUrl() !== null;
 
-  const handleFavorite = useCallback(() => {
+  const handleFavorite = useCallback(async () => {
     if (!user) { toast.error('Sign in to add to favorites'); return; }
-    setFavorited(p => !p);
-    toast.success(favorited ? 'Removed from favorites' : `❤️ Added to favorites!`);
-  }, [user, favorited]);
+    try {
+      const active = await toggleFavoriteServer(product.id, product.title);
+      setFavorited(active);
+      toast.success(active ? '❤️ Added to favorites!' : 'Removed from favorites');
+    } catch {
+      toast.error('Favorite update failed');
+    }
+  }, [user, toggleFavoriteServer, product.id, product.title]);
 
-  const handleAddToCart = useCallback(() => {
+  const handleAddToCart = useCallback(async () => {
     toggleItem({ id: product.id, title: product.title, subtitle: product.subtitle || '', image: product.image || '', price, category: product.category });
+    if (!inCart && user) {
+      try { await addToCartServer(product.id, 1); } catch {}
+    }
     toast.success(inCart ? 'Removed from cart' : `🛒 Added to cart!`);
-  }, [product, inCart, toggleItem, price]);
+  }, [product, inCart, toggleItem, price, user, addToCartServer]);
 
   const handleNotifyMe = useCallback(() => {
     if (!user) { toast.error('Sign in to get notified'); return; }
@@ -245,8 +264,8 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
           </div>
           {/* Price row — dynamic from DB */}
           <div className="flex items-center gap-2 mt-auto pt-1">
-            <span className="text-xs line-through text-muted-foreground/40">${originalPrice}</span>
-            <span className="text-xl font-black text-primary">${price}</span>
+            <span className="text-xs line-through text-muted-foreground/40">{localizedOriginalPrice}</span>
+            <span className="text-xl font-black text-primary">{localizedPrice}</span>
             {discount > 0 && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(239,68,68,0.12)', color: '#f87171' }}>{discount}% OFF</span>}
             <div className="ml-auto flex items-center gap-0.5">
               <Star className="fill-yellow-400 text-yellow-400" style={{ width: 11, height: 11 }} />
@@ -275,8 +294,8 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
               <Button size="sm" className={cn('flex-1 h-8 text-[10px] font-bold rounded-lg', notified ? 'bg-emerald-600' : 'bg-amber-500 text-black hover:bg-amber-400')} onClick={handleNotifyMe}>
                 <Bell style={{ width: 12, height: 12 }} className="mr-1" />{notified ? 'NOTIFIED' : 'NOTIFY ME'}
               </Button>
-              <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={handleFavorite}>
-                <Heart style={{ width: 14, height: 14 }} className={favorited ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
+              <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => { void handleFavorite(); }}>
+                <Heart style={{ width: 14, height: 14 }} className={favoriteActive ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
               </Button>
             </div>
           ) : (
@@ -285,15 +304,15 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
                 <Button size="sm" variant="outline" className="flex-1 h-8 text-[10px] font-bold rounded-lg border-white/10 text-foreground/70 hover:border-white/20" onClick={(e) => { e.stopPropagation(); handleDemo(); }}>
                   <Play style={{ width: 11, height: 11 }} className="mr-1" />{hasDemoAvailable ? 'DEMO' : 'VIEW'}
                 </Button>
-                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); handleFavorite(); }}>
-                  <Heart style={{ width: 14, height: 14 }} className={favorited ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
+                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); void handleFavorite(); }}>
+                  <Heart style={{ width: 14, height: 14 }} className={favoriteActive ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
                 </Button>
-                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); handleAddToCart(); }}>
+                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); void handleAddToCart(); }}>
                   <ShoppingCart style={{ width: 14, height: 14 }} className={inCart ? 'text-primary' : 'text-muted-foreground'} />
                 </Button>
               </div>
               <Button size="sm" className="w-full h-9 text-[11px] font-black rounded-lg text-white border-0" style={{ background: 'linear-gradient(90deg,#2563EB,#1D4ED8)' }} onClick={(e) => { e.stopPropagation(); onBuyNow(product); }}>
-                <Package style={{ width: 13, height: 13 }} className="mr-1" /> BUY NOW — ${price}
+                <Package style={{ width: 13, height: 13 }} className="mr-1" /> BUY NOW — {localizedPrice}
               </Button>
             </>
           )}
@@ -361,7 +380,7 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
               </div>
               <div className="flex gap-2">
                 <Button className="flex-1 h-10 text-xs font-black" onClick={() => { setFeaturesOpen(false); onBuyNow(product); }}>
-                  <ShoppingCart style={{ width: 14, height: 14 }} className="mr-1" /> BUY — ${price}
+                  <ShoppingCart style={{ width: 14, height: 14 }} className="mr-1" /> BUY — {localizedPrice}
                 </Button>
                 <Button variant="outline" className="flex-1 h-10 text-xs font-bold" onClick={() => { setFeaturesOpen(false); handleDemo(); }}>
                   <Play style={{ width: 14, height: 14 }} className="mr-1" /> DEMO

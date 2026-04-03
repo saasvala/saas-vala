@@ -30,6 +30,11 @@ export interface MarketplaceProduct {
   build_status?: string;
   build_id?: string;
   createdAt?: string;
+  currency?: string;
+  language?: string;
+  country_code?: string;
+  price_base_usd?: number;
+  price_converted?: number;
 }
 
 const stockImages = [
@@ -53,6 +58,7 @@ const defaultFeatures = [
 ];
 
 const defaultTechStack = ['React', 'Node.js', 'PostgreSQL'];
+const DEFAULT_PRODUCT_PRICE = 5;
 
 export const CATEGORY_ROW_MAP: Record<string, string[]> = {
   upcoming: ['upcoming', 'coming_soon', 'pipeline'],
@@ -100,7 +106,7 @@ export function mapDbProduct(product: any, index: number): MarketplaceProduct {
     subtitle: product.short_description || product.description?.substring(0, 80) || 'Professional Software Solution',
     image: product.thumbnail_url || stockImages[index % stockImages.length],
     status: product.status === 'draft' ? 'draft' : product.trending ? 'bestseller' : 'live',
-    price: Number(product.price) || 5,
+    price: Number(product.price_converted ?? product.price) || DEFAULT_PRODUCT_PRICE,
     features, techStack: defaultTechStack,
     category: product.business_type || 'Software',
     businessType: product.business_type || '',
@@ -113,10 +119,15 @@ export function mapDbProduct(product: any, index: number): MarketplaceProduct {
     build_status: product.build_status || undefined,
     build_id: product.build_id || undefined,
     createdAt: product.created_at || undefined,
+    currency: product.currency || undefined,
+    language: product.language || undefined,
+    country_code: product.country_code || undefined,
+    price_base_usd: Number(product.price_base_usd ?? product.price) || DEFAULT_PRODUCT_PRICE,
+    price_converted: Number(product.price_converted ?? product.price) || DEFAULT_PRODUCT_PRICE,
   };
 }
 
-export function useMarketplaceProducts() {
+export function useMarketplaceProducts(locale?: { country?: string; lang?: string; currency?: string }) {
   const [products, setProducts] = useState<MarketplaceProduct[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -124,17 +135,27 @@ export function useMarketplaceProducts() {
     const fetchProducts = async () => {
       setLoading(true);
       try {
-        const res = await marketplaceApi.products();
+        const res = await marketplaceApi.productList({
+          country: locale?.country,
+          lang: locale?.lang,
+          currency: locale?.currency,
+        });
         const mapped = (res.data || []).map((p: any, i: number) => mapDbProduct(p, i));
         setProducts(prioritizeProducts(mapped));
       } catch (e) {
         console.error('Failed to fetch marketplace products:', e);
-        setProducts([]);
+        try {
+          const fallback = await marketplaceApi.products();
+          const mapped = (fallback.data || []).map((p: any, i: number) => mapDbProduct(p, i));
+          setProducts(prioritizeProducts(mapped));
+        } catch {
+          setProducts([]);
+        }
       }
       setLoading(false);
     };
     fetchProducts();
-  }, []);
+  }, [locale?.country, locale?.lang, locale?.currency]);
 
   const dbRow1 = products.slice(0, 30);
   const remaining = products.slice(30);
