@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -19,6 +19,13 @@ export default function Checkout() {
   const { purchaseApk, processing } = useApkPurchase();
   const { trackPromoConversion } = useMarketplaceActions();
   const [submitting, setSubmitting] = useState(false);
+  const payInFlightRef = useRef(false);
+  const pendingRestoreAttemptedRef = useRef(false);
+  const hasInvalidProductParam = useMemo(() => {
+    const productId = searchParams.get('product_id');
+    if (!productId) return false;
+    return !products.some((p) => String(p.id) === String(productId));
+  }, [products, searchParams]);
 
   const selected = useMemo(() => {
     const productId = searchParams.get('product_id');
@@ -31,6 +38,7 @@ export default function Checkout() {
   }, [items, products, searchParams]);
 
   const onPay = async () => {
+    if (payInFlightRef.current) return;
     if (!user) {
       navigate('/auth');
       return;
@@ -39,34 +47,39 @@ export default function Checkout() {
       toast.error('No product available to checkout');
       return;
     }
+    payInFlightRef.current = true;
     setSubmitting(true);
-    const result = await purchaseApk({
-      id: selected.id,
-      title: selected.title,
-      subtitle: selected.subtitle || '',
-      image: selected.image || '',
-      status: 'live',
-      price: selected.price,
-    });
-    setSubmitting(false);
-    if (result.success) {
-      try {
-        sessionStorage.removeItem('sv_pending_payment');
-      } catch {}
-      const promoRef = (() => {
-        try { return localStorage.getItem('sv_last_promo_ref') || ''; } catch { return ''; }
-      })();
-      if (promoRef) {
-        void trackPromoConversion(promoRef, selected.price || 0).catch(() => undefined);
+    try {
+      const result = await purchaseApk({
+        id: selected.id,
+        title: selected.title,
+        subtitle: selected.subtitle || '',
+        image: selected.image || '',
+        status: 'live',
+        price: selected.price,
+      });
+      if (result.success) {
+        try {
+          sessionStorage.removeItem('sv_pending_payment');
+        } catch {}
+        const promoRef = (() => {
+          try { return localStorage.getItem('sv_last_promo_ref') || ''; } catch { return ''; }
+        })();
+        if (promoRef) {
+          void trackPromoConversion(promoRef, selected.price || 0).catch(() => undefined);
+        }
+        clearCart();
+        const next = new URLSearchParams();
+        if (result.transactionId) next.set('tx', result.transactionId);
+        if (result.licenseKey) next.set('key', result.licenseKey);
+        if (selected.id) next.set('product', selected.id);
+        navigate(`/success${next.toString() ? `?${next.toString()}` : ''}`);
+      } else {
+        toast.error(result.error || 'Payment failed');
       }
-      clearCart();
-      const next = new URLSearchParams();
-      if (result.transactionId) next.set('tx', result.transactionId);
-      if (result.licenseKey) next.set('key', result.licenseKey);
-      if (selected.id) next.set('product', selected.id);
-      navigate(`/success${next.toString() ? `?${next.toString()}` : ''}`);
-    } else {
-      toast.error(result.error || 'Payment failed');
+    } finally {
+      payInFlightRef.current = false;
+      setSubmitting(false);
     }
   };
 
@@ -91,6 +104,28 @@ export default function Checkout() {
   };
 
   const payable = total > 0 ? total : selected?.price || 0;
+
+  useEffect(() => {
+    if (pendingRestoreAttemptedRef.current) return;
+    pendingRestoreAttemptedRef.current = true;
+    try {
+      const raw = sessionStorage.getItem('sv_pending_payment');
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as { paymentId?: string; ts?: number };
+      if (!parsed?.paymentId) return;
+      const createdAt = Number(parsed.ts || 0);
+      if (createdAt && Date.now() - createdAt > 15 * 60 * 1000) return;
+      void restorePendingPayment();
+    } catch {
+      // ignore malformed pending data
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hasInvalidProductParam) return;
+    toast.info('Invalid product selected. Redirected to marketplace.');
+    navigate('/marketplace', { replace: true });
+  }, [hasInvalidProductParam, navigate]);
 
   return (
     <div className="min-h-screen bg-background">

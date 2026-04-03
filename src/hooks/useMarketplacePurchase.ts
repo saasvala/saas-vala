@@ -1,4 +1,4 @@
- import { useState } from 'react';
+ import { useRef, useState } from 'react';
  import { supabase } from '@/integrations/supabase/client';
  import { useAuth } from './useAuth';
  import { generateSecureLicenseKey } from '@/lib/licenseUtils';
@@ -21,20 +21,31 @@ interface Product {
    error?: string;
  }
  
- export function useMarketplacePurchase() {
-   const { user } = useAuth();
-   const [processing, setProcessing] = useState(false);
+  export function useMarketplacePurchase() {
+    const { user } = useAuth();
+    const [processing, setProcessing] = useState(false);
+    const inFlightRef = useRef<Set<string>>(new Set());
  
    const purchaseProduct = async (product: Product): Promise<PurchaseResult> => {
-     if (!user) {
-       return { success: false, error: 'Please sign in to make a purchase' };
-     }
- 
-     setProcessing(true);
- 
-     try {
-       // Step 1: Check wallet balance
-       const { data: wallet, error: walletError } = await supabase
+      if (!user) {
+        return { success: false, error: 'Please sign in to make a purchase' };
+      }
+
+      const lockKey = `${user.id}:${product.id}`;
+      if (inFlightRef.current.has(lockKey)) {
+        return { success: false, error: 'Purchase already in progress. Please wait.' };
+      }
+      inFlightRef.current.add(lockKey);
+  
+      setProcessing(true);
+      let orderId: string | null = null;
+      let walletId: string | null = null;
+      let walletBefore = 0;
+      let walletDeducted = false;
+  
+      try {
+        // Step 1: Check wallet balance
+        const { data: wallet, error: walletError } = await supabase
          .from('wallets')
          .select('id, balance')
          .eq('user_id', user.id)
@@ -44,55 +55,76 @@ interface Product {
          throw new Error('Could not fetch wallet balance');
        }
  
-       if ((wallet.balance || 0) < product.price) {
-         throw new Error(`Insufficient balance. You need ₹${product.price.toLocaleString()} but have ₹${(wallet.balance || 0).toLocaleString()}`);
-       }
- 
-       // Step 2: Create marketplace order
-       const { data: order, error: orderError } = await supabase
-         .from('marketplace_orders')
-         .insert({
-           buyer_id: user.id,
-           seller_id: user.id, // For demo products, seller is system
-           amount: product.price,
-           status: 'completed',
-           payment_method: 'wallet',
-           completed_at: new Date().toISOString(),
-         })
-         .select()
-         .single();
- 
-       if (orderError) {
-         throw new Error('Failed to create order');
-       }
- 
-       // Step 3: Deduct from wallet (create transaction)
-       const { error: transactionError } = await supabase
-         .from('transactions')
-         .insert({
-           wallet_id: wallet.id,
-           type: 'debit',
-           amount: product.price,
-           description: `Purchase: ${product.title}`,
-           status: 'completed',
-           reference_type: 'marketplace_order',
-           reference_id: order.id,
-         });
- 
-       if (transactionError) {
-         console.error('Transaction error:', transactionError);
-       }
- 
-       // Step 4: Update wallet balance
-       const newBalance = (wallet.balance || 0) - product.price;
-       const { error: updateError } = await supabase
-         .from('wallets')
-         .update({ balance: newBalance, updated_at: new Date().toISOString() })
-         .eq('id', wallet.id);
- 
-       if (updateError) {
-         console.error('Wallet update error:', updateError);
-       }
+        if ((wallet.balance || 0) < product.price) {
+          throw new Error(`Insufficient balance. You need ₹${product.price.toLocaleString()} but have ₹${(wallet.balance || 0).toLocaleString()}`);
+        }
+        walletId = wallet.id;
+        walletBefore = Number(wallet.balance || 0);
+  
+        // Step 2: Create marketplace order
+        const { data: order, error: orderError } = await supabase
+          .from('marketplace_orders')
+          .insert({
+            buyer_id: user.id,
+            seller_id: user.id, // For demo products, seller is system
+            amount: product.price,
+            status: 'pending',
+            payment_method: 'wallet',
+            product_name: product.title,
+          })
+          .select()
+          .single();
+  
+        if (orderError) {
+          throw new Error('Failed to create order');
+        }
+        orderId = order.id;
+  
+        // Step 3: Deduct from wallet (create transaction)
+        const newBalance = walletBefore - product.price;
+        const { error: transactionError } = await supabase
+          .from('transactions')
+          .insert({
+            wallet_id: wallet.id,
+            type: 'debit',
+            amount: product.price,
+            description: `Purchase: ${product.title}`,
+            status: 'completed',
+            reference_type: 'marketplace_order',
+            reference_id: order.id,
+            balance_after: newBalance,
+          });
+  
+        if (transactionError) {
+          throw new Error('Failed to create wallet transaction');
+        }
+  
+        // Step 4: Update wallet balance
+        const { error: updateError } = await supabase
+          .from('wallets')
+          .update({ balance: newBalance, updated_at: new Date().toISOString() })
+          .eq('id', wallet.id);
+  
+        if (updateError) {
+          throw new Error('Failed to update wallet balance');
+        }
+        walletDeducted = true;
+
+        const { data: walletAfterRow } = await supabase
+          .from('wallets')
+          .select('balance')
+          .eq('id', wallet.id)
+          .single();
+        const walletAfter = Number(walletAfterRow?.balance ?? newBalance);
+        if (Math.abs(walletAfter - newBalance) > 0.0001) {
+          const { error: reconcileError } = await supabase
+            .from('wallets')
+            .update({ balance: newBalance, updated_at: new Date().toISOString() })
+            .eq('id', wallet.id);
+          if (reconcileError) {
+            throw new Error('Wallet mismatch detected and reconciliation failed');
+          }
+        }
  
        // Step 5: Generate secure crypto-random license key
         const licenseKey = generateSecureLicenseKey();
@@ -126,10 +158,15 @@ interface Product {
           });
         }
 
-       // Step 6: Log activity
-       await supabase.from('activity_logs').insert({
-         entity_type: 'marketplace_order',
-         entity_id: order.id,
+        // Step 6: Complete order + log activity
+        await supabase
+          .from('marketplace_orders')
+          .update({ status: 'completed', completed_at: new Date().toISOString() })
+          .eq('id', order.id);
+
+        await supabase.from('activity_logs').insert({
+          entity_type: 'marketplace_order',
+          entity_id: order.id,
          action: 'purchase_completed',
          performed_by: user.id,
          details: {
@@ -147,20 +184,47 @@ interface Product {
          message: `You purchased ${product.title} for ₹${product.price.toLocaleString()}. Your License Key: ${finalLicenseKey}`,
          type: 'success',
          action_url: '/keys',
-       });
- 
-       setProcessing(false);
-       return {
-         success: true,
-         orderId: order.id,
-         licenseKey: finalLicenseKey,
-       };
-     } catch (error: any) {
-       setProcessing(false);
-       const errorMessage = error.message || 'Purchase failed';
-       
-       // Log error
-       await supabase.from('error_logs').insert({
+        });
+  
+        setProcessing(false);
+        inFlightRef.current.delete(lockKey);
+        return {
+          success: true,
+          orderId: order.id,
+          licenseKey: finalLicenseKey,
+        };
+      } catch (error: any) {
+        setProcessing(false);
+        inFlightRef.current.delete(lockKey);
+        const errorMessage = error.message || 'Purchase failed';
+
+        if (walletId && walletDeducted) {
+          const restoredBalance = walletBefore;
+          await supabase
+            .from('wallets')
+            .update({ balance: restoredBalance, updated_at: new Date().toISOString() })
+            .eq('id', walletId);
+          await supabase.from('transactions').insert({
+            wallet_id: walletId,
+            type: 'refund',
+            amount: product.price,
+            description: `Rollback refund: ${product.title}`,
+            status: 'completed',
+            reference_type: 'marketplace_order_rollback',
+            reference_id: orderId,
+            balance_after: restoredBalance,
+          });
+        }
+
+        if (orderId) {
+          await supabase
+            .from('marketplace_orders')
+            .update({ status: 'failed', completed_at: null })
+            .eq('id', orderId);
+        }
+        
+        // Log error
+        await supabase.from('error_logs').insert({
          user_id: user.id,
          error_type: 'purchase_error',
          error_message: errorMessage,
