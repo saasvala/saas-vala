@@ -110,6 +110,11 @@ const DEFAULT_GITHUB_ORG = Deno.env.get('GITHUB_DEFAULT_ORG') || 'saasvala'
 const STANDARD_APP_ROLES = ['admin', 'user'] as const
 const DB_INDEX_HINT_PATTERNS = (Deno.env.get('DB_INDEX_HINT_PATTERNS') || 'email,status').split(',').map((v) => v.trim()).filter(Boolean)
 const DEFAULT_COMMISSION_RATE = 10
+const NOTIFY_ALLOWED_TRIGGERS = ['payment_success', 'payment_fail', 'apk_ready', 'reseller_sale', 'billing_due'] as const
+const NOTIFY_ALLOWED_CHANNELS = ['in_app', 'email', 'system_alert'] as const
+const NOTIFY_CHANNEL_SET = new Set<string>(NOTIFY_ALLOWED_CHANNELS)
+const NOTIFY_TRIGGER_SET = new Set<string>(NOTIFY_ALLOWED_TRIGGERS)
+const NOTIFY_MAX_TITLE_LENGTH = 120
 const FINAL_RESELLER_GAP_FEATURE_KEYS = [
   'tier_based_dynamic_commission_engine',
   'per_product_commission_override',
@@ -160,6 +165,12 @@ function invalidateSeoAnalyticsCache() {
 
 function nowIso() {
   return new Date().toISOString()
+}
+
+function buildNotificationTitle(trigger: string, providedTitle: unknown) {
+  const value = String(providedTitle || '').trim()
+  if (value) return value.slice(0, NOTIFY_MAX_TITLE_LENGTH)
+  return trigger.replace(/_/g, ' ').toUpperCase().slice(0, NOTIFY_MAX_TITLE_LENGTH)
 }
 
 function normalizeFeatureKeys(input: unknown): string[] {
@@ -8328,6 +8339,201 @@ async function handleScheduler(method: string, pathParts: string[], body: any, s
   return err('Not found', 404)
 }
 
+async function handleNotify(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const action = pathParts[0]
+  const reqUrl = new URL(String(body?.__request_url || ''), 'http://localhost')
+
+  // POST /notify/send
+  if (method === 'POST' && action === 'send') {
+    const trigger = String(body?.trigger || '').trim().toLowerCase()
+    if (!NOTIFY_TRIGGER_SET.has(trigger)) {
+      return err('Invalid trigger', 422, 'VALIDATION_ERROR')
+    }
+
+    const title = buildNotificationTitle(trigger, body?.title)
+    const message = String(body?.message || '').trim()
+    if (!message) return err('message is required', 422, 'VALIDATION_ERROR')
+    const typeRaw = String(body?.type || 'info').toLowerCase()
+    const type = ['info', 'success', 'warning', 'error'].includes(typeRaw) ? typeRaw : 'info'
+    const channelsRaw = Array.isArray(body?.channels) ? body.channels : ['in_app']
+    const channels = Array.from(new Set(channelsRaw.map((v: any) => String(v || '').trim().toLowerCase())))
+      .filter((v) => NOTIFY_CHANNEL_SET.has(v))
+    if (!channels.length) return err('At least one valid channel is required', 422, 'VALIDATION_ERROR')
+
+    const requestedUserId = String(body?.user_id || '').trim()
+    let targetUserId = userId
+    if (requestedUserId && requestedUserId !== userId) {
+      const isAdmin = await isSuperAdminUser(userId)
+      if (!isAdmin) return err('Forbidden', 403, 'FORBIDDEN')
+      targetUserId = requestedUserId
+    }
+    const inserted: Record<string, unknown> = {}
+    const unavailableChannels: string[] = []
+
+    if (channels.includes('in_app')) {
+      const { data, error } = await sb.from('notifications').insert({
+        user_id: targetUserId,
+        title,
+        message,
+        type,
+        action_url: body?.action_url || null,
+      }).select('id,created_at').single()
+      if (error && isTableMissingError(error)) unavailableChannels.push('in_app')
+      else if (error) return err(error.message)
+      if (data) inserted.in_app = data
+    }
+
+    if (channels.includes('email')) {
+      const recipient = String(body?.recipient || '').trim()
+      if (!recipient) return err('recipient is required for email channel', 422, 'VALIDATION_ERROR')
+      const { data, error } = await sb.from('notification_outbox').insert({
+        user_id: targetUserId,
+        channel: 'email',
+        template_key: trigger,
+        recipient,
+        payload: {
+          title,
+          message,
+          trigger,
+          metadata: body?.metadata || {},
+        },
+        status: 'queued',
+      }).select('id,status,scheduled_at').single()
+      if (error && isTableMissingError(error)) unavailableChannels.push('email')
+      else if (error) return err(error.message)
+      if (data) inserted.email = data
+    }
+
+    if (channels.includes('system_alert')) {
+      const severityRaw = String(body?.severity || type).toLowerCase()
+      const severity = ['low', 'medium', 'high', 'critical'].includes(severityRaw) ? severityRaw : 'medium'
+      const { data, error } = await sb.from('system_alerts').insert({
+        alert_type: trigger,
+        severity,
+        status: 'open',
+        message,
+        context: {
+          title,
+          user_id: targetUserId,
+          trigger,
+          metadata: body?.metadata || {},
+        },
+      }).select('id,status,created_at').single()
+      if (error && isTableMissingError(error)) unavailableChannels.push('system_alert')
+      else if (error) return err(error.message)
+      if (data) inserted.system_alert = data
+    }
+
+    if (unavailableChannels.length && Object.keys(inserted).length === 0) {
+      return err(`Notification channels unavailable: ${unavailableChannels.join(', ')}`, 503, 'NOTIFICATION_CHANNELS_UNAVAILABLE')
+    }
+    return json({ success: true, trigger, channels, inserted, unavailable_channels: unavailableChannels })
+  }
+
+  // GET /notify/list
+  if (method === 'GET' && action === 'list') {
+    const limit = Math.min(100, Math.max(1, Number(reqUrl.searchParams.get('limit') || body?.limit || 25)))
+    const rawChannelsFromQuery = reqUrl.searchParams.get('channels')
+    const listChannelsRaw = rawChannelsFromQuery
+      ? String(rawChannelsFromQuery).split(',')
+      : (Array.isArray(body?.channels)
+          ? body.channels
+          : String(body?.channels || NOTIFY_ALLOWED_CHANNELS.join(',')).split(','))
+    const listChannels = new Set(
+      listChannelsRaw
+        .map((v: any) => String(v || '').trim().toLowerCase())
+        .filter((v: string) => NOTIFY_CHANNEL_SET.has(v))
+    )
+
+    const result: Record<string, unknown> = {}
+    if (listChannels.has('in_app')) {
+      const { data } = await sb
+        .from('notifications')
+        .select('id,title,message,type,read,read_at,action_url,created_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(limit)
+      result.in_app = data || []
+    }
+    if (listChannels.has('email')) {
+      const { data } = await sb
+        .from('notification_outbox')
+        .select('id,channel,template_key,recipient,status,attempts,scheduled_at,sent_at,created_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(limit)
+      result.email = data || []
+    }
+    if (listChannels.has('system_alert')) {
+      const { data } = await sb
+        .from('system_alerts')
+        .select('id,alert_type,severity,status,message,last_seen_at,resolved_at,created_at')
+        .order('created_at', { ascending: false })
+        .limit(Math.max(limit * 4, 100))
+      result.system_alert = (data || [])
+        .filter((row: any) => {
+          const ctxUserId = row?.context?.user_id
+          return !ctxUserId || String(ctxUserId) === userId
+        })
+        .slice(0, limit)
+    }
+    return json({ success: true, data: result })
+  }
+
+  return err('Not found', 404)
+}
+
+async function handleSessionManagement(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const action = pathParts[0]
+
+  // GET /sessions
+  if (method === 'GET' && !action) {
+    const reqUrl = new URL(String(body?.__request_url || ''), 'http://localhost')
+    const limit = Math.min(100, Math.max(1, Number(reqUrl.searchParams.get('limit') || body?.limit || 25)))
+    const onlyActive = String(reqUrl.searchParams.get('active') || body?.active || 'true').toLowerCase() !== 'false'
+    let query = sb
+      .from('user_sessions')
+      .select('id,user_id,ip_address,user_agent,device_type,location,is_active,last_activity,revoked_at,created_at,updated_at')
+      .eq('user_id', userId)
+      .order('last_activity', { ascending: false })
+      .limit(limit)
+    if (onlyActive) query = query.eq('is_active', true)
+    const { data, error } = await query
+    if (error) {
+      if (isTableMissingError(error)) return json({ success: true, data: [] })
+      return err(error.message)
+    }
+    return json({ success: true, data: data || [] })
+  }
+
+  // POST /session/revoke
+  if (method === 'POST' && action === 'revoke') {
+    const sessionId = String(body?.session_id || '').trim()
+    if (!sessionId) return err('session_id is required', 422, 'VALIDATION_ERROR')
+    const now = nowIso()
+    const { data, error } = await sb
+      .from('user_sessions')
+      .update({
+        is_active: false,
+        revoked_at: now,
+        revoked_by: userId,
+        updated_at: now,
+      })
+      .eq('id', sessionId)
+      .eq('user_id', userId)
+      .select('id,is_active,revoked_at,updated_at')
+      .maybeSingle()
+    if (error) {
+      if (isTableMissingError(error)) return err('Session store unavailable', 503, 'SESSION_STORE_UNAVAILABLE')
+      return err(error.message)
+    }
+    if (!data) return err('Session not found', 404, 'NOT_FOUND')
+    return json({ success: true, data })
+  }
+
+  return err('Not found', 404)
+}
+
 // ===================== MAIN ROUTER =====================
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -8337,7 +8543,7 @@ Deno.serve(async (req) => {
   try {
     const url = new URL(req.url)
     const fullPath = url.pathname.replace(/^\/api-gateway\/?/, '').replace(/\/$/, '')
-    const normalizedPath = fullPath.replace(/^api\/v1\/?/, '')
+    const normalizedPath = fullPath.replace(/^api\/v\d+\/?/, '')
     const parts = normalizedPath.split('/').filter(Boolean)
     const module = parts[0]
     const subParts = parts.slice(1)
@@ -8349,6 +8555,7 @@ Deno.serve(async (req) => {
     } else {
       url.searchParams.forEach((v, k) => { body[k] = v })
     }
+    body.__request_url = req.url
 
     // Auth endpoints don't require JWT
     if (module === 'auth') {
@@ -8504,6 +8711,15 @@ Deno.serve(async (req) => {
         break
       case 'wallet':
         routeResponse = await handleWallet(req.method, subParts, body, userId, sb)
+        break
+      case 'notify':
+        routeResponse = await handleNotify(req.method, subParts, body, userId, sb)
+        break
+      case 'sessions':
+        routeResponse = await handleSessionManagement(req.method, subParts, body, userId, sb)
+        break
+      case 'session':
+        routeResponse = await handleSessionManagement(req.method, subParts, body, userId, sb)
         break
       case 'subscriptions':
       case 'subscription':
