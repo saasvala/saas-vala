@@ -98,7 +98,7 @@ export function useApkPurchase() {
         .update({ balance: newBalance, updated_at: new Date().toISOString() })
         .eq('id', wallet.id);
       if (walletUpdateError) {
-        throw new Error('Failed to update wallet balance');
+        throw new Error(`Failed to update wallet balance: ${walletUpdateError.message}`);
       }
 
       // Step 6: Create APK download record (only for real DB products)
