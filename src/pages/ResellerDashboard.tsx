@@ -5,6 +5,7 @@ import { KeyGeneratorPanel } from '@/components/reseller/KeyGeneratorPanel';
 import { ClientsPanel } from '@/components/reseller/ClientsPanel';
 import { AddBalancePanel } from '@/components/reseller/AddBalancePanel';
 import { ReferralPanel } from '@/components/reseller/ReferralPanel';
+import { ChangePasswordPanel } from '@/components/reseller/ChangePasswordPanel';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
@@ -84,6 +85,8 @@ export default function ResellerDashboard() {
         return <AddBalancePanel />;
       case 'withdrawals':
         return <WithdrawalsPanel />;
+      case 'settings':
+        return <ChangePasswordPanel />;
       default:
         return <ResellerOverview />;
     }

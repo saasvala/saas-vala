@@ -4502,6 +4502,22 @@ Deno.serve(async (req) => {
       case 'api-keys': routeResponse = await handleApiKeys(req.method, subParts, body, userId, sb); break
       case 'api-usage':
 
+      case 'reseller':
+        routeResponse = await handleResellerOnboarding(req.method, subParts, body, userId, sb)
+        break
+      case 'resellers':
+        routeResponse = await handleResellers(req.method, subParts, body, userId, sb)
+        break
+      case 'admin':
+        routeResponse = await handleAdminResellerApplications(req.method, subParts, body, userId, sb)
+        break
+      case 'wallet':
+        routeResponse = await handleWallet(req.method, subParts, body, userId, sb)
+        break
+      case 'subscriptions':
+      case 'subscription':
+        routeResponse = await handleSubscriptions(req.method, subParts, body, userId, sb)
+        break
       case 'leads':
       case 'lead':
       case 'seo':
