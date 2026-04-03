@@ -139,6 +139,28 @@ export const resellerOnboardingApi = {
     apiCall('POST', 'admin/reseller-reject', { application_id: applicationId, reason }),
 };
 
+export const resellerFeaturesApi = {
+  dashboard: () => apiCall('GET', 'dashboard'),
+  wallet: () => apiCall('GET', 'wallet'),
+  walletAdd: (amount: number, description?: string, paymentMethod?: string) =>
+    apiCall('POST', 'wallet/add', { amount, description, payment_method: paymentMethod }),
+  walletDeduct: (amount: number, description?: string, referenceId?: string, referenceType?: string) =>
+    apiCall('POST', 'wallet/withdraw', { amount, description, reference_id: referenceId, reference_type: referenceType }),
+  products: () => apiCall('GET', 'products'),
+  leads: (params?: { page?: number; limit?: number; search?: string }) => apiCall('GET', 'seo/leads', params),
+  apiKeys: () => apiCall('GET', 'keys'),
+  createApiKey: (data: any) => apiCall('POST', 'keys/create', data),
+  revokeApiKey: (data: any) => apiCall('POST', 'keys/revoke', data),
+  subscriptions: () => apiCall('GET', 'subscriptions'),
+  seoScan: (data?: { urls?: string[]; product_id?: string; mode?: 'quick' | 'full' }) => apiCall('POST', 'seo/scan', data),
+  seoGenerateMeta: (data?: { product_id?: string; urls?: string[] }) => apiCall('POST', 'seo/generate-meta', data),
+  seoGenerateLeads: (data?: { product_id?: string; country?: string; count?: number }) => apiCall('POST', 'leads', data),
+  aiUsage: () => apiCall('GET', 'ai/usage'),
+  aiGateway: (data: any) => apiCall('POST', 'ai/gateway', data),
+  analyticsSeo: () => apiCall('GET', 'analytics/seo'),
+  analyticsLeads: () => apiCall('GET', 'analytics/leads'),
+};
+
 // ===================== MARKETPLACE =====================
 export const marketplaceApi = {
   products: () => apiCall('GET', 'marketplace/products'),

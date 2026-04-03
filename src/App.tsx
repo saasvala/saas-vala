@@ -375,6 +375,15 @@ function AppRoutes() {
         <Route path="/seo/leads" element={<AuthGuard><Navigate to="/seo-leads" replace /></AuthGuard>} />
         <Route path="/reseller-dashboard" element={<AuthGuard><RoleGuard role="reseller"><ResellerDashboard /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/dashboard" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/reseller/wallet" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/wallet" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/reseller/products" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/marketplace" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/reseller/leads" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/seo-leads" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/reseller/api-keys" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/keys" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/reseller/subscription" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/subscription" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/reseller/settings" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard?tab=settings" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/reseller/seo" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/seo-leads" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/reseller/ai" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/saas-ai-dashboard" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/reseller/analytics" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/analytics-pwa" replace /></RoleGuard></AuthGuard>} />
 
         <Route path="/reseller/buy" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/marketplace" replace /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/users" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard?tab=users" replace /></RoleGuard></AuthGuard>} />
