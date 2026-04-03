@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { productsApi } from '@/lib/api';
 import type { Json } from '@/integrations/supabase/types';
 import { supabase } from '@/integrations/supabase/client';
+import { subscribeQuickActionEvents } from '@/lib/quickActionEvents';
 
 export interface Product {
   id: string;
@@ -143,6 +144,26 @@ export function useProducts() {
   useEffect(() => {
     fetchProducts();
     fetchCategories();
+  }, []);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('products-dashboard-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+        fetchProducts();
+      })
+      .subscribe();
+
+    const unsubscribeQuickEvents = subscribeQuickActionEvents((event) => {
+      if (event === 'product_added' || event === 'apk_uploaded') {
+        fetchProducts();
+      }
+    });
+
+    return () => {
+      unsubscribeQuickEvents();
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   return {

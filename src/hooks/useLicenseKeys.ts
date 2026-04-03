@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { keysApi } from '@/lib/api';
+import { supabase } from '@/integrations/supabase/client';
+import { subscribeQuickActionEvents } from '@/lib/quickActionEvents';
 
 export interface LicenseKey {
   id: string;
@@ -120,6 +122,26 @@ export function useLicenseKeys() {
 
   useEffect(() => {
     fetchKeys();
+  }, []);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('license-keys-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'license_keys' }, () => {
+        fetchKeys();
+      })
+      .subscribe();
+
+    const unsubscribeQuickEvents = subscribeQuickActionEvents((event) => {
+      if (event === 'key_generated') {
+        fetchKeys();
+      }
+    });
+
+    return () => {
+      unsubscribeQuickEvents();
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   return {
