@@ -306,10 +306,13 @@ export const leadsApi = {
   list: (params?: { page?: number; limit?: number; search?: string }) =>
     apiCall('GET', 'leads', params),
   create: (data: any) => apiCall('POST', 'leads', data),
+  callTrack: (data: any) => apiCall('POST', 'lead/call-track', data),
+  whatsappTrack: (data: any) => apiCall('POST', 'lead/whatsapp-track', data),
 };
 
 export const seoApi = {
   analytics: () => apiCall('GET', 'seo/analytics'),
+  landingCreate: (data: any) => apiCall('POST', 'seo/landing/create', data),
 };
 
 export const adsApi = {

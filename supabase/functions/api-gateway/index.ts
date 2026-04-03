@@ -204,6 +204,38 @@ function toPositiveNumber(value: unknown, fallback = 0) {
   return parsed
 }
 
+function normalizeEmail(value: unknown) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function normalizePhone(value: unknown) {
+  return String(value || '').replace(/[^\d+]/g, '')
+}
+
+function isLikelyFakeEmail(email: string) {
+  if (!email) return false
+  const lower = email.toLowerCase()
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(lower)) return true
+  const badTokens = ['test@', 'fake@', 'noreply@', 'example.com', 'mailinator', 'tempmail', '10minutemail']
+  return badTokens.some((token) => lower.includes(token))
+}
+
+function isLikelyFakePhone(phone: string) {
+  if (!phone) return false
+  const digits = phone.replace(/\D/g, '')
+  if (digits.length < 8 || digits.length > 15) return true
+  if (/^(\d)\1+$/.test(digits)) return true
+  if (digits === '12345678' || digits === '1234567890' || digits === '0000000000') return true
+  return false
+}
+
+function readClientIp(req?: Request) {
+  if (!req) return 'unknown'
+  const forwarded = req.headers.get('x-forwarded-for') || ''
+  if (forwarded) return forwarded.split(',')[0].trim()
+  return req.headers.get('x-real-ip') || 'unknown'
+}
+
 async function sha256Hex(value: string) {
   const bytes = new TextEncoder().encode(String(value || ''))
   const digest = await crypto.subtle.digest('SHA-256', bytes)
@@ -3636,9 +3668,51 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
 }
 
 // ===================== 14. SEO & LEADS =====================
-async function handleSeoLeads(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+async function handleSeoLeads(method: string, pathParts: string[], body: any, userId: string, sb: any, req?: Request) {
   const admin = adminClient()
   const segment = pathParts[0]
+  const resellerProfile = await getResellerProfileForUser(sb, userId)
+  const resellerId = resellerProfile?.id || null
+
+  // POST /lead/call-track
+  if (method === 'POST' && segment === 'lead' && pathParts[1] === 'call-track') {
+    const missing = validateRequired(body, ['lead_id'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+    const { data, error } = await admin.from('lead_call_tracks').insert({
+      lead_id: body.lead_id,
+      phone: body.phone || null,
+      dynamic_number: body.dynamic_number || null,
+      call_status: body.call_status || 'initiated',
+      call_duration_seconds: Number(body.call_duration_seconds || 0),
+      recording_url: body.recording_url || null,
+      source: body.source || 'phone',
+      reseller_id: resellerId,
+      created_by: userId,
+      meta: body.meta || {},
+    }).select().single()
+    if (error) return err(error.message)
+    await logActivity(admin, 'lead_call_track', data.id, 'created', userId)
+    return json({ data }, 201)
+  }
+
+  // POST /lead/whatsapp-track
+  if (method === 'POST' && segment === 'lead' && pathParts[1] === 'whatsapp-track') {
+    const missing = validateRequired(body, ['lead_id'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+    const { data, error } = await admin.from('lead_whatsapp_tracks').insert({
+      lead_id: body.lead_id,
+      phone: body.phone || null,
+      click_source: body.click_source || 'button',
+      message_template: body.message_template || null,
+      status: body.status || 'clicked',
+      reseller_id: resellerId,
+      created_by: userId,
+      meta: body.meta || {},
+    }).select().single()
+    if (error) return err(error.message)
+    await logActivity(admin, 'lead_whatsapp_track', data.id, 'created', userId)
+    return json({ data }, 201)
+  }
 
   // GET /leads
   if (method === 'GET' && segment === 'leads') {
@@ -3658,11 +3732,91 @@ async function handleSeoLeads(method: string, pathParts: string[], body: any, us
 
   // POST /leads
   if (method === 'POST' && segment === 'leads') {
-    const { data, error } = await sb.from('leads').insert({
-      name: body.name || '', email: body.email, phone: body.phone,
+    const normalizedEmail = normalizeEmail(body.email)
+    const normalizedPhone = normalizePhone(body.phone)
+    if (!normalizedEmail && !normalizedPhone) return err('Missing field: email or phone', 422, 'VALIDATION_ERROR')
+
+    const ip = readClientIp(req)
+    const deviceId = String(body.device_id || body.deviceId || '').trim() || 'unknown'
+    const fingerprintHash = await sha256Hex([ip, deviceId, normalizedEmail, normalizedPhone].join('|'))
+
+    let attempts = 1
+    const { data: fpExisting } = await admin.from('lead_fingerprint').select('id, attempts').eq('hash', fingerprintHash).maybeSingle()
+    if (fpExisting?.id) {
+      attempts = Number(fpExisting.attempts || 0) + 1
+      await admin.from('lead_fingerprint').update({
+        ip,
+        device_id: deviceId,
+        attempts,
+        last_seen_at: nowIso(),
+        updated_at: nowIso(),
+      }).eq('id', fpExisting.id)
+    } else {
+      await admin.from('lead_fingerprint').insert({
+        ip,
+        device_id: deviceId,
+        hash: fingerprintHash,
+        attempts,
+        last_seen_at: nowIso(),
+      })
+    }
+
+    const duplicateFilters: string[] = []
+    if (normalizedEmail) duplicateFilters.push(`email.ilike.${normalizedEmail}`)
+    if (normalizedPhone) duplicateFilters.push(`phone.eq.${normalizedPhone}`)
+    let duplicateLead: any = null
+    if (duplicateFilters.length > 0) {
+      const { data: existingDuplicate } = await admin.from('leads').select('id').or(duplicateFilters.join(',')).limit(1).maybeSingle()
+      duplicateLead = existingDuplicate || null
+    }
+
+    const fakeEmail = isLikelyFakeEmail(normalizedEmail)
+    const fakePhone = isLikelyFakePhone(normalizedPhone)
+    const tooManyAttempts = attempts >= 5
+    const isSpam = fakeEmail || fakePhone || tooManyAttempts
+    const isDuplicate = !!duplicateLead
+
+    if (isDuplicate || isSpam) {
+      const blockedReason = isDuplicate ? 'duplicate_lead' : fakeEmail || fakePhone ? 'spam_contact' : 'fingerprint_rate_limit'
+      const { data: blockedLead, error: blockedError } = await admin.from('leads').insert({
+        name: body.name || '',
+        email: normalizedEmail || null,
+        phone: normalizedPhone || null,
+        company: body.company,
+        source: body.source || 'website',
+        status: 'lost',
+        product_id: body.product_id,
+        notes: body.notes,
+        tags: body.tags,
+        assigned_to: body.assigned_to,
+        reseller_id: resellerId,
+        fingerprint_hash: fingerprintHash,
+        is_blocked: true,
+        blocked_reason: blockedReason,
+      }).select().single()
+      if (blockedError) return err(blockedError.message)
+      await admin.from('lead_fingerprint').update({
+        is_spam: isSpam,
+        attempts,
+        updated_at: nowIso(),
+      }).eq('hash', fingerprintHash)
+      await logActivity(admin, 'lead', blockedLead.id, 'blocked', userId, { blocked_reason: blockedReason })
+      return json({
+        blocked: true,
+        do_not_charge_reseller: true,
+        reason: blockedReason,
+        data: blockedLead,
+      }, 201)
+    }
+
+    const { data, error } = await admin.from('leads').insert({
+      name: body.name || '', email: normalizedEmail || null, phone: normalizedPhone || null,
       company: body.company, source: body.source || 'website',
       status: body.status || 'new', product_id: body.product_id,
       notes: body.notes, tags: body.tags, assigned_to: body.assigned_to,
+      reseller_id: resellerId,
+      fingerprint_hash: fingerprintHash,
+      is_blocked: false,
     }).select().single()
     if (error) return err(error.message)
     await logActivity(admin, 'lead', data.id, 'created', userId)
@@ -3674,6 +3828,36 @@ async function handleSeoLeads(method: string, pathParts: string[], body: any, us
     const { data, error } = await sb.from('seo_data').select('*').order('created_at', { ascending: false })
     if (error) return err(error.message)
     return json({ data })
+  }
+
+  // POST /seo/landing/create
+  if (method === 'POST' && segment === 'seo' && pathParts[1] === 'landing' && pathParts[2] === 'create') {
+    const missing = validateRequired(body, ['keyword'])
+    if (missing) return err(missing, 422, 'VALIDATION_ERROR')
+    const keyword = String(body.keyword || '').trim()
+    const country = String(body.country || body.region || 'global').trim().toLowerCase()
+    const slug = String(body.slug || `${keyword}-${country}`)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 120)
+    const urlPath = `/landing/${country}/${slug}`
+    const { data, error } = await admin.from('seo_landing_pages').insert({
+      keyword,
+      country,
+      slug,
+      url_path: urlPath,
+      title: body.title || `${keyword} in ${country.toUpperCase()}`,
+      content: body.content || null,
+      status: body.status || 'draft',
+      is_fast_page: body.is_fast_page !== false,
+      created_by: userId,
+      reseller_id: resellerId,
+      meta: body.meta || {},
+    }).select().single()
+    if (error) return err(error.message)
+    await logActivity(admin, 'seo_landing_page', data.id, 'created', userId, { keyword, country })
+    return json({ data }, 201)
   }
 
   return err('Not found', 404)
@@ -3919,8 +4103,9 @@ Deno.serve(async (req) => {
       case 'wallet': return await handleWallet(req.method, subParts, body, userId, sb)
       case 'subscriptions': return await handleSubscriptions(req.method, subParts, body, userId, sb)
       case 'leads':
+      case 'lead':
       case 'seo':
-        return await handleSeoLeads(req.method, [module, ...subParts], body, userId, sb)
+        return await handleSeoLeads(req.method, [module, ...subParts], body, userId, sb, req)
       case 'ads':
         return await handleAiModule(req.method, subParts, body, userId, sb, 'ads')
       case 'audience':
