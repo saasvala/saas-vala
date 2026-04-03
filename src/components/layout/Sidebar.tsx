@@ -26,6 +26,11 @@ import {
   Headset,
   Download,
   MessageCircle,
+  BellRing,
+  Mail,
+  RefreshCw,
+  Archive,
+  Tags,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import saasValaLogo from '@/assets/saas-vala-logo.jpg';
@@ -50,6 +55,7 @@ const navItems: NavItem[] = [
   { title: 'Downloads', icon: Download, href: '/dashboard/downloads', section: 'core' },
   { title: 'Support', icon: Headset, href: '/support', section: 'core' },
   { title: 'Feedback', icon: MessageCircle, href: '/feedback', section: 'core' },
+  { title: 'Announcements', icon: BellRing, href: '/announcements', section: 'core' },
 
   { title: 'Resellers', icon: UsersRound, href: '/reseller-manager', activePaths: ['/reseller-manager', '/resellers'], adminOnly: true, section: 'admin' },
   { title: 'Marketplace', icon: Store, href: '/admin/marketplace', adminOnly: true, section: 'admin' },
@@ -57,6 +63,11 @@ const navItems: NavItem[] = [
   { title: 'APK Pipeline', icon: Smartphone, href: '/auto-pilot/apk-pipeline', activePaths: ['/auto-pilot/apk-pipeline'], adminOnly: true, section: 'admin' },
   { title: 'Audit Logs', icon: ScrollText, href: '/audit-logs', adminOnly: true, section: 'admin' },
   { title: 'System Health', icon: HeartPulse, href: '/system-health', adminOnly: true, section: 'admin' },
+  { title: 'Email Logs', icon: Mail, href: '/email-logs', adminOnly: true, section: 'admin' },
+  { title: 'Retry Actions', icon: RefreshCw, href: '/retry-actions', adminOnly: true, section: 'admin' },
+  { title: 'Archive', icon: Archive, href: '/archive', adminOnly: true, section: 'admin' },
+  { title: 'Bulk Actions', icon: RefreshCw, href: '/bulk-actions', adminOnly: true, section: 'admin' },
+  { title: 'Tagging', icon: Tags, href: '/tags', adminOnly: true, section: 'admin' },
   { title: 'Settings', icon: Settings, href: '/settings', adminOnly: true, section: 'admin' },
 
   { title: 'SaaS AI', icon: BrainCircuit, href: '/saas-ai-dashboard', section: 'ai' },

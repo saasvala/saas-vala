@@ -136,6 +136,11 @@ export default function Settings() {
   const [emailNotifications, setEmailNotifications] = useState(true);
   const [pushNotifications, setPushNotifications] = useState(true);
   const { theme, setTheme } = useTheme();
+  const [activeDevices, setActiveDevices] = useState([
+    { id: 'dev-1', name: 'Chrome on Windows', lastSeen: new Date().toISOString(), current: true },
+    { id: 'dev-2', name: 'Safari on iPhone', lastSeen: new Date(Date.now() - 1000 * 60 * 38).toISOString(), current: false },
+    { id: 'dev-3', name: 'Edge on Laptop', lastSeen: new Date(Date.now() - 1000 * 60 * 60 * 4).toISOString(), current: false },
+  ]);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -369,6 +374,25 @@ export default function Settings() {
                 <CardDescription>Manage your active sessions</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  {activeDevices.map((device) => (
+                    <div key={device.id} className="flex items-center justify-between rounded-md border border-border p-3">
+                      <div>
+                        <p className="text-sm font-medium">{device.name} {device.current ? '(Current)' : ''}</p>
+                        <p className="text-xs text-muted-foreground">Last active: {new Date(device.lastSeen).toLocaleString()}</p>
+                      </div>
+                      {!device.current && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setActiveDevices((prev) => prev.filter((d) => d.id !== device.id))}
+                        >
+                          Revoke
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
                 <Button variant="outline" onClick={handleForceLogout} className="gap-2 border-border">
                   <LogOut className="h-4 w-4" />
                   Force Logout All Sessions
