@@ -211,9 +211,15 @@ export const githubApi = {
 // ===================== AI =====================
 export const aiApi = {
   run: (data: any) => apiCall('POST', 'ai/run', data),
+  gateway: (data: any) => apiCall('POST', 'ai/gateway', data),
   debug: (data: any) => apiCall('POST', 'ai/debug', data),
   voice: (data: any) => apiCall('POST', 'ai/voice', data),
   models: () => apiCall('GET', 'ai/models'),
+  modelsList: () => apiCall('GET', 'models/list'),
+  modelsUpdate: (data: any) => apiCall('POST', 'models/update', data),
+  modelsCreate: (data: any) => apiCall('POST', 'models/create', data),
+  modelsDelete: (data: any) => apiCall('POST', 'models/delete', data),
+  modelsTest: (data: any) => apiCall('POST', 'models/test', data),
   usage: () => apiCall('GET', 'ai/usage'),
 };
 
@@ -228,6 +234,9 @@ export const apiKeysApi = {
   create: (data: any) => apiCall('POST', 'api-keys/create', data),
   list: () => apiCall('GET', 'api-keys'),
   usage: () => apiCall('GET', 'api-usage'),
+  createManaged: (data: any) => apiCall('POST', 'keys/create', data),
+  revokeManaged: (data: any) => apiCall('POST', 'keys/revoke', data),
+  managedUsage: (params?: { key_id?: string }) => apiCall('GET', 'keys/usage', params),
 };
 
 // ===================== AUTO-PILOT =====================
@@ -297,25 +306,12 @@ export const leadsApi = {
   list: (params?: { page?: number; limit?: number; search?: string }) =>
     apiCall('GET', 'leads', params),
   create: (data: any) => apiCall('POST', 'leads', data),
-  qualify: (data: {
-    name?: string
-    email?: string
-    phone?: string
-    source?: string
-    notes?: string
-    meta?: Record<string, unknown>
-  }) => apiCall('POST', 'leads/qualify', data),
-  export: (params?: { country?: string; reseller_id?: string }) =>
-    apiCall('GET', 'leads/export', params),
+
 };
 
 export const seoApi = {
   analytics: () => apiCall('GET', 'seo/analytics'),
-  scan: (data?: { force?: boolean }) => apiCall('POST', 'seo/scan', data || {}),
-  generateMeta: (data?: { language?: string; overwrite?: boolean }) =>
-    apiCall('POST', 'seo/meta/generate', data || {}),
-  googleSync: (data?: { site_url?: string; property_id?: string }) =>
-    apiCall('POST', 'seo/google/sync', data || {}),
+
 };
 
 export const contentApi = {
