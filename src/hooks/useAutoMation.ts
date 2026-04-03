@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { autoPilotApi } from '@/lib/api';
+import { autoPilotApi, billingApi, paymentApi, subscriptionsApi } from '@/lib/api';
 
 interface ClientRequest {
   id: string;
@@ -36,6 +36,7 @@ interface BillingTracker {
   billing_cycle: string;
   status: string;
   created_at: string;
+  due_date?: string | null;
 }
 
 interface SeoBacklink {
@@ -51,6 +52,28 @@ interface SeoBacklink {
 }
 
 export function useAutomation() {
+  const generateInvoiceNumber = () => {
+    const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
+    return `INV-${new Date().getFullYear()}-${rand}`;
+  };
+
+  const toIsoDate = (value: string) => {
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return new Date().toISOString();
+    return parsed.toISOString();
+  };
+
+  const dueDateFromCycle = (cycle?: string) => {
+    const now = new Date();
+    const period = (cycle || 'monthly').toLowerCase();
+    if (period === 'yearly') now.setFullYear(now.getFullYear() + 1);
+    else if (period === 'quarterly') now.setMonth(now.getMonth() + 3);
+    else now.setMonth(now.getMonth() + 1);
+    return now.toISOString();
+  };
+
+  const isHighAmount = (amount: number) => amount >= 10000;
+
   const [clientRequests, setClientRequests] = useState<ClientRequest[]>([]);
   const [softwareQueue, setSoftwareQueue] = useState<SoftwareQueue[]>([]);
   const [billingItems, setBillingItems] = useState<BillingTracker[]>([]);
@@ -284,20 +307,97 @@ export function useAutomation() {
     }
   };
 
+  const deriveBillingAlerts = useCallback((items: BillingTracker[]) => {
+    const now = new Date();
+    const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
+    return items
+      .filter((item) => item.status !== 'paid')
+      .map((item) => {
+        const due = item.due_date ? new Date(item.due_date) : null;
+        if (!due || Number.isNaN(due.getTime())) return null;
+        const delta = due.getTime() - now.getTime();
+        if (delta < 0) {
+          return {
+            type: 'expired_payment',
+            message: `${item.service_name} payment expired`,
+            billingId: item.id,
+            userId: item.user_id,
+          };
+        }
+        if (delta <= twoDaysMs) {
+          return {
+            type: 'upcoming_due',
+            message: `${item.service_name} is due within 2 days`,
+            billingId: item.id,
+            userId: item.user_id,
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
+  }, []);
+
+  const notifyUsers = useCallback(async (userIds: string[], title: string, message: string, actionUrl = '/wallet') => {
+    if (!userIds.length) return;
+    await Promise.all(
+      [...new Set(userIds)].map((uid) =>
+        supabase.from('notifications').insert({
+          user_id: uid,
+          title,
+          message,
+          type: 'billing',
+          action_url: actionUrl,
+          read: false,
+        })
+      )
+    );
+  }, []);
+
   const handleBillingCheck = useCallback(async () => {
     setQuickActionLoading((prev) => ({ ...prev, billingCheck: true }));
     try {
-      const response = await autoPilotApi.billingCheck();
-      if (response?.success) {
-        toast.success('Billing Checked');
-        await refreshData();
-        return response.data?.alerts || [];
+      let alerts: any[] = [];
+
+      try {
+        const response = await billingApi.alerts();
+        const apiAlerts = response?.data?.alerts || response?.alerts;
+        if (Array.isArray(apiAlerts)) alerts = apiAlerts;
+      } catch (error) {
+        console.warn('billingApi.alerts unavailable, using fallback', error);
       }
-      const msg = typeof response?.error === 'string'
-        ? response.error
-        : response?.error?.message || 'Billing check failed';
-      toast.error(msg);
-      return [];
+
+      if (!alerts.length) {
+        const fallbackFromAutoPilot = await autoPilotApi.billingCheck().catch(() => null);
+        const fallbackAlerts = fallbackFromAutoPilot?.data?.alerts || fallbackFromAutoPilot?.alerts;
+        if (Array.isArray(fallbackAlerts)) alerts = fallbackAlerts;
+      }
+
+      if (!alerts.length) {
+        const { data: billingData } = await supabase
+          .from('billing_items')
+          .select('id,user_id,service_name,amount,billing_cycle,status,due_date')
+          .order('created_at', { ascending: false })
+          .limit(250);
+        alerts = deriveBillingAlerts((billingData || []) as BillingTracker[]);
+      }
+
+      if (alerts.length) {
+        const upcoming = alerts.filter((a) => a?.type === 'upcoming_due').length;
+        const expired = alerts.filter((a) => a?.type === 'expired_payment').length;
+        if (expired > 0) {
+          toast.error(`Billing Alerts: ${expired} expired, ${upcoming} upcoming`);
+        } else {
+          toast.warning(`Billing Alerts: ${alerts.length} item(s) need attention`);
+        }
+
+        const userIds = alerts.map((a: any) => a.userId).filter(Boolean) as string[];
+        await notifyUsers(userIds, 'Billing Alert', 'A billing alert needs your attention.', '/wallet');
+      } else {
+        toast.success('Billing Checked: no alerts');
+      }
+
+      await refreshData();
+      return alerts;
     } catch (error) {
       console.error('handleBillingCheck error:', error);
       toast.error('Server Error');
@@ -313,23 +413,111 @@ export function useAutomation() {
     service_name: string;
     amount: number;
     billing_cycle?: string;
+    due_date?: string;
+    notes?: string;
+    type?: 'one-time' | 'subscription';
   }) => {
     try {
-      const { error } = await supabase.from('billing_items').insert({
-        user_id: item.user_id ?? null,
-        service_name: item.service_name,
-        amount: item.amount,
-        billing_cycle: item.billing_cycle || 'monthly',
-        status: 'pending'
-      });
+      const dueDate = item.due_date ? toIsoDate(item.due_date) : dueDateFromCycle(item.billing_cycle);
+
+      const { data: createdBilling, error } = await supabase
+        .from('billing_items')
+        .insert({
+          user_id: item.user_id ?? null,
+          service_name: item.service_name,
+          amount: item.amount,
+          billing_cycle: item.billing_cycle || 'monthly',
+          status: 'pending',
+          due_date: dueDate,
+        })
+        .select('id,user_id,service_name,amount,billing_cycle,status,due_date')
+        .single();
 
       if (error) throw error;
 
+      const invoiceNumber = generateInvoiceNumber();
+      const { data: createdInvoice, error: invoiceError } = await supabase
+        .from('invoices')
+        .insert({
+          invoice_number: invoiceNumber,
+          user_id: item.user_id || '',
+          customer_name: item.service_name,
+          customer_email: `${(item.user_id || 'client').slice(0, 8)}@client.local`,
+          items: [
+            {
+              title: item.service_name,
+              amount: item.amount,
+              type: item.type || (item.billing_cycle === 'once' ? 'one-time' : 'subscription'),
+              notes: item.notes || null,
+            },
+          ],
+          subtotal: item.amount,
+          tax_percent: 0,
+          tax_amount: 0,
+          discount_percent: 0,
+          discount_amount: 0,
+          total_amount: item.amount,
+          currency: 'INR',
+          status: 'sent',
+          due_date: dueDate,
+          notes: item.notes || null,
+          terms: 'Auto-generated by billing automation',
+          otp_verified: !isHighAmount(item.amount),
+        })
+        .select('id,user_id,total_amount')
+        .single();
+
+      if (invoiceError) throw invoiceError;
+
+      const shouldRequireOtp = isHighAmount(item.amount);
+      if (shouldRequireOtp) {
+        const otp = String(Math.floor(100000 + Math.random() * 900000));
+        const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+        const { error: otpInsertError } = await supabase.from('invoice_otp_codes').insert({
+          invoice_id: createdInvoice.id,
+          otp_code: otp,
+          email: `${(item.user_id || 'client').slice(0, 8)}@client.local`,
+          expires_at: expiresAt,
+          verified: false,
+        });
+        if (otpInsertError) {
+          console.warn('invoice OTP insert failed', otpInsertError);
+        } else {
+          await billingApi.otpSend({
+            invoice_id: createdInvoice.id,
+            client_id: item.user_id || '',
+            amount: item.amount,
+            email: `${(item.user_id || 'client').slice(0, 8)}@client.local`,
+          }).catch((sendError) => {
+            console.warn('billing otp send api failed', sendError);
+          });
+        }
+      }
+
+      await billingApi.send({
+        billing_id: createdBilling.id,
+        invoice_id: createdInvoice.id,
+        client_id: item.user_id || '',
+      }).catch((sendError) => {
+        console.warn('billing send api failed', sendError);
+      });
+
+      if (item.user_id) {
+        await notifyUsers(
+          [item.user_id],
+          'New Invoice Generated',
+          `Invoice ${invoiceNumber} is ready for payment.`,
+          '/wallet'
+        );
+      }
+
       toast.success('📅 Billing item added');
       await fetchData();
+      return { billing: createdBilling, invoice: createdInvoice };
     } catch (error) {
       console.error('Add billing error:', error);
       toast.error('Failed to add billing item');
+      throw error;
     }
   };
 
@@ -338,20 +526,41 @@ export function useAutomation() {
     service_name: string;
     amount: number;
     billing_cycle?: string;
+    due_date?: string;
+    notes?: string;
+    type?: 'one-time' | 'subscription';
   }) => {
     setQuickActionLoading((prev) => ({ ...prev, addBilling: true }));
     try {
-      const response = await autoPilotApi.addBilling(item);
-      if (response?.success) {
+      const apiPayload = {
+        client_id: item.user_id || '',
+        title: item.service_name,
+        amount: item.amount,
+        type: item.type || (item.billing_cycle === 'once' ? 'one-time' : 'subscription'),
+        due_date: item.due_date || dueDateFromCycle(item.billing_cycle),
+        notes: item.notes,
+      };
+
+      let apiSucceeded = false;
+      try {
+        const response = await billingApi.create(apiPayload);
+        apiSucceeded = !!response?.success;
+      } catch (primaryApiError) {
+        console.warn('billing create api unavailable, falling back', primaryApiError);
+      }
+
+      if (!apiSucceeded) {
+        const fallback = await autoPilotApi.addBilling(item).catch(() => null);
+        apiSucceeded = !!fallback?.success;
+      }
+
+      const created = await addBillingItem(item);
+      if (created) {
         toast.success('Billing Added');
         await refreshData();
         return true;
       }
-
-      const msg = typeof response?.error === 'string'
-        ? response.error
-        : response?.error?.message || 'Failed to add billing';
-      toast.error(msg);
+      toast.error('Failed to add billing');
       return false;
     } catch (error) {
       console.error('handleAddBilling error:', error);
@@ -366,6 +575,139 @@ export function useAutomation() {
   const getUpcomingBills = () => {
     return billingItems.filter(bill => bill.status !== 'paid').slice(0, 7);
   };
+
+  const handleInvoicePayment = useCallback(async (payload: {
+    invoice_id: string;
+    billing_id?: string;
+    client_id: string;
+    amount: number;
+    method?: string;
+    otp?: string;
+  }) => {
+    try {
+      const { data: invoice } = await supabase
+        .from('invoices')
+        .select('id,status,otp_verified,total_amount,user_id')
+        .eq('id', payload.invoice_id)
+        .maybeSingle();
+
+      if (!invoice) {
+        toast.error('Invoice not found');
+        return false;
+      }
+
+      const requiresOtp = isHighAmount(Number(invoice.total_amount || payload.amount)) || invoice.otp_verified === false;
+      if (requiresOtp && payload.otp) {
+        await billingApi.otpVerify({ invoice_id: payload.invoice_id, otp: payload.otp }).catch(() => undefined);
+        const { data: otpRow } = await supabase
+          .from('invoice_otp_codes')
+          .select('id,verified')
+          .eq('invoice_id', payload.invoice_id)
+          .eq('otp_code', payload.otp)
+          .gt('expires_at', new Date().toISOString())
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (!otpRow) {
+          toast.error('OTP verification required');
+          return false;
+        }
+        if (!otpRow.verified) {
+          await supabase.from('invoice_otp_codes').update({ verified: true }).eq('id', otpRow.id);
+        }
+        await supabase
+          .from('invoices')
+          .update({ otp_verified: true, otp_verified_at: new Date().toISOString() })
+          .eq('id', payload.invoice_id);
+      } else if (requiresOtp && !payload.otp) {
+        toast.error('OTP is required for this payment');
+        return false;
+      }
+
+      await paymentApi.create(payload).catch(() => undefined);
+
+      await supabase.from('invoices').update({ status: 'paid' }).eq('id', payload.invoice_id);
+      if (payload.billing_id) {
+        await supabase.from('billing_items').update({ status: 'paid' }).eq('id', payload.billing_id);
+      }
+
+      const { data: wallet } = await supabase
+        .from('wallets')
+        .select('id,balance')
+        .eq('user_id', payload.client_id)
+        .maybeSingle();
+
+      if (wallet?.id) {
+        const nextBalance = Number(wallet.balance || 0) - Number(payload.amount || 0);
+        await supabase.from('wallets').update({ balance: nextBalance }).eq('id', wallet.id);
+        await supabase.from('transactions').insert({
+          wallet_id: wallet.id,
+          type: 'debit',
+          amount: payload.amount,
+          status: 'completed',
+          description: `Invoice payment ${payload.invoice_id}`,
+          reference_id: payload.invoice_id,
+          reference_type: 'invoice',
+          balance_after: nextBalance,
+          meta: {
+            billing_id: payload.billing_id || null,
+            payment_method: payload.method || 'manual',
+          },
+        });
+      }
+
+      await notifyUsers(
+        [payload.client_id],
+        'Payment Received',
+        `Payment for invoice ${payload.invoice_id} was successful.`,
+        '/wallet'
+      );
+
+      await refreshData();
+      return true;
+    } catch (error) {
+      console.error('handleInvoicePayment error:', error);
+      toast.error('Payment failed');
+      return false;
+    }
+  }, [notifyUsers, refreshData]);
+
+  const runSubscriptionRenewals = useCallback(async () => {
+    try {
+      await subscriptionsApi.cronRun().catch(() => undefined);
+      const nowIso = new Date().toISOString();
+      const { data: dueSubscriptions } = await supabase
+        .from('subscriptions')
+        .select('id,user_id,plan_name,amount,billing_cycle,current_period_end,status')
+        .neq('status', 'cancelled')
+        .lte('current_period_end', nowIso)
+        .limit(100);
+
+      if (!dueSubscriptions?.length) return;
+
+      for (const sub of dueSubscriptions) {
+        const nextDue = dueDateFromCycle(sub.billing_cycle || 'monthly');
+        await handleAddBilling({
+          user_id: sub.user_id,
+          service_name: sub.plan_name,
+          amount: Number(sub.amount || 0),
+          billing_cycle: sub.billing_cycle || 'monthly',
+          type: 'subscription',
+          due_date: nextDue,
+          notes: `Auto-renew for subscription ${sub.id}`,
+        });
+
+        await notifyUsers(
+          [sub.user_id],
+          'Subscription Renewal Generated',
+          `New renewal invoice generated for ${sub.plan_name}.`,
+          '/wallet'
+        );
+      }
+    } catch (error) {
+      console.error('runSubscriptionRenewals error:', error);
+    }
+  }, [handleAddBilling, notifyUsers]);
 
   // Get pending client requests
   const getPendingRequests = () => {
@@ -387,6 +729,16 @@ export function useAutomation() {
     checkBillingAlerts();
   }, []);
 
+  useEffect(() => {
+    const run = async () => {
+      await handleBillingCheck();
+      await runSubscriptionRenewals();
+    };
+
+    const timer = window.setInterval(run, 60 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [handleBillingCheck, runSubscriptionRenewals]);
+
   return {
     clientRequests,
     softwareQueue,
@@ -405,6 +757,8 @@ export function useAutomation() {
     handleBillingCheck,
     addBillingItem,
     handleAddBilling,
+    handleInvoicePayment,
+    runSubscriptionRenewals,
     getUpcomingBills,
     getPendingRequests,
     getTodaysQueue

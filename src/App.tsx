@@ -358,6 +358,7 @@ function AppRoutes() {
         <Route path="/vala-builder" element={<AuthGuard><ValaBuilder /></AuthGuard>} />
         <Route path="/builder" element={<AuthGuard><Navigate to="/vala-builder" replace /></AuthGuard>} />
         <Route path="/auto-pilot" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/billing" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot" replace /></RoleGuard></AuthGuard>} />
         <Route path="/auto-pilot/new-request" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot" replace /></RoleGuard></AuthGuard>} />
         <Route path="/auto-pilot/generate" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot" replace /></RoleGuard></AuthGuard>} />
         <Route path="/auto-pilot/queue" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot" replace /></RoleGuard></AuthGuard>} />
