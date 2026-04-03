@@ -164,18 +164,46 @@ export const resellerFeaturesApi = {
 // ===================== MARKETPLACE =====================
 export const marketplaceApi = {
   products: () => apiCall('GET', 'marketplace/products'),
+  productSearch: (q?: string, filter?: string | Record<string, unknown>) =>
+    apiCall('GET', 'product/search', { q, filter: typeof filter === 'string' ? filter : filter ? JSON.stringify(filter) : undefined }),
   approve: (productId: string) => apiCall('PUT', 'marketplace/approve', { product_id: productId }),
   orders: () => apiCall('GET', 'marketplace/orders'),
   orderHistory: () => apiCall('GET', 'marketplace/order-history'),
   downloadHistory: () => apiCall('GET', 'marketplace/download-history'),
   pricing: (productId: string, price: number, discount?: number) =>
     apiCall('PUT', 'marketplace/pricing', { product_id: productId, price, discount_percent: discount }),
+  analyticsSales: () => apiCall('GET', 'analytics/sales'),
   paymentInit: (data: any) => apiCall('POST', 'marketplace/payment/init', data),
   paymentWebhook: (data: any) => apiCall('POST', 'marketplace/payment/webhook', data),
   verifySignature: (data: any) => apiCall('POST', 'marketplace/payment/verify-signature', data),
   markPaid: (paymentId: string) => apiCall('POST', 'marketplace/payment/mark-paid', { payment_id: paymentId }),
   retryPayment: (paymentId: string) => apiCall('POST', 'marketplace/payment/retry', { payment_id: paymentId }),
   refundPayment: (paymentId: string) => apiCall('POST', 'marketplace/payment/refund', { payment_id: paymentId }),
+};
+
+export const bannerApi = {
+  create: (data: any) => apiCall('POST', 'banner/create', data),
+  list: () => apiCall('GET', 'banner/list'),
+  update: (data: any) => apiCall('PUT', 'banner/update', data),
+  delete: (id: string) => apiCall('DELETE', 'banner/delete', { id }),
+};
+
+export const offerApi = {
+  create: (data: any) => apiCall('POST', 'offer/create', data),
+  list: () => apiCall('GET', 'offer/list'),
+};
+
+export const productAliasApi = {
+  create: (data: any) => apiCall('POST', 'product/create', data),
+  list: () => apiCall('GET', 'product/list'),
+  update: (data: any) => apiCall('PUT', 'product/update', data),
+  search: (q?: string, filter?: string | Record<string, unknown>) =>
+    apiCall('GET', 'product/search', { q, filter: typeof filter === 'string' ? filter : filter ? JSON.stringify(filter) : undefined }),
+};
+
+export const categoryApi = {
+  create: (data: any) => apiCall('POST', 'category/create', data),
+  tree: () => apiCall('GET', 'category/tree'),
 };
 
 // ===================== KEYS =====================
