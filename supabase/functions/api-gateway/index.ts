@@ -642,14 +642,29 @@ function chooseProviderOrder(args: {
   fastResponse: boolean
   cheapRequired: boolean
 }) {
-  const base = ['openai', 'gemini', 'claude', 'local_model']
+  const base = ['openai', 'gemini', 'claude', 'azure_openai', 'local_model', 'custom_api']
+  const providerAliases: Record<string, string> = {
+    google: 'gemini',
+    anthropic: 'claude',
+    azure: 'azure_openai',
+    azure_openai: 'azure_openai',
+    ollama: 'local_model',
+    local: 'local_model',
+    custom: 'custom_api',
+    custom_api: 'custom_api',
+  }
   let primary = 'openai'
   if (args.highQualityNeeded) primary = 'claude'
   else if (args.cheapRequired) primary = 'gemini'
   else if (args.fastResponse) primary = 'openai'
-  if (args.requestedProvider && base.includes(args.requestedProvider)) primary = args.requestedProvider
+  const normalizedRequestedProvider = providerAliases[String(args.requestedProvider || '').toLowerCase()] || String(args.requestedProvider || '').toLowerCase()
+  if (normalizedRequestedProvider && base.includes(normalizedRequestedProvider)) primary = normalizedRequestedProvider
   if (args.requestedModel.toLowerCase().includes('claude')) primary = 'claude'
   if (args.requestedModel.toLowerCase().includes('gemini')) primary = 'gemini'
+  if (args.requestedModel.toLowerCase().includes('google')) primary = 'gemini'
+  if (args.requestedModel.toLowerCase().includes('azure')) primary = 'azure_openai'
+  if (args.requestedModel.toLowerCase().includes('ollama')) primary = 'local_model'
+  if (args.requestedModel.toLowerCase().includes('custom')) primary = 'custom_api'
   if (args.requestedModel.toLowerCase().includes('local')) primary = 'local_model'
   if (args.requestedModel.toLowerCase().includes('openai') || args.requestedModel.toLowerCase().includes('gpt')) primary = 'openai'
   return [primary, ...base.filter((p) => p !== primary)]
@@ -3054,6 +3069,174 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
     return json({ data })
   }
 
+  // GET /ai/logs
+  if (method === 'GET' && action === 'logs') {
+    let query = sb.from('ai_logs').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(100)
+    const status = sanitizeTextInput(body?.status || '')
+    const model = sanitizeTextInput(body?.model || '')
+    if (status) query = query.eq('status', status)
+    if (model) query = query.ilike('model', `%${model}%`)
+    const { data, error } = await query
+    if (error) return err(error.message)
+    return json({ success: true, data })
+  }
+
+  // POST /ai/force-sync
+  if (method === 'POST' && action === 'force-sync') {
+    const { data: models, error: modelErr } = await admin
+      .from('ai_models')
+      .select('id, model_id, provider, is_active, updated_at')
+      .order('priority', { ascending: true })
+      .order('updated_at', { ascending: false })
+    if (modelErr) return err(modelErr.message)
+
+    const providers = [...new Set((models || []).map((m: any) => String(m.provider || '').toLowerCase()).filter(Boolean))]
+    for (const provider of providers) {
+      await admin.from('ai_circuit_breakers').upsert({
+        provider,
+        failure_count: 0,
+        state: 'closed',
+        open_until: null,
+        last_error: null,
+        updated_at: nowIso(),
+      }, { onConflict: 'provider' })
+    }
+
+    await logActivity(admin, 'ai_system', 'routing', 'force_sync', userId, {
+      active_models: (models || []).filter((m: any) => m.is_active).length,
+      total_models: (models || []).length,
+      providers,
+    })
+    return json({
+      success: true,
+      message: 'AI models and routing state synchronized',
+      data: {
+        models: models || [],
+        provider_count: providers.length,
+      },
+    })
+  }
+
+  // POST /ai/auto-fix
+  if (method === 'POST' && action === 'auto-fix') {
+    const repoUrl = sanitizeTextInput(body?.repo_url || body?.repo || '')
+    const scan = await sb.functions.invoke('source-code-manager', {
+      body: { action: 'scan_and_register', data: { repo_url: repoUrl || undefined } },
+    })
+    if (scan.error) return err(scan.error.message, 500)
+
+    await logActivity(admin, 'ai_system', 'autofix', 'auto_fix_triggered', userId, {
+      source: sanitizeTextInput(body?.source || 'ai_quick_actions'),
+      include_security: body?.include_security !== false,
+      include_performance: body?.include_performance !== false,
+    })
+    return json({
+      success: true,
+      message: 'Auto bug fix pipeline executed',
+      data: scan.data || null,
+    })
+  }
+
+  // POST /ai/security-scan
+  if (method === 'POST' && action === 'security-scan') {
+    const { data: recentUsage } = await admin
+      .from('ai_usage')
+      .select('id, model, endpoint, created_at, cost')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(100)
+    const { data: keys } = await admin
+      .from('ai_api_keys')
+      .select('id, provider, status, expires_at, used, total_limit, created_at, updated_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(100)
+
+    const inactiveKeys = (keys || []).filter((k: any) => String(k.status || '').toLowerCase() !== 'active').length
+    const expiredKeys = (keys || []).filter((k: any) => k.expires_at && new Date(k.expires_at) <= new Date()).length
+    const overusedKeys = (keys || []).filter((k: any) => Number(k.total_limit || 0) > 0 && Number(k.used || 0) >= Number(k.total_limit || 0)).length
+    const suspiciousUsage = (recentUsage || []).filter((u: any) => Number(u.cost || 0) > 1).length
+
+    await logActivity(admin, 'ai_system', 'security', 'security_scan', userId, {
+      inactive_keys: inactiveKeys,
+      expired_keys: expiredKeys,
+      overused_keys: overusedKeys,
+      suspicious_usage: suspiciousUsage,
+    })
+    return json({
+      success: true,
+      message: 'Security scan completed',
+      data: {
+        summary: {
+          inactive_keys: inactiveKeys,
+          expired_keys: expiredKeys,
+          overused_keys: overusedKeys,
+          suspicious_usage: suspiciousUsage,
+        },
+        keys_checked: (keys || []).length,
+        usage_checked: (recentUsage || []).length,
+      },
+    })
+  }
+
+  // POST /ai/performance-optimize
+  if (method === 'POST' && action === 'performance-optimize') {
+    const { data: rows } = await admin
+      .from('ai_usage_daily')
+      .select('model, request_count, total_cost, input_tokens, output_tokens, date')
+      .eq('user_id', userId)
+      .order('date', { ascending: false })
+      .limit(60)
+    const grouped = new Map<string, { requests: number; cost: number; tokens: number }>()
+    for (const row of rows || []) {
+      const model = String(row.model || 'unknown')
+      const prev = grouped.get(model) || { requests: 0, cost: 0, tokens: 0 }
+      prev.requests += Number(row.request_count || 0)
+      prev.cost += Number(row.total_cost || 0)
+      prev.tokens += Number(row.input_tokens || 0) + Number(row.output_tokens || 0)
+      grouped.set(model, prev)
+    }
+    const recommendations = Array.from(grouped.entries()).map(([model, stats]) => {
+      const avgCostPerReq = stats.requests > 0 ? stats.cost / stats.requests : 0
+      const avgTokensPerReq = stats.requests > 0 ? stats.tokens / stats.requests : 0
+      const profile = avgTokensPerReq < 800 ? 'cheap-model' : avgTokensPerReq > 2500 ? 'high-capacity-model' : 'balanced-model'
+      return { model, avg_cost_per_request: Number(avgCostPerReq.toFixed(6)), avg_tokens_per_request: Number(avgTokensPerReq.toFixed(1)), profile }
+    }).sort((a, b) => a.avg_cost_per_request - b.avg_cost_per_request)
+
+    await logActivity(admin, 'ai_system', 'performance', 'performance_optimize', userId, {
+      models_analyzed: recommendations.length,
+    })
+    return json({
+      success: true,
+      message: 'Performance optimization analysis completed',
+      data: { recommendations },
+    })
+  }
+
+  // POST /ai/deploy
+  if (method === 'POST' && action === 'deploy') {
+    const filePath = sanitizeTextInput(body?.filePath || body?.file_path || '/')
+    const deploymentId = sanitizeTextInput(body?.deploymentId || body?.deployment_id || '', 120) || undefined
+    const { data, error } = await sb.functions.invoke('auto-deploy-pipeline', {
+      body: {
+        filePath,
+        deploymentId,
+        hostingCredentials: body?.hostingCredentials || body?.hosting_credentials || undefined,
+      },
+    })
+    if (error) return err(error.message, 500)
+    await logActivity(admin, 'ai_system', 'deploy', 'auto_deploy', userId, {
+      file_path: filePath,
+      deployment_id: deploymentId || null,
+      source: sanitizeTextInput(body?.source || 'ai_quick_actions'),
+    })
+    return json({
+      success: true,
+      message: 'Auto deploy triggered',
+      data,
+    })
+  }
+
   // POST /ai/gateway
   if (method === 'POST' && action === 'gateway') {
     const autoPilot = body?.auto_pilot !== false
@@ -3111,8 +3294,12 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
         ? 'claude-3-5-sonnet'
         : selectedPrimaryProvider === 'gemini'
           ? 'google/gemini-2.5-flash'
+          : selectedPrimaryProvider === 'azure_openai'
+            ? 'azure/gpt-4o-mini'
           : selectedPrimaryProvider === 'local_model'
             ? 'local_model/default'
+            : selectedPrimaryProvider === 'custom_api'
+              ? 'custom/default'
             : 'openai/gpt-5-mini')
 
     const normalizedPrompt = promptText || messages.map((m: any) => String(m?.content || '')).join('\n')
@@ -3166,16 +3353,20 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
       if (open) continue
 
       let modelForProvider = requestedModel
-      if (!modelForProvider) {
-        modelForProvider = (await getAiModelByProvider(admin, provider))?.model_id
-          || (provider === 'claude'
-            ? 'claude-3-5-sonnet'
-            : provider === 'gemini'
-              ? 'google/gemini-2.5-flash'
-              : provider === 'local_model'
-                ? 'local_model/default'
-                : 'openai/gpt-5-mini')
-      }
+        if (!modelForProvider) {
+          modelForProvider = (await getAiModelByProvider(admin, provider))?.model_id
+            || (provider === 'claude'
+              ? 'claude-3-5-sonnet'
+              : provider === 'gemini'
+                ? 'google/gemini-2.5-flash'
+                : provider === 'azure_openai'
+                  ? 'azure/gpt-4o-mini'
+                : provider === 'local_model'
+                  ? 'local_model/default'
+                  : provider === 'custom_api'
+                    ? 'custom/default'
+                  : 'openai/gpt-5-mini')
+        }
 
       for (let attempt = 0; attempt < AI_GATEWAY_MAX_RETRIES; attempt++) {
         try {
