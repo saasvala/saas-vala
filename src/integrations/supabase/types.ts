@@ -563,6 +563,45 @@ export type Database = {
         }
         Relationships: []
       }
+      apk_builds: {
+        Row: {
+          apk_url: string | null
+          build_id: string
+          build_status: string
+          created_at: string
+          id: string
+          install_count: number
+          product_id: string | null
+          source: string
+          status: string
+          version: string
+        }
+        Insert: {
+          apk_url?: string | null
+          build_id?: string
+          build_status?: string
+          created_at?: string
+          id?: string
+          install_count?: number
+          product_id?: string | null
+          source?: string
+          status?: string
+          version: string
+        }
+        Update: {
+          apk_url?: string | null
+          build_id?: string
+          build_status?: string
+          created_at?: string
+          id?: string
+          install_count?: number
+          product_id?: string | null
+          source?: string
+          status?: string
+          version?: string
+        }
+        Relationships: []
+      }
       apk_download_logs: {
         Row: {
           created_at: string
@@ -2751,6 +2790,8 @@ export type Database = {
       }
       products: {
         Row: {
+          build_id: string | null
+          build_status: string | null
           apk_enabled: boolean | null
           apk_file_size: number | null
           apk_url: string | null
@@ -2818,6 +2859,8 @@ export type Database = {
           visibility: string | null
         }
         Insert: {
+          build_id?: string | null
+          build_status?: string | null
           apk_enabled?: boolean | null
           apk_file_size?: number | null
           apk_url?: string | null
@@ -2885,6 +2928,8 @@ export type Database = {
           visibility?: string | null
         }
         Update: {
+          build_id?: string | null
+          build_status?: string | null
           apk_enabled?: boolean | null
           apk_file_size?: number | null
           apk_url?: string | null

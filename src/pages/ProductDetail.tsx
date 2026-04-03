@@ -59,8 +59,7 @@ export default function ProductDetail() {
   }
 
   const inCart = isInCart(product.id);
-  const priceSymbol = getCurrencySymbol(product.currency);
-  const localizedPrice = formatLocalizedPrice(product.price, product.currency, priceSymbol);
+
   const screenshots = useMemo(() => {
     const rawScreenshots = hasScreenshots(product) ? product.screenshots : undefined;
     if (Array.isArray(rawScreenshots)) {
@@ -87,6 +86,10 @@ export default function ProductDetail() {
     }
     if (!product.apk_enabled) {
       toast.info('Coming Soon');
+      return;
+    }
+    if (isBuilding) {
+      toast.info('Building...');
       return;
     }
     try {
@@ -160,7 +163,7 @@ export default function ProductDetail() {
             <Button onClick={handleBuyNow}>
               <CreditCard className="h-4 w-4 mr-2" /> Buy Now
             </Button>
-            <Button variant="secondary" onClick={handleDownload} disabled={!product.apk_enabled}>
+            <Button variant="secondary" onClick={handleDownload} disabled={!product.apk_enabled || isBuilding}>
               <Download className="h-4 w-4 mr-2" /> Download APK
             </Button>
             <Button variant="ghost" onClick={() => navigate(`/app/${product.id}`)}>

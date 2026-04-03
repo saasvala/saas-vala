@@ -1234,6 +1234,16 @@ async function handleProducts(method: string, pathParts: string[], body: any, us
     if (rpcError) return err(rpcError.message)
     const data = rpcData?.product
     if (!data?.id) return err('Failed to create product')
+    if (body.apk_url) {
+      const synced = await syncProductFromApkBuild(sb, {
+        product_id: data.id,
+        apk_url: body.apk_url,
+        version: body.version || '1.0.0',
+        build_status: body.build_status || 'success',
+        source: 'manual',
+      })
+      if (synced.error) return err(synced.error, synced.status || 400)
+    }
     invalidateProductCache()
     await logActivity(admin, 'product', data.id, 'created', userId, { name: body.name })
     await emitDomainEvent(admin, 'product_created', { product_id: data.id, user_id: userId }, body.tenant_id || null)
@@ -1255,6 +1265,17 @@ async function handleProducts(method: string, pathParts: string[], body: any, us
     }
     const { error } = await sb.from('products').update(updates).eq('id', id)
     if (error) return err(error.message)
+    if (body.apk_url !== undefined) {
+      const synced = await syncProductFromApkBuild(sb, {
+        product_id: id,
+        apk_url: body.apk_url || null,
+        version: body.version || null,
+        build_status: body.build_status || (body.apk_url ? 'success' : 'pending'),
+        source: body.source || 'manual',
+        build_id: body.build_id || null,
+      })
+      if (synced.error) return err(synced.error, synced.status || 400)
+    }
     invalidateProductCache()
     await logActivity(admin, 'product', id, 'updated', userId, updates)
     return json({ success: true })
@@ -2370,7 +2391,7 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     if (cacheValid) return json({ data: productListCache.data, cached: true })
 
     const { data, error } = await sb.from('products')
-      .select('id, name, slug, description, short_description, price, status, features, thumbnail_url, git_repo_url, marketplace_visible, apk_url, demo_url, demo_login, demo_password, demo_enabled, featured, trending, business_type, deploy_status, discount_percent, rating, tags, apk_enabled, license_enabled')
+      .select('id, name, slug, description, short_description, price, status, features, thumbnail_url, git_repo_url, marketplace_visible, apk_url, build_id, build_status, demo_url, demo_login, demo_password, demo_enabled, featured, trending, business_type, deploy_status, discount_percent, rating, tags, apk_enabled, license_enabled')
       .eq('marketplace_visible', true)
       .order('created_at', { ascending: false }).limit(500)
     if (error) return err(error.message)
@@ -2892,12 +2913,25 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
       business_type: body.category || body.business_type || null,
       short_description: body.description || null,
       apk_url: body.apk_url || null,
+      build_id: body.build_id || null,
+      build_status: body.build_status || (body.apk_url ? 'success' : 'pending'),
       features: Array.isArray(body.features) ? body.features : [],
       marketplace_visible: true,
       updated_at: nowIso(),
     }
     const { data, error } = await sb.from('products').insert(payload).select('*').single()
     if (error) return err(error.message)
+    if (body.apk_url) {
+      const synced = await syncProductFromApkBuild(sb, {
+        product_id: data.id,
+        apk_url: body.apk_url,
+        version: body.version || '1.0.0',
+        build_status: body.build_status || 'success',
+        source: body.source || 'manual',
+        build_id: body.build_id || null,
+      })
+      if (synced.error) return err(synced.error, synced.status || 400)
+    }
     invalidateProductCache()
     await logActivity(admin, 'product', data.id, 'created', userId, payload)
     try {
@@ -2930,7 +2964,7 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
 
     const { data, error } = await sb
       .from('products')
-      .select('id, name, slug, description, short_description, price, status, business_type, features, apk_url, discount_percent, rating, created_at, marketplace_visible')
+      .select('id, name, slug, description, short_description, price, status, business_type, features, apk_url, build_id, build_status, discount_percent, rating, created_at, marketplace_visible')
       .order('created_at', { ascending: false })
       .limit(500)
     if (error) return err(error.message)
@@ -2987,9 +3021,22 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
     if (body.category !== undefined || body.business_type !== undefined) updates.business_type = body.category || body.business_type || null
     if (body.description !== undefined) updates.short_description = body.description || null
     if (body.apk_url !== undefined) updates.apk_url = body.apk_url || null
+    if (body.build_status !== undefined) updates.build_status = body.build_status || null
+    if (body.build_id !== undefined) updates.build_id = body.build_id || null
     if (body.features !== undefined) updates.features = Array.isArray(body.features) ? body.features : []
     const { data, error } = await sb.from('products').update(updates).eq('id', id).select('*').single()
     if (error) return err(error.message)
+    if (body.apk_url !== undefined || body.build_status !== undefined || body.build_id !== undefined) {
+      const synced = await syncProductFromApkBuild(sb, {
+        product_id: id,
+        apk_url: body.apk_url || null,
+        version: body.version || null,
+        build_status: body.build_status || (body.apk_url ? 'success' : 'pending'),
+        source: body.source || 'manual',
+        build_id: body.build_id || null,
+      })
+      if (synced.error) return err(synced.error, synced.status || 400)
+    }
     invalidateProductCache()
     await logActivity(admin, 'product', id, 'updated', userId, updates)
     try {
@@ -5451,6 +5498,126 @@ function normalizeApkStoragePath(value: unknown): string | null {
   }
 }
 
+type SyncedBuildStatus = 'pending' | 'success' | 'failed'
+type ApkBuildSource = 'manual' | 'pipeline'
+
+/**
+ * Canonical build status mapper for product/apk_builds sync.
+ * finalized pipeline outputs (completed/published/ready/stored/signed/distributed) map to `success`.
+ * Unknown or empty values intentionally degrade to `pending` for safe non-downloadable behavior.
+ */
+function normalizeSyncedBuildStatus(rawStatus: unknown): SyncedBuildStatus {
+  const normalized = String(rawStatus || '').toLowerCase().trim()
+  if (['success', 'completed', 'published', 'ready', 'stored', 'signed', 'distributed'].includes(normalized)) return 'success'
+  if (['failed', 'error'].includes(normalized)) return 'failed'
+  return 'pending'
+}
+
+async function findLatestSuccessfulApkBuild(sb: any, productId: string) {
+  return sb
+    .from('apk_builds')
+    .select('id, build_id, product_id, apk_url, version, build_status, source, created_at')
+    .eq('product_id', productId)
+    .eq('build_status', 'success')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+}
+
+async function syncProductFromApkBuild(
+  sb: any,
+  payload: {
+    product_id: string
+    apk_url?: string | null
+    version?: string | null
+    build_status?: string | null
+    source?: string | null
+    build_id?: string | null
+  },
+) {
+  const productId = String(payload.product_id || '').trim()
+  if (!productId) return { error: 'product_id required', status: 422 as const }
+
+  const source: ApkBuildSource = String(payload.source || 'pipeline').toLowerCase() === 'manual' ? 'manual' : 'pipeline'
+  const buildStatus = normalizeSyncedBuildStatus(payload.build_status)
+  const incomingBuildId = String(payload.build_id || '').trim()
+  if (source === 'pipeline' && !incomingBuildId) return { error: 'build_id is required when source is pipeline', status: 422 as const }
+  const buildId = incomingBuildId || crypto.randomUUID()
+  const apkUrl = payload.apk_url ? String(payload.apk_url).trim() : null
+  const version = String(payload.version || '').trim() || '1.0.0'
+
+  const { data: product, error: productError } = await sb
+    .from('products')
+    .select('id, apk_url, build_id, build_status')
+    .eq('id', productId)
+    .maybeSingle()
+  if (productError) return { error: productError.message, status: 400 as const }
+  if (!product?.id) return { error: 'Product not found', status: 404 as const }
+
+  const buildRow: Record<string, unknown> = {
+    build_id: buildId,
+    product_id: productId,
+    apk_url: apkUrl,
+    version,
+    build_status: buildStatus,
+    source,
+    // Legacy status field remains for backward compatibility with historical readers.
+    // build_status is the canonical normalized status for product/download gating.
+    status: buildStatus === 'success' ? 'distributed' : buildStatus === 'failed' ? 'failed' : 'pending',
+    created_at: nowIso(),
+  }
+
+  const { data: upsertedBuild, error: buildError } = await sb
+    .from('apk_builds')
+    .upsert(buildRow, { onConflict: 'build_id' })
+    .select('id, build_id, product_id, apk_url, version, build_status, source, created_at')
+    .maybeSingle()
+  if (buildError) return { error: buildError.message, status: 400 as const }
+
+  const { data: latestSuccessBuild } = await findLatestSuccessfulApkBuild(sb, productId)
+  const latestResolved = latestSuccessBuild || (buildStatus === 'success' ? upsertedBuild : null)
+
+  const nextProductPatch: Record<string, unknown> = {
+    updated_at: nowIso(),
+  }
+
+  if (buildStatus === 'success' && apkUrl) {
+    nextProductPatch.apk_url = apkUrl
+    nextProductPatch.build_status = 'success'
+    nextProductPatch.build_id = buildId
+  } else if (source === 'manual' && apkUrl) {
+    nextProductPatch.apk_url = apkUrl
+    nextProductPatch.build_status = buildStatus
+    nextProductPatch.build_id = buildId
+  } else if (latestResolved?.apk_url) {
+    nextProductPatch.apk_url = latestResolved.apk_url
+    nextProductPatch.build_status = 'success'
+    nextProductPatch.build_id = latestResolved.build_id || null
+  } else {
+    nextProductPatch.build_status = buildStatus
+    nextProductPatch.build_id = buildId
+  }
+
+  const { error: updateError } = await sb.from('products').update(nextProductPatch).eq('id', productId)
+  if (updateError) return { error: updateError.message, status: 400 as const }
+
+  invalidateProductCache()
+
+  return {
+    data: {
+      build: upsertedBuild || buildRow,
+      product: {
+        id: productId,
+        apk_url: nextProductPatch.apk_url ?? product.apk_url ?? null,
+        build_id: nextProductPatch.build_id ?? null,
+        build_status: nextProductPatch.build_status ?? null,
+      },
+      latest_success_build: latestResolved || null,
+    },
+    status: 200 as const,
+  }
+}
+
 function parseGithubRepo(repoUrl: string): { owner: string; repo: string; ref?: string } | null {
   try {
     const parsed = new URL(repoUrl)
@@ -5599,7 +5766,7 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
   }
 
   // POST /apk/build
-  if (method === 'POST' && pathParts[0] === 'build') {
+  if (method === 'POST' && pathParts[0] === 'build' && !pathParts[1]) {
     const { data, error } = await sb.from('apk_build_queue').insert({
       repo_name: body.repo_name, repo_url: body.repo_url,
       slug: body.slug || body.repo_name?.toLowerCase().replace(/[^a-z0-9]/g, '-') || 'unnamed',
@@ -5660,6 +5827,32 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
     }
 
     return json({ success: true, data: { ...data, build_attempts: attempts, factory: triggerResult }, error: null }, 201)
+  }
+
+  // POST /apk/build/complete
+  if (method === 'POST' && pathParts[0] === 'build' && pathParts[1] === 'complete') {
+    const productId = String(body?.product_id || '').trim()
+    if (!productId) return err('product_id is required', 422, 'VALIDATION_ERROR')
+    const synced = await syncProductFromApkBuild(sb, {
+      product_id: productId,
+      apk_url: body?.apk_url || null,
+      version: body?.version || null,
+      build_status: body?.build_status || 'pending',
+      source: body?.source || 'pipeline',
+      build_id: body?.build_id || null,
+    })
+    if (synced.error) return err(synced.error, synced.status || 400)
+    await logActivity(admin, 'apk', productId, 'build_completed', userId, {
+      build_id: body?.build_id || synced.data?.build?.build_id || null,
+      source: body?.source || 'pipeline',
+      build_status: body?.build_status || 'pending',
+      apk_url: body?.apk_url || null,
+      version: body?.version || null,
+    })
+    return ok({
+      ...synced.data,
+      message: 'APK build completion synced',
+    })
   }
 
   // POST /apk/convert
@@ -5790,12 +5983,35 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
 
     const { data: productDirect } = await admin
       .from('products')
-      .select('id, name, apk_url, price')
+      .select('id, name, apk_url, price, build_id, build_status')
       .eq('id', identifier)
       .maybeSingle()
 
     let product = productDirect || null
     let apkPath = normalizeApkStoragePath(productDirect?.apk_url)
+    let resolvedBuildStatus = normalizeSyncedBuildStatus(productDirect?.build_status)
+
+    if (product?.id && (!apkPath || resolvedBuildStatus !== 'success')) {
+      const { data: latestSuccessBuild } = await findLatestSuccessfulApkBuild(admin, product.id)
+      const latestPath = normalizeApkStoragePath(latestSuccessBuild?.apk_url)
+      const hasSyncedBuildId = Boolean(latestSuccessBuild?.build_id)
+      const buildIdMismatch = product.build_id !== latestSuccessBuild?.build_id
+      const statusNotSuccess = resolvedBuildStatus !== 'success'
+      const urlMismatch = product.apk_url !== (latestSuccessBuild?.apk_url || null)
+      const needsProductSync = hasSyncedBuildId && (buildIdMismatch || statusNotSuccess || urlMismatch)
+      if (latestSuccessBuild?.build_id || latestPath) {
+        apkPath = latestPath || apkPath
+        resolvedBuildStatus = 'success'
+        if (needsProductSync) {
+          await admin.from('products').update({
+            apk_url: latestSuccessBuild?.apk_url || product.apk_url || null,
+            build_id: latestSuccessBuild?.build_id || null,
+            build_status: 'success',
+            updated_at: nowIso(),
+          }).eq('id', product.id)
+        }
+      }
+    }
 
     if (!product || !apkPath) {
       const { data: apkById } = await admin
@@ -5807,17 +6023,18 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
       if (apkById?.product_id) {
         const { data: linkedProduct } = await admin
           .from('products')
-          .select('id, name, apk_url, price')
+          .select('id, name, apk_url, price, build_id, build_status')
           .eq('id', apkById.product_id)
           .maybeSingle()
         if (linkedProduct) {
           product = linkedProduct
           apkPath = normalizeApkStoragePath(apkById.file_url) || normalizeApkStoragePath(linkedProduct.apk_url)
+          resolvedBuildStatus = normalizeSyncedBuildStatus(linkedProduct.build_status)
         }
       }
     }
 
-    if (!product || !apkPath) return json({ allowed: false, error: 'APK not found' }, 404)
+    if (!product || !apkPath || resolvedBuildStatus !== 'success') return json({ allowed: false, error: 'APK not found' }, 404)
 
     let hasPaidAccess = false
 

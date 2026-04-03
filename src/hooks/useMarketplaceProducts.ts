@@ -28,6 +28,7 @@ export interface MarketplaceProduct {
   apk_enabled: boolean;
   license_enabled: boolean;
   build_status?: string;
+  build_id?: string;
   createdAt?: string;
   currency?: string;
   language?: string;
@@ -96,7 +97,9 @@ export function mapDbProduct(product: any, index: number): MarketplaceProduct {
   const features = Array.isArray(product.features) && product.features.length > 0
     ? product.features.slice(0, 4).map((f: any) => typeof f === 'string' ? { icon: 'CheckCircle2', text: f } : f)
     : defaultFeatures;
-  const isAvailable = product.status === 'active' && product.deploy_status !== 'failed';
+  const normalizedBuildStatus = String(product.build_status || '').toLowerCase();
+  const isBuildReady = !product.build_status || normalizedBuildStatus === 'success';
+  const isAvailable = product.status === 'active' && product.deploy_status !== 'failed' && isBuildReady;
   return {
     id: product.id,
     title: formatProductName(product.name || product.slug || 'Software Product'),
@@ -114,6 +117,7 @@ export function mapDbProduct(product: any, index: number): MarketplaceProduct {
     discount_percent: Number(product.discount_percent) || 0, rating: Number(product.rating) || 4.5,
     tags: product.tags || [], apk_enabled: product.apk_enabled !== false, license_enabled: product.license_enabled !== false,
     build_status: product.build_status || undefined,
+    build_id: product.build_id || undefined,
     createdAt: product.created_at || undefined,
     currency: product.currency || undefined,
     language: product.language || undefined,
@@ -183,7 +187,7 @@ export function useProductsByCategory(categories: string[]) {
     const fetchProducts = async () => {
       setLoading(true);
       const { data, error } = await supabase.from('products')
-        .select('id, name, slug, description, short_description, price, status, features, thumbnail_url, git_repo_url, marketplace_visible, apk_url, demo_url, demo_login, demo_password, demo_enabled, featured, trending, business_type, deploy_status, discount_percent, rating, tags, apk_enabled, license_enabled')
+        .select('id, name, slug, description, short_description, price, status, features, thumbnail_url, git_repo_url, marketplace_visible, apk_url, build_id, build_status, demo_url, demo_login, demo_password, demo_enabled, featured, trending, business_type, deploy_status, discount_percent, rating, tags, apk_enabled, license_enabled')
         .eq('marketplace_visible', true).order('created_at', { ascending: false }).limit(500);
       if (error) { setProducts([]); } else {
         const mapped = (data || []).map((p, i) => mapDbProduct(p, i));
