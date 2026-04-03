@@ -2,16 +2,20 @@ import { useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, ShoppingCart, CreditCard, ExternalLink } from 'lucide-react';
+import { ArrowLeft, ShoppingCart, CreditCard, ExternalLink, Download } from 'lucide-react';
 import { MarketplaceHeader } from '@/components/marketplace/MarketplaceHeader';
 import { useMarketplaceProducts } from '@/hooks/useMarketplaceProducts';
 import { useCart } from '@/hooks/useCart';
+import { useAuth } from '@/hooks/useAuth';
+import { apkApi } from '@/lib/api';
+import { toast } from 'sonner';
 
 export default function ProductDetail() {
   const navigate = useNavigate();
   const { id } = useParams();
   const { products, loading } = useMarketplaceProducts();
   const { toggleItem, isInCart } = useCart();
+  const { user } = useAuth();
 
   const product = useMemo(() => products.find((item) => item.id === id), [products, id]);
 
@@ -39,6 +43,38 @@ export default function ProductDetail() {
   }
 
   const inCart = isInCart(product.id);
+  const screenshots = [product.image, product.image, product.image].filter(Boolean);
+
+  const handleBuyNow = () => {
+    if (!user) {
+      toast.error('Please sign in to continue');
+      navigate('/auth');
+      return;
+    }
+    navigate(`/marketplace?buy=${encodeURIComponent(product.id)}`);
+  };
+
+  const handleDownload = async () => {
+    if (!user) {
+      toast.error('Please sign in to download');
+      navigate('/auth');
+      return;
+    }
+    if (!(product as any).apk_enabled) {
+      toast.info('Coming Soon');
+      return;
+    }
+    try {
+      const res = await apkApi.download(product.id) as any;
+      if (res?.allowed && (res?.download_url || res?.url)) {
+        window.open(res.download_url || res.url, '_blank');
+        return;
+      }
+      toast.error(res?.message || 'Please purchase first');
+    } catch (_e) {
+      toast.error('Download failed');
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -57,9 +93,22 @@ export default function ProductDetail() {
             <Badge variant="outline" className="text-base font-black">${product.price}</Badge>
           </div>
 
+          {screenshots.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              {screenshots.map((shot, idx) => (
+                <div key={`${shot}-${idx}`} className="overflow-hidden rounded-lg border border-border/40">
+                  <img src={shot} alt={`Screenshot ${idx + 1}`} className="w-full h-40 object-cover" loading="lazy" />
+                </div>
+              ))}
+            </div>
+          )}
+
           <div className="flex flex-wrap gap-2">
             {(product.features || []).map((feature, index) => (
               <Badge key={index} variant="secondary">{feature.text}</Badge>
+            ))}
+            {Array.isArray((product as any).tags) && (product as any).tags.map((tag: string) => (
+              <Badge key={tag} variant="outline">{tag}</Badge>
             ))}
           </div>
 
@@ -78,8 +127,11 @@ export default function ProductDetail() {
               <ShoppingCart className="h-4 w-4 mr-2" />
               {inCart ? 'Remove from Cart' : 'Add to Cart'}
             </Button>
-            <Button onClick={() => navigate('/checkout')}>
+            <Button onClick={handleBuyNow}>
               <CreditCard className="h-4 w-4 mr-2" /> Buy Now
+            </Button>
+            <Button variant="secondary" onClick={handleDownload} disabled={!(product as any).apk_enabled}>
+              <Download className="h-4 w-4 mr-2" /> Download APK
             </Button>
             <Button variant="ghost" onClick={() => navigate(`/app/${product.id}`)}>
               <ExternalLink className="h-4 w-4 mr-2" /> Access
