@@ -11,6 +11,8 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 import { useCart } from '@/hooks/useCart';
 import type { MarketplaceProduct } from '@/hooks/useMarketplaceProducts';
+import { apkApi } from '@/lib/api';
+import { useNavigate } from 'react-router-dom';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -31,6 +33,7 @@ const catColors: Record<string, string> = {
 export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
   product, index = 0, onBuyNow, rank,
 }) => {
+  const navigate = useNavigate();
   const [favorited, setFavorited] = useState(false);
   const [notified, setNotified] = useState(false);
   const [demoOpen, setDemoOpen] = useState(false);
@@ -115,10 +118,29 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
       }
       const isUuid = /^[0-9a-f]{8}-/.test(product.id);
       if (isUuid) {
-        const { data, error } = await supabase.functions.invoke('download-apk', {
-          body: { product_id: product.id, license_key: match.license_key },
-        });
-        if (!error && data?.success) { window.open(data.download_url, '_blank'); setDownloadChecking(false); return; }
+        try {
+          const data = await apkApi.download(product.id) as any;
+          if (data?.allowed && (data?.download_url || data?.url)) {
+            window.open(data.download_url || data.url, '_blank');
+            setDownloadChecking(false);
+            return;
+          }
+          if (!data?.allowed) {
+            toast.error(data?.message || 'Please purchase first');
+            setDownloadChecking(false);
+            return;
+          }
+        } catch (_apiError) {
+          // fallback to edge function invoke for compatibility
+          const { data, error } = await supabase.functions.invoke('download-apk', {
+            body: { product_id: product.id, license_key: match.license_key },
+          });
+          if (!error && (data?.success || data?.allowed) && (data?.download_url || data?.url)) {
+            window.open(data.download_url || data.url, '_blank');
+            setDownloadChecking(false);
+            return;
+          }
+        }
       }
       toast.success(`✅ License Key: ${match.license_key}`, {
         duration: 10000,
@@ -133,16 +155,49 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
   return (
     <>
       <div
-        className="flex-shrink-0 rounded-2xl overflow-hidden flex flex-col group cursor-pointer"
+        className="flex-shrink-0 rounded-2xl overflow-hidden flex flex-col group cursor-pointer relative"
         style={{
           width: 280,
           background: 'rgba(255,255,255,0.03)',
           border: '1px solid rgba(255,255,255,0.07)',
-          transition: 'transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease',
+          transition: 'transform 0.24s ease, box-shadow 0.24s ease, border-color 0.24s ease',
         }}
-        onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-4px)'; e.currentTarget.style.boxShadow = '0 8px 32px rgba(37,99,235,0.15)'; e.currentTarget.style.borderColor = 'rgba(37,99,235,0.3)'; }}
+        onClick={() => navigate(`/product/${encodeURIComponent(product.id)}`)}
+        onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.05)'; e.currentTarget.style.boxShadow = '0 14px 38px rgba(37,99,235,0.24)'; e.currentTarget.style.borderColor = 'rgba(37,99,235,0.45)'; }}
         onMouseLeave={e => { e.currentTarget.style.transform = ''; e.currentTarget.style.boxShadow = ''; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.07)'; }}
       >
+        <div className="absolute top-2 left-2 right-2 z-10 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-6 text-[10px] px-2"
+            onClick={(e) => { e.stopPropagation(); navigate(`/product/${encodeURIComponent(product.id)}`); }}
+          >
+            View
+          </Button>
+          <Button
+            size="sm"
+            className="h-6 text-[10px] px-2"
+            onClick={(e) => { e.stopPropagation(); onBuyNow(product); }}
+          >
+            Buy Now
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 text-[10px] px-2 border-white/20 text-white"
+            onClick={(e) => { e.stopPropagation(); void handleDownloadApk(); }}
+            disabled={downloadChecking || isPipeline || !apkEnabled}
+          >
+            Download
+          </Button>
+        </div>
+        {!!product.image && (
+          <div className="relative h-36 w-full overflow-hidden">
+            <img src={product.image} alt={product.title} className="h-full w-full object-cover" loading="lazy" />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
+          </div>
+        )}
         {/* Header */}
         <div className="relative px-4 py-4 flex items-center gap-3" style={{ background: `linear-gradient(135deg, rgba(37,99,235,0.08), transparent)` }}>
           <div className="h-12 w-12 rounded-xl flex items-center justify-center" style={{ background: 'rgba(37,99,235,0.15)', border: '1px solid rgba(37,99,235,0.25)' }}>
@@ -180,6 +235,16 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
               <span className="text-[10px] font-bold text-yellow-400">{rating}</span>
             </div>
           </div>
+          <div className="flex flex-wrap gap-1 pt-1">
+            {(Array.isArray((product as any).tags) ? (product as any).tags : ['AI', 'SEO', 'APK']).slice(0, 3).map((tag: string) => (
+              <Badge key={tag} variant="outline" className="text-[9px] uppercase border-white/20 text-white/80">
+                {tag}
+              </Badge>
+            ))}
+            {(product as any).build_status === 'generated' && (
+              <Badge className="text-[9px] uppercase bg-emerald-500/20 text-emerald-400 border-0">Generated</Badge>
+            )}
+          </div>
         </div>
 
         {/* Buttons */}
@@ -196,17 +261,17 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
           ) : (
             <>
               <div className="flex gap-1.5">
-                <Button size="sm" variant="outline" className="flex-1 h-8 text-[10px] font-bold rounded-lg border-white/10 text-foreground/70 hover:border-white/20" onClick={handleDemo}>
+                <Button size="sm" variant="outline" className="flex-1 h-8 text-[10px] font-bold rounded-lg border-white/10 text-foreground/70 hover:border-white/20" onClick={(e) => { e.stopPropagation(); handleDemo(); }}>
                   <Play style={{ width: 11, height: 11 }} className="mr-1" />{hasDemoAvailable ? 'DEMO' : 'VIEW'}
                 </Button>
-                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={handleFavorite}>
+                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); handleFavorite(); }}>
                   <Heart style={{ width: 14, height: 14 }} className={favorited ? 'fill-pink-400 text-pink-400' : 'text-muted-foreground'} />
                 </Button>
-                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={handleAddToCart}>
+                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); handleAddToCart(); }}>
                   <ShoppingCart style={{ width: 14, height: 14 }} className={inCart ? 'text-primary' : 'text-muted-foreground'} />
                 </Button>
               </div>
-              <Button size="sm" className="w-full h-9 text-[11px] font-black rounded-lg text-white border-0" style={{ background: 'linear-gradient(90deg,#2563EB,#1D4ED8)' }} onClick={() => onBuyNow(product)}>
+              <Button size="sm" className="w-full h-9 text-[11px] font-black rounded-lg text-white border-0" style={{ background: 'linear-gradient(90deg,#2563EB,#1D4ED8)' }} onClick={(e) => { e.stopPropagation(); onBuyNow(product); }}>
                 <Package style={{ width: 13, height: 13 }} className="mr-1" /> BUY NOW — ${price}
               </Button>
             </>
@@ -217,7 +282,7 @@ export const MarketplaceProductCard = React.memo<MarketplaceProductCardProps>(({
                 <Download style={{ width: 11, height: 11 }} className="mr-1" />{downloadChecking ? '...' : isPipeline ? 'PIPELINE' : 'APK'}
               </Button>
             )}
-            <Button size="sm" variant="outline" className={cn('h-7 text-[10px] font-bold rounded-lg border-white/10 text-muted-foreground', apkEnabled ? 'flex-1' : 'w-full')} onClick={() => setFeaturesOpen(true)}>
+            <Button size="sm" variant="outline" className={cn('h-7 text-[10px] font-bold rounded-lg border-white/10 text-muted-foreground', apkEnabled ? 'flex-1' : 'w-full')} onClick={(e) => { e.stopPropagation(); setFeaturesOpen(true); }}>
               <Info style={{ width: 11, height: 11 }} className="mr-1" /> FEATURES
             </Button>
           </div>

@@ -2,7 +2,6 @@ import { SectionHeader } from './SectionHeader';
 import { SectionSlider } from './SectionSlider';
 import { MarketplaceProductCard, ComingSoonCard } from './MarketplaceProductCard';
 import { useProductsByCategory } from '@/hooks/useMarketplaceProducts';
-import { fillToTarget } from '@/data/marketplaceProductGenerator';
 import type { MarketplaceCategory } from '@/data/marketplaceCategories';
 import { useNavigate } from 'react-router-dom';
 
@@ -19,7 +18,7 @@ export function MarketplaceCategoryRow({ category, onBuyNow }: Props) {
   const micro = microParts.length > 0 ? microParts.join('_') : (category.keywords[0] || 'software');
   const categoryPath = `/category/${encodeURIComponent(macro)}/${encodeURIComponent(sub)}/${encodeURIComponent(micro)}`;
 
-  const displayProducts = fillToTarget(products as any, category.id, category.title, 50);
+  const displayProducts = products;
 
   if (!loading && displayProducts.length === 0) {
     return (
