@@ -35,6 +35,7 @@ export const AVAILABLE_LANGUAGES = [
   { code: 'ar', name: 'العربية', flag: '🇸🇦' },
   { code: 'zh', name: '中文', flag: '🇨🇳' },
 ]
+const AVAILABLE_LANGUAGE_CODE_SET = new Set(AVAILABLE_LANGUAGES.map((item) => item.code))
 
 export const AVAILABLE_CURRENCIES = [
   { code: 'USD', symbol: '$', flag: '🇺🇸', name: 'US Dollar' },
@@ -51,9 +52,7 @@ function normalizeCountry(value: unknown) {
 
 function normalizeLanguage(value: unknown) {
   const lang = String(value || '').trim().toLowerCase().slice(0, 3)
-  const supported = new Set(AVAILABLE_LANGUAGES.map((item) => item.code))
-  if (!lang) return DEFAULT_LOCALE.language
-  return supported.has(lang) ? lang : DEFAULT_LOCALE.language
+
 }
 
 function normalizeCurrency(value: unknown) {

@@ -104,6 +104,7 @@ const SERVER_STATUS_CACHE_TTL_MS = 30 * 1000
 const DASHBOARD_STATS_CACHE_TTL_MS = 30 * 1000
 const SEO_ANALYTICS_CACHE_TTL_MS = 60 * 1000
 const PRODUCT_LIST_TRANSLATION_LIMIT = 60
+const MAX_PAYMENT_RETRY_ATTEMPTS = 3
 const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SECONDS') || '60')
 const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
 const DEFAULT_GITHUB_ORG = Deno.env.get('GITHUB_DEFAULT_ORG') || 'saasvala'
@@ -152,6 +153,39 @@ const RESELLER_FEATURE_KEY_SET = new Set<string>([
   ...FINAL_RESELLER_GAP_FEATURE_KEYS,
   ...FINAL_ULTRA_LAYER_FEATURE_KEYS,
 ])
+
+type DomainEventType =
+  | 'product_created'
+  | 'lead_generated'
+  | 'build_completed'
+  | 'payment_success'
+  | 'payment_init'
+  | 'order_completed'
+  | 'subscription_renewed'
+  | 'subscription_activated'
+  | 'license_key_assigned'
+  | 'banner_created'
+  | 'banner_updated'
+  | 'banner_deleted'
+  | 'offer_created'
+  | 'marketplace_sync'
+
+type EnabledGateway = {
+  id: string
+  gateway_code: string
+  gateway_name: string
+  is_enabled: boolean
+  config: Record<string, unknown> | null
+  sort_order: number
+}
+
+type GatewayConfig = {
+  mode?: string
+  environment?: string
+  provider?: string
+  public_key?: string
+  key_id?: string
+}
 
 function invalidateProductCache() {
   productListCache.data = null
@@ -366,7 +400,7 @@ async function redisSetJson(key: string, value: unknown, ttlSeconds: number) {
 
 async function emitDomainEvent(
   admin: any,
-  eventType: 'product_created' | 'lead_generated' | 'build_completed' | 'payment_success',
+  eventType: DomainEventType,
   payload: Record<string, unknown>,
   tenantId?: string | null,
 ) {
@@ -380,6 +414,39 @@ async function emitDomainEvent(
   } catch {
     // no-op
   }
+}
+
+async function resolveEnabledPaymentGateway(admin: any, requestedGateway?: string | null) {
+  const requested = String(requestedGateway || '').trim().toLowerCase()
+  const { data, error } = await admin
+    .from('marketplace_payment_gateways')
+    .select('id,gateway_code,gateway_name,is_enabled,config,sort_order')
+    .eq('is_enabled', true)
+    .order('sort_order', { ascending: true })
+
+  if (error) return { error: error.message, gateway: null as EnabledGateway | null }
+
+  const rows = (Array.isArray(data) ? data : []) as EnabledGateway[]
+  if (!rows.length) return { error: null, gateway: null as EnabledGateway | null }
+
+  if (requested) {
+    const matched = rows.find((row) => String(row.gateway_code || '').toLowerCase() === requested)
+    return { error: null, gateway: matched || null }
+  }
+
+  return { error: null, gateway: rows[0] || null }
+}
+
+/**
+ * Returns the next retry timestamp using exponential backoff.
+ * Delay = baseMs * 2^(attempt-1), capped at exponent 6 to bound retry growth.
+ * With the default base (60s), delays grow up to 64 minutes at the cap.
+ */
+function paymentRetryRunAt(attempts: number, baseMs = 60_000) {
+  const safeAttempts = Math.max(1, Number(attempts || 1))
+  const cappedExp = Math.min(6, safeAttempts - 1)
+  const delay = baseMs * Math.pow(2, cappedExp)
+  return new Date(Date.now() + delay).toISOString()
 }
 
 async function enqueueSearchIndex(
@@ -572,8 +639,49 @@ async function translateTextWithCache(admin: any, text: string, targetLang: stri
     .maybeSingle()
   if (cached?.translated_text) return String(cached.translated_text)
 
-  // TODO: replace stub translation with a production AI translation provider.
-  const translated = `[${toLang}] ${normalizedText}`
+  let translated = `[${toLang}] ${normalizedText}`
+  const translationProvider = String(Deno.env.get('TRANSLATION_PROVIDER') || '').toLowerCase()
+  const shouldUseAiTranslation = translationProvider === 'ai-chat' || translationProvider === 'openai'
+  if (shouldUseAiTranslation) {
+    try {
+      const actorToken = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+      if (actorToken) {
+        const invokeRes = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/ai-chat`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${actorToken}`,
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            messages: [
+              {
+                role: 'system',
+                content: `Translate user text from ${fromLang} to ${toLang}. Return only translated text, no markdown or explanation.`,
+              },
+              { role: 'user', content: normalizedText },
+            ],
+            mode: 'translation',
+            user_id: actorUserId || 'system',
+          }),
+        })
+        if (invokeRes.ok) {
+          const aiData = await invokeRes.json().catch(() => null)
+          const candidate = String(
+            aiData?.translated_text
+            || aiData?.data?.translated_text
+            || aiData?.answer
+            || aiData?.response
+            || aiData?.text
+            || ''
+          ).trim()
+          if (candidate) translated = candidate
+        }
+      }
+    } catch {
+      // fallback to deterministic stub below
+    }
+  }
   try {
     await admin.from('translated_content').upsert({
       cache_key: cacheKey,
@@ -3168,17 +3276,41 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     const requestedIdempotency = body.idempotency_key || reqIdempotencyFromMeta(body.meta) || generateIdempotencyKey()
     const amount = Number(body.amount || 0)
     if (!Number.isFinite(amount) || amount <= 0) return err('Invalid amount', 422, 'VALIDATION_ERROR')
+    const requestedGateway = String(body.gateway || '').trim().toLowerCase()
+    const isWalletMethod = String(body.payment_method || '').toLowerCase() === 'wallet' || requestedGateway === 'wallet'
+    const gatewayResolution = await resolveEnabledPaymentGateway(admin, isWalletMethod ? 'wallet' : requestedGateway || null)
+    if (gatewayResolution.error) return err(gatewayResolution.error)
+    if (!isWalletMethod && requestedGateway && !gatewayResolution.gateway) {
+      return err('Requested payment gateway is disabled or not configured', 422, 'GATEWAY_UNAVAILABLE')
+    }
+    const effectiveGateway = isWalletMethod ? 'wallet' : String(
+      gatewayResolution.gateway?.gateway_code || requestedGateway || 'manual'
+    ).toLowerCase()
+    const gatewayConfig: GatewayConfig = gatewayResolution.gateway?.config && typeof gatewayResolution.gateway.config === 'object'
+      ? gatewayResolution.gateway.config
+      : {}
+    const gatewayMode = String(gatewayConfig.mode || gatewayConfig.environment || 'test').toLowerCase()
+    const gatewayProvider = String(gatewayConfig.provider || effectiveGateway || 'manual').toLowerCase()
+    const gatewayPublicKey = String(gatewayConfig.public_key || gatewayConfig.key_id || '').trim() || null
+    const fallbackRedirectUrl = (isWalletMethod || effectiveGateway === 'manual')
+      ? null
+      : `/checkout?payment_id=${encodeURIComponent(String(requestedIdempotency))}&gateway=${encodeURIComponent(effectiveGateway)}`
     const { data: atomicData, error: atomicError } = await sb.rpc('gateway_payment_init_atomic', {
       p_user_id: userId,
       p_product_id: body.product_id,
       p_amount: amount,
       p_currency: body.currency || 'INR',
-      p_payment_method: body.payment_method || 'gateway',
-      p_gateway: body.gateway || 'manual',
+      p_payment_method: body.payment_method || (isWalletMethod ? 'wallet' : 'gateway'),
+      p_gateway: effectiveGateway,
       p_gateway_reference: body.gateway_reference || null,
-      p_meta: body.meta || {},
+      p_meta: {
+        ...(body.meta || {}),
+        gateway_mode: gatewayMode,
+        gateway_provider: gatewayProvider,
+        gateway_name: gatewayResolution.gateway?.gateway_name || effectiveGateway,
+      },
       p_idempotency_key: requestedIdempotency,
-      p_lock_wallet: body.lock_wallet === true || body.payment_method === 'wallet',
+      p_lock_wallet: body.lock_wallet === true || isWalletMethod,
       p_tenant_id: body.tenant_id || null,
     })
     if (atomicError) return err(atomicError.message)
@@ -3193,12 +3325,28 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     })
 
     await logActivity(admin, 'order', order.id, 'payment_init', userId, { idempotency_key: requestedIdempotency })
+    await emitDomainEvent(admin, 'payment_init', {
+      payment_id: payment.id,
+      order_id: order.id,
+      user_id: userId,
+      gateway: effectiveGateway,
+      gateway_mode: gatewayMode,
+      amount,
+      currency: body.currency || 'INR',
+    }, body.tenant_id || null)
     return json({
       data: {
         order,
         payment,
         payment_status: 'pending',
-        gateway_redirect_url: body.gateway_redirect_url || null,
+        gateway: {
+          code: effectiveGateway,
+          name: gatewayResolution.gateway?.gateway_name || effectiveGateway,
+          mode: gatewayMode,
+          provider: gatewayProvider,
+          public_key: gatewayPublicKey,
+        },
+        gateway_redirect_url: body.gateway_redirect_url || fallbackRedirectUrl,
       },
     }, 201)
   }
@@ -3265,10 +3413,10 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
       }
       await sb.from('async_jobs').insert({
         job_type: 'webhook_retry',
-        status: retryCount < 3 ? 'queued' : 'failed',
+        status: retryCount < MAX_PAYMENT_RETRY_ATTEMPTS ? 'queued' : 'dead_letter',
         attempts: retryCount,
         payload: { payment_id: payment.id, event_type: body.event_type },
-        run_at: new Date(Date.now() + retryCount * 60 * 1000).toISOString(),
+        run_at: paymentRetryRunAt(retryCount),
       })
     }
 
@@ -3352,7 +3500,7 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
       status: 'queued',
       attempts: retryCount,
       payload: { payment_id: payment.id, source: 'manual_retry' },
-      run_at: nowIso(),
+      run_at: paymentRetryRunAt(retryCount),
     })
     return json({ success: true, retry_count: retryCount })
   }
@@ -3545,6 +3693,7 @@ async function handleBannerAliases(method: string, pathParts: string[], body: an
     const { data, error } = await sb.from('marketplace_banners').insert(payload).select('*').single()
     if (error) return err(error.message)
     await logActivity(admin, 'banner', data.id, 'created', userId, payload)
+    await emitDomainEvent(admin, 'banner_created', { banner_id: data.id, user_id: userId }, null)
     return json({ data: mapBannerRowToResponse(data) }, 201)
   }
 
@@ -3578,6 +3727,7 @@ async function handleBannerAliases(method: string, pathParts: string[], body: an
     const { data, error } = await sb.from('marketplace_banners').update(updates).eq('id', id).select('*').single()
     if (error) return err(error.message)
     await logActivity(admin, 'banner', id, 'updated', userId, updates)
+    await emitDomainEvent(admin, 'banner_updated', { banner_id: id, user_id: userId }, null)
     return json({ data: mapBannerRowToResponse(data) })
   }
 
@@ -3588,6 +3738,7 @@ async function handleBannerAliases(method: string, pathParts: string[], body: an
     const { error } = await sb.from('marketplace_banners').delete().eq('id', id)
     if (error) return err(error.message)
     await logActivity(admin, 'banner', id, 'deleted', userId)
+    await emitDomainEvent(admin, 'banner_deleted', { banner_id: id, user_id: userId }, null)
     return json({ success: true })
   }
 
@@ -3622,6 +3773,7 @@ async function handleOfferAliases(method: string, pathParts: string[], body: any
     const { error: productErr } = await sb.from('products').update({ discount_percent: discount, updated_at: nowIso() }).eq('id', productId)
     if (!productErr) invalidateProductCache()
     await logActivity(admin, 'offer', data.id, 'created', userId, { ...payload, product_id: productId })
+    await emitDomainEvent(admin, 'offer_created', { offer_id: data.id, product_id: productId, user_id: userId }, null)
     return json({
       data: {
         id: data.id,
@@ -3690,6 +3842,7 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
     }
     invalidateProductCache()
     await logActivity(admin, 'product', data.id, 'created', userId, payload)
+    await emitDomainEvent(admin, 'marketplace_sync', { entity: 'product', action: 'create', product_id: data.id, user_id: userId }, null)
     try {
       const seoPayload = buildSeoPayloadFromProduct({
         ...data,
@@ -3795,6 +3948,7 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
     }
     invalidateProductCache()
     await logActivity(admin, 'product', id, 'updated', userId, updates)
+    await emitDomainEvent(admin, 'marketplace_sync', { entity: 'product', action: 'update', product_id: id, user_id: userId }, null)
     try {
       const seoPayload = buildSeoPayloadFromProduct({
         ...data,
@@ -4021,6 +4175,14 @@ async function markPaymentSuccess(admin: any, sb: any, userId: string, payment: 
     status: 'success',
     updated_at: paidAt,
   }).eq('id', order.id)
+  await emitDomainEvent(admin, 'order_completed', {
+    order_id: order.id,
+    payment_id: payment.id,
+    user_id: order.user_id,
+    product_id: order.product_id,
+    amount: order.amount,
+    currency: order.currency || 'INR',
+  }, order.tenant_id || null)
 
   if (order.marketplace_order_id) {
     await sb.from('marketplace_orders').update({
@@ -4059,6 +4221,14 @@ async function markPaymentSuccess(admin: any, sb: any, userId: string, payment: 
       current_period_end: periodEnd.toISOString(),
       updated_at: paidAt,
     }).eq('id', existingSubscription.id)
+    await emitDomainEvent(admin, 'subscription_renewed', {
+      subscription_id: existingSubscription.id,
+      order_id: order.id,
+      payment_id: payment.id,
+      user_id: order.user_id,
+      product_id: order.product_id,
+      period_end: periodEnd.toISOString(),
+    }, order.tenant_id || null)
   } else {
     const { data: newSubscription } = await sb.from('subscriptions').insert({
       user_id: order.user_id,
@@ -4078,6 +4248,16 @@ async function markPaymentSuccess(admin: any, sb: any, userId: string, payment: 
       last_renewal_attempt_at: paidAt,
     }).select().single()
     subscriptionId = newSubscription?.id || null
+    if (subscriptionId) {
+      await emitDomainEvent(admin, 'subscription_activated', {
+        subscription_id: subscriptionId,
+        order_id: order.id,
+        payment_id: payment.id,
+        user_id: order.user_id,
+        product_id: order.product_id,
+        period_end: periodEnd.toISOString(),
+      }, order.tenant_id || null)
+    }
   }
 
   await settleWalletLock()
@@ -4244,6 +4424,15 @@ async function markPaymentSuccess(admin: any, sb: any, userId: string, payment: 
     }
     if (createdLicense?.id && order.marketplace_order_id) {
       await sb.from('marketplace_orders').update({ license_key_id: createdLicense.id }).eq('id', order.marketplace_order_id)
+    }
+    if (createdLicense?.id) {
+      await emitDomainEvent(admin, 'license_key_assigned', {
+        license_key_id: createdLicense.id,
+        order_id: order.id,
+        payment_id: payment.id,
+        user_id: order.user_id,
+        product_id: order.product_id,
+      }, order.tenant_id || null)
     }
   }
 

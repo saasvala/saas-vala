@@ -133,24 +133,55 @@ function SubscriptionGuard({ children }: { children: React.ReactNode }) {
       }
 
       const routeProductId = productId || id;
-      let query = supabase
+      let subscriptionQuery = supabase
         .from('subscriptions')
         .select('status,current_period_end,product_id')
         .eq('user_id', user.id);
 
       if (routeProductId) {
-        query = query.or(`product_id.eq.${routeProductId},product_id.is.null`);
+        subscriptionQuery = subscriptionQuery.or(`product_id.eq.${routeProductId},product_id.is.null`);
       }
 
-      const { data } = await query.limit(50);
-      const hasActive = (data || []).some((row) => {
+      const subscriptionPromise = subscriptionQuery.limit(50);
+      let orderQuery = supabase
+        .from('marketplace_orders')
+        .select('status,product_id')
+        .eq('user_id', user.id)
+        .in('status', ['completed', 'success']);
+      if (routeProductId) {
+        orderQuery = orderQuery.eq('product_id', routeProductId);
+      }
+      let licenseQuery = supabase
+        .from('license_keys')
+        .select('status,expires_at,product_id')
+        .eq('created_by', user.id)
+        .eq('status', 'active');
+      if (routeProductId) {
+        licenseQuery = licenseQuery.eq('product_id', routeProductId);
+      }
+
+      const [{ data: subs }, { data: orders }, { data: licenses }] = await Promise.all([
+        subscriptionPromise,
+        orderQuery.limit(50),
+        licenseQuery.limit(50),
+      ]);
+
+      const hasActiveSubscription = (subs || []).some((row) => {
         const status = String(row.status || '').toLowerCase();
         const notExpired = !row.current_period_end || new Date(row.current_period_end) > new Date();
         return (status === 'active' || status === 'trialing') && notExpired;
       });
+      const hasCompletedOrder = (orders || []).some((row) => {
+        const status = String(row.status || '').toLowerCase();
+        return status === 'completed' || status === 'success';
+      });
+      const hasActiveLicense = (licenses || []).some((row) => {
+        const notExpired = !row.expires_at || new Date(row.expires_at) > new Date();
+        return String(row.status || '').toLowerCase() === 'active' && notExpired;
+      });
 
       if (mounted) {
-        setAllowed(hasActive);
+        setAllowed(hasActiveSubscription || hasCompletedOrder || hasActiveLicense);
         setChecking(false);
       }
     };
@@ -240,7 +271,7 @@ function hasInvalidRouteParam(params: Array<string | undefined>) {
 function CategoryRouteGuarded() {
   const { macro, sub, micro } = useParams();
   if (hasInvalidRouteParam([macro, sub, micro])) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/marketplace" replace />;
   }
   return <CategoryFlow />;
 }
@@ -258,7 +289,7 @@ function AppRouteGuarded() {
   const { id, productId } = useParams();
   const resolved = id || productId;
   if (!resolved || hasInvalidRouteParam([resolved])) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/marketplace" replace />;
   }
   return (
     <AuthGuard>
