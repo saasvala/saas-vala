@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -21,36 +21,14 @@ import {
   Clock3,
   Filter,
   Wifi,
+  Download,
+  Plus,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { listAuditLogs } from '@/observability/auditClient';
-import type { Database } from '@/integrations/supabase/types';
+import { useAuditStore, type AuditStatus } from '@/stores/useAuditStore';
 
-type AuditLog = Database['public']['Tables']['audit_logs']['Row'];
-type AuditAction = Database['public']['Enums']['audit_action'];
-type AuditStatus = 'success' | 'error' | 'warning';
-type TimeRange = '15m' | '1h' | '24h' | '7d' | '30d' | 'all';
-type DateFilter = 'today' | '7d' | '30d' | 'all';
-
-interface EnrichedAuditLog {
-  id: string;
-  raw: AuditLog;
-  time: string;
-  role: string;
-  action: AuditAction;
-  module: string;
-  status: AuditStatus;
-  message: string;
-}
-
-const statusColors: Record<AuditStatus, string> = {
-  success: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
-  error: 'bg-red-500/15 text-red-400 border-red-500/30',
-  warning: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
-};
-
-const actionColors: Record<AuditAction, string> = {
+const actionColors: Record<string, string> = {
   create: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
   update: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
   delete: 'bg-red-500/20 text-red-400 border-red-500/30',
@@ -61,194 +39,99 @@ const actionColors: Record<AuditAction, string> = {
   suspend: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
 };
 
-const LIVE_REFRESH_INTERVAL_MILLISECONDS = 8000;
+const statusColors: Record<AuditStatus, string> = {
+  success: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  error: 'bg-red-500/15 text-red-400 border-red-500/30',
+  warning: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+};
 
-function toObject(value: unknown): Record<string, unknown> {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return {};
-}
-
-function stringFrom(metadata: Record<string, unknown>, keys: string[]): string | null {
-  for (const key of keys) {
-    const value = metadata[key];
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-  }
-  return null;
-}
-
-function toStatus(log: AuditLog, metadata: Record<string, unknown>): AuditStatus {
-  const status = (stringFrom(metadata, ['status', 'result', 'outcome', 'severity', 'level']) || '').toLowerCase();
-  if (status.includes('error') || status.includes('fail') || status.includes('denied') || status.includes('unauthorized')) {
-    return 'error';
-  }
-  if (status.includes('warn') || status.includes('pending') || status.includes('suspicious')) {
-    return 'warning';
-  }
-  if (log.event_category === 'SECURITY') {
-    return 'warning';
-  }
-  return 'success';
-}
-
-function isWithinTimeRange(dateIso: string, range: TimeRange): boolean {
-  if (range === 'all') return true;
-  const now = Date.now();
-  const time = new Date(dateIso).getTime();
-  if (Number.isNaN(time)) return false;
-  const windowMs: Record<Exclude<TimeRange, 'all'>, number> = {
-    '15m': 15 * 60 * 1000,
-    '1h': 60 * 60 * 1000,
-    '24h': 24 * 60 * 60 * 1000,
-    '7d': 7 * 24 * 60 * 60 * 1000,
-    '30d': 30 * 24 * 60 * 60 * 1000,
-  };
-  return now - time <= windowMs[range];
-}
-
-function isInDateFilter(dateIso: string, filter: DateFilter): boolean {
-  if (filter === 'all') return true;
-  const now = new Date();
-  const time = new Date(dateIso);
-  if (Number.isNaN(time.getTime())) return false;
-  if (filter === 'today') {
-    return time.toDateString() === now.toDateString();
-  }
-  if (filter === '7d') {
-    return now.getTime() - time.getTime() <= 7 * 24 * 60 * 60 * 1000;
-  }
-  return now.getTime() - time.getTime() <= 30 * 24 * 60 * 60 * 1000;
+function statusIcon(status: AuditStatus) {
+  if (status === 'success') return <CheckCircle2 className="h-4 w-4 text-emerald-400" />;
+  if (status === 'error') return <CircleX className="h-4 w-4 text-red-400" />;
+  return <CircleAlert className="h-4 w-4 text-amber-400" />;
 }
 
 export default function AuditLogs() {
-  const [logs, setLogs] = useState<AuditLog[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [timeRange, setTimeRange] = useState<TimeRange>('24h');
-  const [roleFilter, setRoleFilter] = useState('all');
-  const [actionFilter, setActionFilter] = useState<'all' | AuditAction>('all');
-  const [moduleFilter, setModuleFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState<'all' | AuditStatus>('all');
-  const [dateFilter, setDateFilter] = useState<DateFilter>('all');
-  const [selectedLogId, setSelectedLogId] = useState<string | null>(null);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const {
+    logs,
+    filters,
+    selectedLog,
+    loading,
+    hasMore,
+    stats,
+    setFilters,
+    selectLog,
+    fetchInitial,
+    fetchMore,
+    refresh,
+    fetchStats,
+    createManualLog,
+    exportLogs,
+    setupRealtime,
+  } = useAuditStore();
 
-  const fetchLogs = useCallback(async (showLoader = true) => {
-    if (showLoader) {
-      setLoading(true);
-    } else {
-      if (isRefreshing || loading) {
-        return;
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    void fetchInitial();
+    void fetchStats();
+  }, [fetchInitial, fetchStats]);
+
+  useEffect(() => {
+    const cleanup = setupRealtime();
+    return cleanup;
+  }, [setupRealtime]);
+
+  useEffect(() => {
+    const target = bottomRef.current;
+    if (!target) return;
+    const observer = new IntersectionObserver((entries) => {
+      const [entry] = entries;
+      if (entry?.isIntersecting && hasMore && !loading) {
+        void fetchMore();
       }
-      setIsRefreshing(true);
-    }
+    }, { threshold: 0.5 });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [fetchMore, hasMore, loading]);
+
+  const roles = useMemo(() => [...new Set(logs.map((log) => log.role))], [logs]);
+  const modules = useMemo(() => [...new Set(logs.map((log) => log.module))], [logs]);
+
+  const statusCounts = useMemo(() => ({
+    success: logs.filter((log) => log.status === 'success').length,
+    warning: logs.filter((log) => log.status === 'warning').length,
+    error: logs.filter((log) => log.status === 'error').length,
+  }), [logs]);
+
+  const onCreateManualLog = async () => {
     try {
-      const { data, error } = await listAuditLogs({ limit: 500 });
-      if (error) throw error;
-      setLogs((data || []) as AuditLog[]);
+      await createManualLog({
+        action: 'create',
+        module: 'audit',
+        status: 'success',
+        message: 'manual audit log created',
+      });
+      toast.success('Audit log created');
     } catch (error) {
-      console.error('Error fetching audit logs:', error);
-      toast.error('Failed to fetch audit logs');
-    } finally {
-      if (showLoader) {
-        setLoading(false);
-      } else {
-        setIsRefreshing(false);
-      }
+      console.error(error);
+      toast.error('Failed to create log');
     }
-  }, [isRefreshing, loading]);
-
-  useEffect(() => {
-    fetchLogs();
-  }, [fetchLogs]);
-
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      fetchLogs(false);
-    }, LIVE_REFRESH_INTERVAL_MILLISECONDS);
-    return () => window.clearInterval(interval);
-  }, [fetchLogs]);
-
-  const enrichedLogs = useMemo<EnrichedAuditLog[]>(() => {
-    return logs.map((log) => {
-      const metadata = toObject(log.metadata);
-      const role = stringFrom(metadata, ['role', 'user_role', 'actor_role', 'userRole', 'actorRole']) || (log.is_system ? 'system' : 'user');
-      const module = log.target_table || log.table_name || log.entity || stringFrom(metadata, ['module', 'service']) || 'system';
-      const message = stringFrom(metadata, ['message', 'description', 'event_message']) || `${log.event_type || 'event'} on ${module}`;
-      const time = log.occurred_at || log.created_at || new Date().toISOString();
-      return {
-        id: log.id,
-        raw: log,
-        time,
-        role,
-        action: log.action,
-        module,
-        status: toStatus(log, metadata),
-        message,
-      };
-    });
-  }, [logs]);
-
-  const filteredLogs = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    return enrichedLogs.filter((log) => {
-      if (!isWithinTimeRange(log.time, timeRange)) return false;
-      if (!isInDateFilter(log.time, dateFilter)) return false;
-      if (roleFilter !== 'all' && log.role !== roleFilter) return false;
-      if (actionFilter !== 'all' && log.action !== actionFilter) return false;
-      if (moduleFilter !== 'all' && log.module !== moduleFilter) return false;
-      if (statusFilter !== 'all' && log.status !== statusFilter) return false;
-      if (!q) return true;
-      return (
-        log.message.toLowerCase().includes(q)
-        || log.role.toLowerCase().includes(q)
-        || log.action.toLowerCase().includes(q)
-        || log.module.toLowerCase().includes(q)
-        || (log.raw.event_type || '').toLowerCase().includes(q)
-        || (log.raw.target_id || '').toLowerCase().includes(q)
-      );
-    });
-  }, [actionFilter, dateFilter, enrichedLogs, moduleFilter, roleFilter, searchQuery, statusFilter, timeRange]);
-
-  const roles = useMemo(() => [...new Set(enrichedLogs.map((log) => log.role))], [enrichedLogs]);
-  const modules = useMemo(() => [...new Set(enrichedLogs.map((log) => log.module))], [enrichedLogs]);
-
-  const selectedLog = useMemo(() => {
-    if (!selectedLogId) return null;
-    return enrichedLogs.find((log) => log.id === selectedLogId) || null;
-  }, [enrichedLogs, selectedLogId]);
-
-  useEffect(() => {
-    if (selectedLogId && !selectedLog) {
-      setSelectedLogId(null);
-    }
-  }, [selectedLog, selectedLogId]);
-
-  const resetFilters = () => {
-    setSearchQuery('');
-    setTimeRange('24h');
-    setRoleFilter('all');
-    setActionFilter('all');
-    setModuleFilter('all');
-    setStatusFilter('all');
-    setDateFilter('all');
   };
 
-  const statusCounts = useMemo(() => {
-    return {
-      success: filteredLogs.filter((log) => log.status === 'success').length,
-      warning: filteredLogs.filter((log) => log.status === 'warning').length,
-      error: filteredLogs.filter((log) => log.status === 'error').length,
-    };
-  }, [filteredLogs]);
-
-  const statusIcon = (status: AuditStatus) => {
-    if (status === 'success') return <CheckCircle2 className="h-4 w-4 text-emerald-400" />;
-    if (status === 'error') return <CircleX className="h-4 w-4 text-red-400" />;
-    return <CircleAlert className="h-4 w-4 text-amber-400" />;
+  const onExport = async (type: 'csv' | 'pdf') => {
+    try {
+      const url = await exportLogs(type);
+      if (!url) throw new Error('No export URL');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `audit-logs.${type}`;
+      a.click();
+      toast.success(`Exported ${type.toUpperCase()}`);
+    } catch (error) {
+      console.error(error);
+      toast.error(`Failed to export ${type.toUpperCase()}`);
+    }
   };
 
   return (
@@ -261,12 +144,12 @@ export default function AuditLogs() {
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   placeholder="Search logs, users, module, message..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  value={filters.q}
+                  onChange={(e) => setFilters({ q: e.target.value })}
                   className="pl-10"
                 />
               </div>
-              <Select value={timeRange} onValueChange={(value) => setTimeRange(value as TimeRange)}>
+              <Select value={filters.time} onValueChange={(value) => setFilters({ time: value as '15m' | '1h' | '24h' | '7d' | '30d' | 'all' })}>
                 <SelectTrigger className="w-[120px]">
                   <SelectValue placeholder="Time" />
                 </SelectTrigger>
@@ -286,13 +169,34 @@ export default function AuditLogs() {
                 <Wifi className="h-3 w-3" />
                 Live
               </Badge>
-              <Button variant="outline" onClick={resetFilters} className="gap-2">
+              <Button variant="outline" onClick={() => setFilters({
+                q: '',
+                time: '24h',
+                role: 'all',
+                action: 'all',
+                module: 'all',
+                status: 'all',
+                dateFrom: '',
+                dateTo: '',
+              })} className="gap-2">
                 <Filter className="h-4 w-4" />
                 Reset
               </Button>
-              <Button variant="outline" onClick={() => fetchLogs()} className="gap-2">
+              <Button variant="outline" onClick={() => void refresh()} className="gap-2">
                 <RefreshCw className="h-4 w-4" />
                 Refresh
+              </Button>
+              <Button variant="outline" onClick={onCreateManualLog} className="gap-2">
+                <Plus className="h-4 w-4" />
+                Create
+              </Button>
+              <Button variant="outline" onClick={() => void onExport('csv')} className="gap-2">
+                <Download className="h-4 w-4" />
+                CSV
+              </Button>
+              <Button variant="outline" onClick={() => void onExport('pdf')} className="gap-2">
+                <Download className="h-4 w-4" />
+                PDF
               </Button>
             </div>
           </div>
@@ -308,7 +212,7 @@ export default function AuditLogs() {
             <div className="space-y-4">
               <div>
                 <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Role</p>
-                <Select value={roleFilter} onValueChange={setRoleFilter}>
+                <Select value={filters.role} onValueChange={(value) => setFilters({ role: value })}>
                   <SelectTrigger>
                     <SelectValue placeholder="Role" />
                   </SelectTrigger>
@@ -323,7 +227,7 @@ export default function AuditLogs() {
 
               <div>
                 <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Action</p>
-                <Select value={actionFilter} onValueChange={(value) => setActionFilter(value as 'all' | AuditAction)}>
+                <Select value={filters.action} onValueChange={(value) => setFilters({ action: value })}>
                   <SelectTrigger>
                     <SelectValue placeholder="Action" />
                   </SelectTrigger>
@@ -343,7 +247,7 @@ export default function AuditLogs() {
 
               <div>
                 <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Module</p>
-                <Select value={moduleFilter} onValueChange={setModuleFilter}>
+                <Select value={filters.module} onValueChange={(value) => setFilters({ module: value })}>
                   <SelectTrigger>
                     <SelectValue placeholder="Module" />
                   </SelectTrigger>
@@ -358,7 +262,7 @@ export default function AuditLogs() {
 
               <div>
                 <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</p>
-                <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as 'all' | AuditStatus)}>
+                <Select value={filters.status} onValueChange={(value) => setFilters({ status: value })}>
                   <SelectTrigger>
                     <SelectValue placeholder="Status" />
                   </SelectTrigger>
@@ -372,18 +276,13 @@ export default function AuditLogs() {
               </div>
 
               <div>
-                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Date</p>
-                <Select value={dateFilter} onValueChange={(value) => setDateFilter(value as DateFilter)}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Date" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Time</SelectItem>
-                    <SelectItem value="today">Today</SelectItem>
-                    <SelectItem value="7d">Last 7 days</SelectItem>
-                    <SelectItem value="30d">Last 30 days</SelectItem>
-                  </SelectContent>
-                </Select>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Date from</p>
+                <Input type="date" value={filters.dateFrom} onChange={(e) => setFilters({ dateFrom: e.target.value })} />
+              </div>
+
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Date to</p>
+                <Input type="date" value={filters.dateTo} onChange={(e) => setFilters({ dateTo: e.target.value })} />
               </div>
             </div>
           </aside>
@@ -401,40 +300,36 @@ export default function AuditLogs() {
               <span role="columnheader" aria-colindex={6}>Message</span>
             </div>
 
-            {loading ? (
+            {loading && logs.length === 0 ? (
               <div className="flex h-[70vh] items-center justify-center">
                 <Loader2 className="h-8 w-8 animate-spin text-primary" />
               </div>
-            ) : filteredLogs.length === 0 ? (
+            ) : logs.length === 0 ? (
               <div className="flex h-[70vh] flex-col items-center justify-center px-6 text-center">
                 <FileText className="mb-3 h-12 w-12 text-muted-foreground" />
                 <h3 className="font-semibold text-foreground">No logs found</h3>
-                <p className="text-sm text-muted-foreground">No audit events match the current filters.</p>
+                <p className="text-sm text-muted-foreground">Seeding default logs automatically when empty.</p>
               </div>
             ) : (
-              <div
-                role="rowgroup"
-                aria-label="Audit log rows"
-                className="h-[70vh] overflow-y-auto"
-              >
-                {filteredLogs.map((log) => (
+              <div role="rowgroup" aria-label="Audit log rows" className="h-[70vh] overflow-y-auto">
+                {logs.map((log) => (
                   <button
                     key={log.id}
                     type="button"
-                    onClick={() => setSelectedLogId(log.id)}
-                    aria-label={`View details for ${log.action} on ${log.module} at ${new Date(log.time).toLocaleString()}`}
+                    onClick={() => selectLog(log)}
+                    aria-label={`View details for ${log.action} on ${log.module} at ${new Date(log.created_at).toLocaleString()}`}
                     className={cn(
                       'grid w-full grid-cols-[150px_120px_120px_1fr_110px_2fr] items-center gap-2 border-b border-border px-4 py-3 text-left transition-colors',
                       'hover:bg-muted/30',
-                      selectedLogId === log.id && 'bg-muted/40',
+                      selectedLog?.id === log.id && 'bg-muted/40',
                     )}
                   >
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <Clock3 className="h-3 w-3" />
-                      {new Date(log.time).toLocaleTimeString()}
+                      {new Date(log.created_at).toLocaleTimeString()}
                     </div>
                     <span className="truncate text-sm text-foreground">{log.role}</span>
-                    <Badge variant="outline" className={cn('w-fit uppercase text-xs', actionColors[log.action])}>
+                    <Badge variant="outline" className={cn('w-fit uppercase text-xs', actionColors[log.action] || actionColors.read)}>
                       {log.action}
                     </Badge>
                     <span className="truncate text-sm text-foreground">{log.module}</span>
@@ -444,6 +339,12 @@ export default function AuditLogs() {
                     <div className="truncate text-sm text-muted-foreground">{log.message}</div>
                   </button>
                 ))}
+                <div ref={bottomRef} className="h-8 w-full" />
+                {loading && (
+                  <div className="flex items-center justify-center py-3">
+                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                  </div>
+                )}
               </div>
             )}
           </section>
@@ -466,7 +367,7 @@ export default function AuditLogs() {
                 <div className="grid grid-cols-2 gap-3 rounded-lg border border-border p-3">
                   <div>
                     <p className="text-xs text-muted-foreground">Time</p>
-                    <p className="text-sm text-foreground">{new Date(selectedLog.time).toLocaleString()}</p>
+                    <p className="text-sm text-foreground">{new Date(selectedLog.created_at).toLocaleString()}</p>
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Role</p>
@@ -475,27 +376,23 @@ export default function AuditLogs() {
                   <div>
                     <p className="text-xs text-muted-foreground">User</p>
                     <p className="truncate font-mono text-xs text-foreground">
-                      {selectedLog.raw.actor_id || selectedLog.raw.user_id || 'System'}
+                      {selectedLog.user_id || 'System'}
                     </p>
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">IP</p>
-                    <p className="text-sm text-foreground">
-                      {selectedLog.raw.ip_address || stringFrom(toObject(selectedLog.raw.metadata), ['ip', 'ipAddress']) || 'N/A'}
-                    </p>
+                    <p className="text-sm text-foreground">{selectedLog.ip || 'N/A'}</p>
                   </div>
                   <div className="col-span-2">
                     <p className="text-xs text-muted-foreground">Device</p>
-                    <p className="text-sm text-foreground">
-                      {selectedLog.raw.user_agent || stringFrom(toObject(selectedLog.raw.metadata), ['device', 'deviceName']) || 'Unknown'}
-                    </p>
+                    <p className="text-sm text-foreground">{selectedLog.device || 'Unknown'}</p>
                   </div>
                   <div className="col-span-2 flex items-center gap-2">
                     {statusIcon(selectedLog.status)}
                     <Badge variant="outline" className={cn('capitalize', statusColors[selectedLog.status])}>
                       {selectedLog.status}
                     </Badge>
-                    <Badge variant="outline" className={cn('uppercase', actionColors[selectedLog.action])}>
+                    <Badge variant="outline" className={cn('uppercase', actionColors[selectedLog.action] || actionColors.read)}>
                       {selectedLog.action}
                     </Badge>
                   </div>
@@ -504,31 +401,31 @@ export default function AuditLogs() {
                 <div>
                   <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">JSON</p>
                   <pre className="max-h-[220px] overflow-auto rounded-lg border border-border bg-muted/40 p-3 text-xs">
-                    {JSON.stringify(selectedLog.raw.metadata || {}, null, 2)}
+                    {JSON.stringify(selectedLog.metadata || {}, null, 2)}
                   </pre>
                 </div>
 
-                {selectedLog.raw.old_data && (
+                {selectedLog.old_data && (
                   <div>
                     <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Old Data</p>
                     <pre className="max-h-[170px] overflow-auto rounded-lg border border-border bg-muted/40 p-3 text-xs">
-                      {JSON.stringify(selectedLog.raw.old_data, null, 2)}
+                      {JSON.stringify(selectedLog.old_data, null, 2)}
                     </pre>
                   </div>
                 )}
 
-                {selectedLog.raw.new_data && (
+                {selectedLog.new_data && (
                   <div>
                     <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">New Data</p>
                     <pre className="max-h-[170px] overflow-auto rounded-lg border border-border bg-muted/40 p-3 text-xs">
-                      {JSON.stringify(selectedLog.raw.new_data, null, 2)}
+                      {JSON.stringify(selectedLog.new_data, null, 2)}
                     </pre>
                   </div>
                 )}
 
                 <div className="grid grid-cols-3 gap-2">
                   <div className="rounded-lg border border-border p-2 text-center">
-                    <p className="text-lg font-semibold text-foreground">{filteredLogs.length}</p>
+                    <p className="text-lg font-semibold text-foreground">{logs.length}</p>
                     <p className="text-xs text-muted-foreground">Visible</p>
                   </div>
                   <div className="rounded-lg border border-border p-2 text-center">
@@ -538,6 +435,17 @@ export default function AuditLogs() {
                   <div className="rounded-lg border border-border p-2 text-center">
                     <p className="text-lg font-semibold text-amber-400">{statusCounts.warning + statusCounts.error}</p>
                     <p className="text-xs text-muted-foreground">Issues</p>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border p-3">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Stats API</p>
+                  <div className="space-y-1 text-xs text-muted-foreground">
+                    <div>Logs/min points: {stats?.logs_per_minute?.length || 0}</div>
+                    <div>Success: {stats?.success_vs_error?.success || 0}</div>
+                    <div>Error: {stats?.success_vs_error?.error || 0}</div>
+                    <div>Warning: {stats?.success_vs_error?.warning || 0}</div>
+                    <div>Top modules: {stats?.top_modules?.slice(0, 3).map((m) => m.module).join(', ') || 'N/A'}</div>
                   </div>
                 </div>
               </div>

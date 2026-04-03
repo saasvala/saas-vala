@@ -499,6 +499,34 @@ export const dashboardApi = {
   get: () => apiCall('GET', 'dashboard'),
 };
 
+export const auditApi = {
+  list: (params?: { limit?: number; offset?: number; filters?: Record<string, unknown>; q?: string }) =>
+    apiCall('GET', 'audit/list', params),
+  search: (params?: { q?: string; limit?: number; offset?: number }) =>
+    apiCall('GET', 'audit/search', params),
+  stats: (params?: { q?: string }) =>
+    apiCall('GET', 'audit/stats', params),
+  create: (data: {
+    role?: string
+    action: string
+    module?: string
+    table_name?: string
+    record_id?: string
+    old_data?: Record<string, unknown> | null
+    new_data?: Record<string, unknown> | null
+    ip?: string | null
+    device?: string | null
+    status?: string
+    message?: string
+    event_category?: string
+    event_type?: string
+    metadata?: Record<string, unknown>
+    created_at?: string
+  }) => apiCall('POST', 'audit/create', data),
+  export: (params?: { type?: 'csv' | 'pdf'; q?: string }) =>
+    apiCall('GET', 'audit/export', params),
+};
+
 export const systemHealthApi = {
   get: () => apiCall('GET', 'system/health'),
   runCheck: () => apiCall('POST', 'system-health/run-check', {}),
