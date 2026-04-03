@@ -93,10 +93,13 @@ export function useApkPurchase() {
       const licenseKey = generateSecureLicenseKey();
 
       // Step 5: Update wallet balance
-      await supabase
+      const { error: walletUpdateError } = await supabase
         .from('wallets')
         .update({ balance: newBalance, updated_at: new Date().toISOString() })
         .eq('id', wallet.id);
+      if (walletUpdateError) {
+        throw new Error(`Failed to update wallet balance: ${walletUpdateError.message}`);
+      }
 
       // Step 6: Create APK download record (only for real DB products)
       if (!isGeneratedProduct) {
