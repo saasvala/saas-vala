@@ -41,6 +41,7 @@ interface Product {
       let orderId: string | null = null;
       let walletId: string | null = null;
       let walletBefore = 0;
+      let walletVersionBefore = 0;
       let walletDeducted = false;
   
       try {
@@ -61,6 +62,7 @@ interface Product {
         walletId = wallet.id;
         walletBefore = Number(wallet.balance || 0);
         const walletVersion = Number(wallet.version || 0);
+        walletVersionBefore = walletVersion;
   
         // Step 2: Create marketplace order
         const { data: order, error: orderError } = await supabase
@@ -197,7 +199,11 @@ interface Product {
           const restoredBalance = walletBefore;
           await supabase
             .from('wallets')
-            .update({ balance: restoredBalance, updated_at: new Date().toISOString() })
+            .update({
+              balance: restoredBalance,
+              version: walletVersionBefore + 2,
+              updated_at: new Date().toISOString(),
+            })
             .eq('id', walletId);
           await supabase.from('transactions').insert({
             wallet_id: walletId,
