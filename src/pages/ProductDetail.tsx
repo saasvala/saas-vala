@@ -46,7 +46,6 @@ export default function ProductDetail() {
     }
     return product.image ? [product.image] : [];
   }, [product]);
-  const localizedPrice = `$${Number(product?.price || 0).toFixed(2)}`;
 
   if (loading) {
     return (
@@ -118,7 +117,7 @@ export default function ProductDetail() {
               <h1 className="text-2xl font-black text-foreground">{product.title}</h1>
               <p className="text-sm text-muted-foreground mt-1">{product.subtitle}</p>
             </div>
-            <Badge variant="outline" className="text-base font-black">{localizedPrice}</Badge>
+            <Badge variant="outline" className="text-base font-black">${Number(product.price || 0).toFixed(2)}</Badge>
           </div>
 
           {screenshots.length > 0 && (
@@ -167,7 +166,10 @@ export default function ProductDetail() {
               <Download className="h-4 w-4 mr-2" /> Download APK
             </Button>
             {!!product.demo_url && (
-              <Button variant="outline" onClick={() => window.open(product.demo_url!, '_blank', 'noopener,noreferrer')}>
+              <Button variant="outline" onClick={() => {
+                if (!product.demo_url) return;
+                window.open(product.demo_url, '_blank', 'noopener,noreferrer');
+              }}>
                 <PlayCircle className="h-4 w-4 mr-2" /> Live Demo
               </Button>
             )}
