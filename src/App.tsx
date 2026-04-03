@@ -23,6 +23,13 @@ const ManufacturingRoleDetail = React.lazy(() => import("./pages/ManufacturingRo
 const EducationCategory = React.lazy(() => import("./pages/EducationCategory"));
 const Keys = React.lazy(() => import("./pages/Keys"));
 const Servers = React.lazy(() => import("./pages/Servers"));
+const ServerAdd = React.lazy(() => import("./pages/ServerAdd"));
+const ServerDetail = React.lazy(() => import("./pages/ServerDetail"));
+const ServerLogsPage = React.lazy(() => import("./pages/ServerLogsPage"));
+const ServerDeployPage = React.lazy(() => import("./pages/ServerDeployPage"));
+const ServerDnsPage = React.lazy(() => import("./pages/ServerDnsPage"));
+const ServerGitPage = React.lazy(() => import("./pages/ServerGitPage"));
+const ServerSettingsPage = React.lazy(() => import("./pages/ServerSettingsPage"));
 const AiChat = React.lazy(() => import("./pages/AiChat"));
 const ValaBuilder = React.lazy(() => import("./pages/ValaBuilder"));
 const SaasAiDashboard = React.lazy(() => import("./pages/SaasAiDashboard"));
@@ -323,7 +330,7 @@ function AppRoutes() {
         <Route path="/keys" element={<AuthGuard><Keys /></AuthGuard>} />
         <Route path="/keys/generate" element={<AuthGuard><Navigate to="/keys" replace /></AuthGuard>} />
         <Route path="/servers" element={<AuthGuard><Servers /></AuthGuard>} />
-        <Route path="/servers/deploy" element={<AuthGuard><Navigate to="/servers" replace /></AuthGuard>} />
+
         <Route path="/role-detail" element={<AuthGuard><RoleDetail /></AuthGuard>} />
         <Route path="/transport-role-detail" element={<AuthGuard><TransportRoleDetail /></AuthGuard>} />
         <Route path="/manufacturing-role-detail" element={<AuthGuard><ManufacturingRoleDetail /></AuthGuard>} />

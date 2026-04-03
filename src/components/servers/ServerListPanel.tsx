@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -26,6 +26,8 @@ import {
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { useNavigate } from 'react-router-dom';
+import { serversApi } from '@/lib/api';
 
 interface ServerItem {
   id: string;
@@ -56,7 +58,9 @@ const typeConfig: Record<string, { icon: typeof Server; label: string }> = {
   vps: { icon: Server, label: 'VPS' },
 };
 
-export function ServerListPanel() {
+export function ServerListPanel({ routeModeAdd = false }: { routeModeAdd?: boolean }) {
+  const ACTION_DEBOUNCE_MS = 500;
+  const navigate = useNavigate();
   const [servers, setServers] = useState<ServerItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -64,7 +68,9 @@ export function ServerListPanel() {
   const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
   const [selectedServer, setSelectedServer] = useState<ServerItem | null>(null);
+  const actionDebounceRef = useRef<Record<string, number>>({});
 
   const [newServer, setNewServer] = useState({
     name: '',
@@ -93,6 +99,20 @@ export function ServerListPanel() {
   useEffect(() => {
     fetchServers();
   }, []);
+
+  useEffect(() => {
+    if (routeModeAdd) {
+      setShowAddModal(true);
+    }
+  }, [routeModeAdd]);
+
+  const canTriggerAction = useCallback((key: string) => {
+    const now = Date.now();
+    const prev = actionDebounceRef.current[key] || 0;
+    if (now - prev < ACTION_DEBOUNCE_MS) return false;
+    actionDebounceRef.current[key] = now;
+    return true;
+  }, [ACTION_DEBOUNCE_MS]);
 
   const fetchServers = async () => {
     try {
@@ -185,6 +205,7 @@ export function ServerListPanel() {
       setShowAddModal(false);
       setNewServer({ name: '', server_type: 'self', agent_url: '', agent_token: '', ip_address: '' });
       await fetchServers();
+      navigate('/servers');
     } catch (err: any) {
       toast.error('Server add failed: ' + (err.message || 'Unknown error'));
     } finally {
@@ -249,15 +270,44 @@ export function ServerListPanel() {
   };
 
   const toggleServerStatus = async (server: ServerItem) => {
+    if (!canTriggerAction(`status-${server.id}`)) return;
     try {
+      setActionLoadingId(server.id);
       const nextStatus = server.status === 'live' ? 'stopped' : 'live';
-      const { error } = await supabase.from('servers').update({ status: nextStatus }).eq('id', server.id);
-      if (error) throw error;
+      if (nextStatus === 'stopped') {
+        await serversApi.stop(server.id);
+      } else {
+        await serversApi.start(server.id);
+      }
       toast.success(`${server.name} set to ${nextStatus.toUpperCase()}`);
       await fetchServers();
     } catch (err: any) {
       toast.error(`Status update failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setActionLoadingId(null);
     }
+  };
+
+  const restartServer = async (server: ServerItem) => {
+    if (!canTriggerAction(`restart-${server.id}`)) return;
+    try {
+      setActionLoadingId(server.id);
+      await serversApi.restart(server.id);
+      toast.success(`${server.name} restarted`);
+      await fetchServers();
+    } catch (err: any) {
+      toast.error(`Restart failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const goToServerRoute = (serverId: string, section?: 'logs' | 'deploy' | 'dns' | 'git' | 'settings') => {
+    if (section) {
+      navigate(`/servers/${serverId}/${section}`);
+      return;
+    }
+    navigate(`/servers/${serverId}`);
   };
 
   if (loading) {
@@ -296,7 +346,7 @@ export function ServerListPanel() {
               <Button
                 size="sm"
                 className="h-8 text-xs gap-1.5 bg-gradient-to-r from-primary to-cyan hover:from-primary/90 hover:to-cyan/90"
-                onClick={() => setShowAddModal(true)}
+                onClick={() => routeModeAdd ? setShowAddModal(true) : navigate('/servers/add')}
               >
                 <Plus className="h-3.5 w-3.5" />
                 Add Server
@@ -316,7 +366,7 @@ export function ServerListPanel() {
               <Button
                 size="sm"
                 className="gap-1.5 bg-gradient-to-r from-primary to-cyan"
-                onClick={() => setShowAddModal(true)}
+                onClick={() => routeModeAdd ? setShowAddModal(true) : navigate('/servers/add')}
               >
                 <Plus className="h-3.5 w-3.5" />
                 Add Your First Server
@@ -376,6 +426,7 @@ export function ServerListPanel() {
                         variant="outline"
                         className="h-8 text-xs gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity"
                         onClick={() => openManage(server)}
+                        disabled={actionLoadingId === server.id}
                       >
                         <Settings className="h-3 w-3" />
                         Manage
@@ -386,16 +437,28 @@ export function ServerListPanel() {
                         variant="outline"
                         className="h-8 text-xs gap-1.5"
                         onClick={() => toggleServerStatus(server)}
+                        disabled={actionLoadingId === server.id}
                       >
-                        {server.status === 'live' ? <WifiOff className="h-3 w-3" /> : <Wifi className="h-3 w-3" />}
+                        {actionLoadingId === server.id ? <Loader2 className="h-3 w-3 animate-spin" /> : server.status === 'live' ? <WifiOff className="h-3 w-3" /> : <Wifi className="h-3 w-3" />}
                         {server.status === 'live' ? 'Stop' : 'Start'}
+                      </Button>
+
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs gap-1.5"
+                        onClick={() => restartServer(server)}
+                        disabled={actionLoadingId === server.id}
+                      >
+                        <RefreshCw className={cn('h-3 w-3', actionLoadingId === server.id && 'animate-spin')} />
+                        Restart
                       </Button>
 
                       <Button
                         size="sm"
                         className="h-8 text-xs gap-1.5 bg-gradient-to-r from-primary to-cyan hover:from-primary/90 hover:to-cyan/90"
                         onClick={() => verifyServer(server)}
-                        disabled={verifyingId === server.id || !server.agent_url || !server.agent_token}
+                        disabled={verifyingId === server.id || actionLoadingId === server.id || !server.agent_url || !server.agent_token}
                       >
                         {verifyingId === server.id ? (
                           <Loader2 className="h-3 w-3 animate-spin" />
@@ -403,6 +466,21 @@ export function ServerListPanel() {
                           <RefreshCw className="h-3 w-3" />
                         )}
                         Verify
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => goToServerRoute(server.id, 'deploy')}>
+                        Deploy
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => goToServerRoute(server.id, 'logs')}>
+                        Logs
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => goToServerRoute(server.id, 'dns')}>
+                        DNS
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => goToServerRoute(server.id, 'git')}>
+                        Git
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => goToServerRoute(server.id, 'settings')}>
+                        Settings
                       </Button>
                     </div>
                   </div>

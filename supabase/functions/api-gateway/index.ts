@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { z } from 'https://esm.sh/zod@3.25.76'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -14,8 +15,56 @@ function err(message: string, status = 400, code = 'BAD_REQUEST') {
   return json({ error: message, code }, status)
 }
 
+function ok(data: unknown, status = 200) {
+  return json({ success: true, data, error: null }, status)
+}
+
+function fail(message: string, status = 400, code = 'BAD_REQUEST', details?: unknown) {
+  return json({ success: false, data: null, error: { message, code, details: details || null } }, status)
+}
+
+const serverActionSchema = z.object({
+  server_id: z.string().min(1),
+})
+
+const settingsUpdateSchema = z.object({
+  server_id: z.string().min(1),
+  auto_deploy: z.boolean().optional(),
+  maintenance: z.boolean().optional(),
+  paused: z.boolean().optional(),
+  ddos: z.boolean().optional(),
+})
+
+async function logRequestSafe(
+  admin: any,
+  params: {
+    user_id: string
+    endpoint: string
+    method: string
+    status_code: number
+    duration_ms: number
+    error_code?: string | null
+  },
+) {
+  try {
+    await admin.from('request_logs').insert({
+      user_id: params.user_id,
+      endpoint: params.endpoint,
+      method: params.method,
+      status_code: params.status_code,
+      duration_ms: params.duration_ms,
+      error_code: params.error_code || null,
+      created_at: nowIso(),
+    })
+  } catch {
+    // no-op: logging must never break API responses
+  }
+}
+
 const productListCache: { data: any[] | null; expiresAt: number } = { data: null, expiresAt: 0 }
+const serverStatusCache: { data: unknown | null; expiresAt: number } = { data: null, expiresAt: 0 }
 const PRODUCT_LIST_CACHE_TTL_MS = 60 * 1000
+const SERVER_STATUS_CACHE_TTL_MS = 30 * 1000
 const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SECONDS') || '60')
 const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
 const DEFAULT_GITHUB_ORG = Deno.env.get('GITHUB_DEFAULT_ORG') || 'saasvala'
@@ -2028,16 +2077,20 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   const admin = adminClient()
   const segment = pathParts[0]
   const id = pathParts[1]
+  const secondSegment = pathParts[1]
+  const thirdSegment = pathParts[2]
 
   // GET /projects
   if (method === 'GET' && segment === 'projects' && !id) {
     const { data, error } = await sb.from('servers').select('*').order('created_at', { ascending: false })
-    if (error) return err(error.message)
-    return json({ data })
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    return ok(data || [])
   }
 
   // POST /projects
   if (method === 'POST' && segment === 'projects') {
+    const parsed = z.object({ name: z.string().min(1), git_repo: z.string().optional(), git_branch: z.string().optional() }).safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
     const subdomain = body.name?.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Math.random().toString(36).substring(2, 6)
     const { data, error } = await sb.from('servers').insert({
       name: body.name || '', subdomain,
@@ -2045,16 +2098,68 @@ async function handleServers(method: string, pathParts: string[], body: any, use
       runtime: body.runtime || 'nodejs18', status: 'stopped',
       auto_deploy: body.auto_deploy ?? true, created_by: userId,
     }).select().single()
-    if (error) return err(error.message)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
     await logActivity(admin, 'server', data.id, 'created', userId, { name: body.name })
-    return json({ data }, 201)
+    return ok(data, 201)
+  }
+
+  // GET /servers/:id
+  if (method === 'GET' && segment === 'servers' && secondSegment && secondSegment !== 'status') {
+    const { data, error } = await sb.from('servers').select('*').eq('id', secondSegment).maybeSingle()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    if (!data) return fail('Server not found', 404, 'NOT_FOUND')
+    return ok(data)
+  }
+
+  // GET /servers/status
+  if (method === 'GET' && segment === 'servers' && secondSegment === 'status') {
+    const now = Date.now()
+    if (serverStatusCache.data && serverStatusCache.expiresAt > now) {
+      return ok(serverStatusCache.data)
+    }
+    const { data, error } = await sb.from('servers').select('id,name,status,subdomain,custom_domain,last_deploy_at,health_status').order('created_at', { ascending: false })
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    const payload = data || []
+    serverStatusCache.data = payload
+    serverStatusCache.expiresAt = now + SERVER_STATUS_CACHE_TTL_MS
+    return ok(payload)
+  }
+
+  // POST /servers/start
+  if (method === 'POST' && segment === 'servers' && secondSegment === 'start') {
+    const parsed = serverActionSchema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    const { error } = await sb.from('servers').update({ status: 'live' }).eq('id', parsed.data.server_id)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'server', parsed.data.server_id, 'started', userId)
+    return ok({ server_id: parsed.data.server_id, status: 'live' })
+  }
+
+  // POST /servers/stop
+  if (method === 'POST' && segment === 'servers' && secondSegment === 'stop') {
+    const parsed = serverActionSchema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    const { error } = await sb.from('servers').update({ status: 'stopped' }).eq('id', parsed.data.server_id)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'server', parsed.data.server_id, 'stopped', userId)
+    return ok({ server_id: parsed.data.server_id, status: 'stopped' })
+  }
+
+  // POST /servers/restart
+  if (method === 'POST' && segment === 'servers' && secondSegment === 'restart') {
+    const parsed = serverActionSchema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    const { error } = await sb.from('servers').update({ status: 'live', last_deploy_at: nowIso() }).eq('id', parsed.data.server_id)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'server', parsed.data.server_id, 'restarted', userId)
+    return ok({ server_id: parsed.data.server_id, status: 'live' })
   }
 
   // GET /deploy-targets
   if (method === 'GET' && segment === 'deploy-targets') {
     const { data, error } = await sb.from('servers').select('id, name, subdomain, status').eq('status', 'live')
-    if (error) return err(error.message)
-    return json({ data })
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    return ok(data || [])
   }
 
   // POST /deploy-targets
@@ -2064,21 +2169,52 @@ async function handleServers(method: string, pathParts: string[], body: any, use
       status: 'stopped', created_by: userId,
       ip_address: body.ip_address, agent_url: body.agent_url,
     }).select().single()
-    if (error) return err(error.message)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
     await logActivity(admin, 'deploy_target', data.id, 'created', userId)
-    return json({ data }, 201)
+    return ok(data, 201)
   }
 
   // POST /deploy/trigger
   if (method === 'POST' && segment === 'deploy' && id === 'trigger') {
-    const serverId = body.server_id
+    const parsed = serverActionSchema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    const serverId = parsed.data.server_id
     const { data, error } = await sb.from('deployments').insert({
       server_id: serverId, status: 'building', triggered_by: userId,
     }).select().single()
-    if (error) return err(error.message)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
     await sb.from('servers').update({ status: 'deploying', last_deploy_at: new Date().toISOString() }).eq('id', serverId)
     await logActivity(admin, 'deployment', data.id, 'triggered', userId, { server_id: serverId })
-    return json({ data, success: true })
+    return ok(data)
+  }
+
+  // POST /deploy/start | /deploy/redeploy
+  if (method === 'POST' && segment === 'deploy' && (id === 'start' || id === 'redeploy')) {
+    const parsed = serverActionSchema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    const { data, error } = await sb.from('deployments').insert({
+      server_id: parsed.data.server_id, status: 'building', triggered_by: userId,
+      commit_message: id === 'redeploy' ? 'Redeploy requested' : 'Deploy requested',
+    }).select().single()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await sb.from('servers').update({ status: 'deploying', last_deploy_at: nowIso() }).eq('id', parsed.data.server_id)
+    await logActivity(admin, 'deployment', data.id, id === 'redeploy' ? 'redeployed' : 'started', userId, { server_id: parsed.data.server_id })
+    return ok(data)
+  }
+
+  // POST /deploy/rollback
+  if (method === 'POST' && segment === 'deploy' && id === 'rollback') {
+    const parsed = serverActionSchema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    const { data: latestSuccess, error: latestError } = await sb.from('deployments')
+      .select('id, server_id').eq('server_id', parsed.data.server_id).eq('status', 'success')
+      .order('created_at', { ascending: false }).limit(1).maybeSingle()
+    if (latestError) return fail(latestError.message, 400, 'DB_ERROR')
+    if (!latestSuccess) return fail('No successful deployment found', 404, 'NOT_FOUND')
+    const { error } = await sb.from('deployments').update({ status: 'rolled_back', completed_at: nowIso() }).eq('id', latestSuccess.id)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'deployment', latestSuccess.id, 'rollback', userId, { server_id: parsed.data.server_id })
+    return ok({ deployment_id: latestSuccess.id, server_id: parsed.data.server_id, status: 'rolled_back' })
   }
 
   // POST /deploy/full
@@ -2113,16 +2249,63 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   if (method === 'GET' && segment === 'deploy' && pathParts[1] === 'status' && pathParts[2]) {
     const { data, error } = await sb.from('deployments').select('*').eq('server_id', pathParts[2])
       .order('created_at', { ascending: false }).limit(1).maybeSingle()
-    if (error) return err(error.message)
-    return json({ data })
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    return ok(data)
+  }
+
+  // GET /deploy/status
+  if (method === 'GET' && segment === 'deploy' && pathParts[1] === 'status' && !pathParts[2]) {
+    let query = sb.from('deployments').select('*').order('created_at', { ascending: false }).limit(50)
+    if (body.server_id) query = query.eq('server_id', body.server_id)
+    const { data, error } = await query
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    return ok(data || [])
   }
 
   // GET /deploy/logs/:id
   if (method === 'GET' && segment === 'deploy' && pathParts[1] === 'logs' && pathParts[2]) {
     const { data, error } = await sb.from('deployment_logs').select('*').eq('deployment_id', pathParts[2])
       .order('timestamp', { ascending: true })
-    if (error) return err(error.message)
-    return json({ data })
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    return ok(data || [])
+  }
+
+  // GET /deploy/history
+  if (method === 'GET' && segment === 'deploy' && pathParts[1] === 'history') {
+    let query = sb.from('deployments').select('*').order('created_at', { ascending: false }).limit(100)
+    if (body.server_id) query = query.eq('server_id', body.server_id)
+    const { data, error } = await query
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    return ok(data || [])
+  }
+
+  // GET /deploy/logs
+  if (method === 'GET' && segment === 'deploy' && pathParts[1] === 'logs' && !pathParts[2]) {
+    let query = sb.from('deployment_logs').select('*').order('timestamp', { ascending: true }).limit(500)
+    if (body.deployment_id) query = query.eq('deployment_id', body.deployment_id)
+    const serverId = body.server_id || pathParts[3]
+    if (serverId) {
+      const { data: deps } = await sb.from('deployments').select('id').eq('server_id', serverId).order('created_at', { ascending: false }).limit(20)
+      const ids = (deps || []).map((d: any) => d.id)
+      if (ids.length > 0) query = query.in('deployment_id', ids)
+    }
+    const { data, error } = await query
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    return ok(data || [])
+  }
+
+  // GET /deploy/logs/stream
+  if (method === 'GET' && segment === 'deploy' && pathParts[1] === 'logs' && pathParts[2] === 'stream') {
+    let query = sb.from('deployment_logs').select('*').order('timestamp', { ascending: true }).limit(200)
+    const serverId = body.server_id || pathParts[3]
+    if (serverId) {
+      const { data: deps } = await sb.from('deployments').select('id').eq('server_id', serverId).order('created_at', { ascending: false }).limit(5)
+      const ids = (deps || []).map((d: any) => d.id)
+      if (ids.length > 0) query = query.in('deployment_id', ids)
+    }
+    const { data, error } = await query
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    return ok(data || [])
   }
 
   // POST /domain/add
@@ -2131,34 +2314,148 @@ async function handleServers(method: string, pathParts: string[], body: any, use
       domain_name: body.domain_name, server_id: body.server_id,
       domain_type: body.domain_type || 'custom', created_by: userId,
     }).select().single()
-    if (error) return err(error.message)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
     await logActivity(admin, 'domain', data.id, 'added', userId, { domain: body.domain_name })
-    return json({ data }, 201)
+    return ok(data, 201)
   }
 
   // POST /domain/verify
   if (method === 'POST' && segment === 'domain' && id === 'verify') {
     const { error } = await sb.from('domains').update({ dns_verified: true, dns_verified_at: new Date().toISOString() })
       .eq('id', body.domain_id)
-    if (error) return err(error.message)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
     await logActivity(admin, 'domain', body.domain_id, 'verified', userId)
-    return json({ success: true })
+    return ok({ domain_id: body.domain_id, verified: true })
+  }
+
+  // POST /dns/create
+  if (method === 'POST' && segment === 'dns' && secondSegment === 'create') {
+    const schema = z.object({
+      server_id: z.string().min(1),
+      type: z.string().default('A').optional(),
+      value: z.string().min(1),
+      name: z.string().default('@').optional(),
+      status: z.string().default('pending').optional(),
+    })
+    const parsed = schema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    const { data, error } = await sb.from('dns_records').insert({
+      server_id: parsed.data.server_id,
+      record_type: parsed.data.type || 'A',
+      value: parsed.data.value,
+      name: parsed.data.name || '@',
+      status: parsed.data.status || 'pending',
+    }).select().single()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'dns_record', data.id, 'created', userId, { server_id: parsed.data.server_id })
+    return ok(data, 201)
+  }
+
+  // POST /dns/verify
+  if (method === 'POST' && segment === 'dns' && secondSegment === 'verify') {
+    const schema = z.object({ id: z.string().optional(), domain_id: z.string().optional(), server_id: z.string().optional() })
+    const parsed = schema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    if (parsed.data.id) {
+      const { error } = await sb.from('dns_records').update({ verified: true, verified_at: nowIso(), status: 'active' }).eq('id', parsed.data.id)
+      if (error) return fail(error.message, 400, 'DB_ERROR')
+      return ok({ id: parsed.data.id, verified: true })
+    }
+    if (parsed.data.domain_id) {
+      const { error } = await sb.from('domains').update({ dns_verified: true, dns_verified_at: nowIso(), status: 'active' }).eq('id', parsed.data.domain_id)
+      if (error) return fail(error.message, 400, 'DB_ERROR')
+      return ok({ domain_id: parsed.data.domain_id, verified: true })
+    }
+    return fail('id or domain_id required', 422, 'VALIDATION_ERROR')
+  }
+
+  // GET /dns/status
+  if (method === 'GET' && segment === 'dns' && secondSegment === 'status') {
+    let query = sb.from('dns_records').select('*').order('created_at', { ascending: false }).limit(100)
+    if (body.server_id) query = query.eq('server_id', body.server_id)
+    const { data, error } = await query
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    return ok(data || [])
+  }
+
+  // POST /ssl/enable
+  if (method === 'POST' && segment === 'ssl' && secondSegment === 'enable') {
+    const schema = z.object({ domain_id: z.string().min(1) })
+    const parsed = schema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    const { error } = await sb.from('domains').update({ ssl_status: 'active', status: 'active' }).eq('id', parsed.data.domain_id)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'domain', parsed.data.domain_id, 'ssl_enabled', userId)
+    return ok({ domain_id: parsed.data.domain_id, ssl_status: 'active' })
+  }
+
+  // POST /git/scan
+  if (method === 'POST' && segment === 'git' && secondSegment === 'scan') {
+    const parsed = serverActionSchema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    const { data: server, error } = await sb.from('servers').select('id,name,git_repo,git_branch,auto_deploy').eq('id', parsed.data.server_id).maybeSingle()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    if (!server) return fail('Server not found', 404, 'NOT_FOUND')
+    await logActivity(admin, 'git', parsed.data.server_id, 'scan', userId, { git_repo: server.git_repo || null })
+    return ok({ server_id: parsed.data.server_id, scanned: true, repo: server.git_repo || null, branch: server.git_branch || 'main' })
+  }
+
+  // POST /git/deploy
+  if (method === 'POST' && segment === 'git' && secondSegment === 'deploy') {
+    const parsed = serverActionSchema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    const { data, error } = await sb.from('deployments').insert({
+      server_id: parsed.data.server_id,
+      status: 'building',
+      triggered_by: userId,
+      commit_message: 'Git deploy triggered',
+    }).select().single()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await sb.from('servers').update({ status: 'deploying', last_deploy_at: nowIso() }).eq('id', parsed.data.server_id)
+    await logActivity(admin, 'deployment', data.id, 'git_deploy', userId, { server_id: parsed.data.server_id })
+    return ok(data, 201)
+  }
+
+  // GET /server/settings
+  if (method === 'GET' && segment === 'server' && secondSegment === 'settings') {
+    if (!body.server_id) return fail('server_id required', 422, 'VALIDATION_ERROR')
+    const { data, error } = await sb.from('server_settings').select('*').eq('server_id', body.server_id).maybeSingle()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    return ok(data || { server_id: body.server_id, auto_deploy: true, maintenance: false, paused: false, ddos: true })
+  }
+
+  // POST /server/settings/update
+  if (method === 'POST' && segment === 'server' && secondSegment === 'settings' && thirdSegment === 'update') {
+    const parsed = settingsUpdateSchema.safeParse(body)
+    if (!parsed.success) return fail('Invalid payload', 422, 'VALIDATION_ERROR', parsed.error.flatten())
+    const payload = {
+      server_id: parsed.data.server_id,
+      auto_deploy: parsed.data.auto_deploy ?? true,
+      maintenance: parsed.data.maintenance ?? false,
+      paused: parsed.data.paused ?? false,
+      ddos: parsed.data.ddos ?? true,
+    }
+    const { data, error } = await sb.from('server_settings').upsert(payload, { onConflict: 'server_id' }).select().single()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await sb.from('servers').update({ auto_deploy: payload.auto_deploy, status: payload.paused ? 'stopped' : 'live' }).eq('id', payload.server_id)
+    await logActivity(admin, 'server_settings', payload.server_id, 'updated', userId, payload)
+    return ok(data)
   }
 
   // GET /server/health
   if (method === 'GET' && segment === 'server' && id === 'health') {
     const { data, error } = await sb.from('servers').select('id, name, status, subdomain, custom_domain, health_status, uptime_percent')
-    if (error) return err(error.message)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
     const stats = {
       total: data?.length || 0,
       live: data?.filter((s: any) => s.status === 'live').length || 0,
       failed: data?.filter((s: any) => s.status === 'failed').length || 0,
       deploying: data?.filter((s: any) => s.status === 'deploying').length || 0,
     }
-    return json({ stats, servers: data })
+    return ok({ stats, servers: data })
   }
 
-  return err('Not found', 404)
+  return fail('Not found', 404, 'NOT_FOUND')
 }
 
 // ===================== 7. GITHUB =====================
@@ -2205,7 +2502,13 @@ async function handleGithub(method: string, pathParts: string[], body: any, user
     return json({ data: allRepos })
   }
 
-  return err('Not found', 404)
+  // POST /github/connect
+  if (method === 'POST' && action === 'connect') {
+    await logActivity(adminClient(), 'github', userId, 'connect', userId, { via: 'api' })
+    return ok({ connected: true })
+  }
+
+  return fail('Not found', 404, 'NOT_FOUND')
 }
 
 // ===================== 8. GIT SCAN =====================
@@ -2297,281 +2600,7 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
     return json({ data })
   }
 
-  // POST /ai/debug-full
-  if (method === 'POST' && action === 'debug-full') {
-    const projectName = sanitizeTextInput(body?.project_name || body?.app_name || 'unnamed-project', 120)
-    const prompt = sanitizeTextInput(
-      body?.prompt || body?.description || `Run full debug scan for ${projectName}`,
-      4000
-    )
 
-    await emitPipelineEvent(admin, userId, 'debug_event', 'debug_full', 'started', { project_name: projectName })
-
-    const { data, error } = await sb.functions.invoke('ai-developer', {
-      body: {
-        messages: [{ role: 'user', content: prompt }],
-        tools: ['analyze_code'],
-        tool_input: {
-          tool: 'analyze_code',
-          project_name: projectName,
-          repo_url: sanitizeTextInput(body?.repo_url || ''),
-          code: sanitizeTextInput(body?.code || '', 30000),
-          language: sanitizeTextInput(body?.language || 'typescript', 40),
-          checks: [
-            'syntax_errors',
-            'runtime_errors',
-            'null_undefined',
-            'broken_routes',
-            'api_mismatch',
-            'db_mismatch',
-            'auth_issues',
-          ],
-        },
-      },
-    })
-
-    if (error) {
-      await emitPipelineEvent(admin, userId, 'debug_event', 'debug_full', 'failed', { error: error.message })
-      return err(error.message, 500)
-    }
-
-    await emitPipelineEvent(admin, userId, 'debug_event', 'debug_full', 'success', { project_name: projectName })
-    return json({ success: true, data })
-  }
-
-  // POST /ai/auto-fix
-  if (method === 'POST' && action === 'auto-fix') {
-    const projectName = sanitizeTextInput(body?.project_name || body?.app_name || 'unnamed-project', 120)
-    const prompt = sanitizeTextInput(
-      body?.prompt || body?.description || `Auto-fix all detected issues for ${projectName}`,
-      4000
-    )
-
-    await emitPipelineEvent(admin, userId, 'fix_event', 'auto_fix', 'started', { project_name: projectName })
-
-    const { data, error } = await sb.functions.invoke('ai-developer', {
-      body: {
-        messages: [{ role: 'user', content: prompt }],
-        tools: ['fix_code'],
-        tool_input: {
-          tool: 'fix_code',
-          project_name: projectName,
-          repo_url: sanitizeTextInput(body?.repo_url || ''),
-          issues: Array.isArray(body?.issues) ? body.issues : [],
-          code: sanitizeTextInput(body?.code || '', 30000),
-          language: sanitizeTextInput(body?.language || 'typescript', 40),
-        },
-      },
-    })
-
-    if (error) {
-      await emitPipelineEvent(admin, userId, 'fix_event', 'auto_fix', 'failed', { error: error.message })
-      return err(error.message, 500)
-    }
-
-    await emitPipelineEvent(admin, userId, 'fix_event', 'auto_fix', 'success', { project_name: projectName })
-    return json({ success: true, data })
-  }
-
-  return err('Not found', 404)
-}
-
-// ===================== 10. CODE GENERATION =====================
-async function handleCode(method: string, pathParts: string[], body: any, userId: string, sb: any) {
-  const action = pathParts[0]
-  const admin = adminClient()
-
-  // POST /code/generate
-  if (method === 'POST' && action === 'generate') {
-    const appName = sanitizeTextInput(body?.app_name || body?.project_name || 'vala-app', 120)
-    const projectName = sanitizeSlug(appName) || 'vala-app'
-    const description = sanitizeTextInput(body?.description || body?.prompt || `Build ${appName}`, 4000)
-    const techStack = sanitizeTextInput(body?.tech_stack || 'react-node-express', 120)
-
-    await emitPipelineEvent(admin, userId, 'builder_event', 'code_generate', 'started', {
-      project_name: projectName,
-      tech_stack: techStack,
-    })
-
-    const { data, error } = await sb.functions.invoke('ai-developer', {
-      body: {
-        messages: [{ role: 'user', content: description }],
-        tools: ['generate_code'],
-        tool_input: {
-          tool: 'generate_code',
-          project_name: projectName,
-          description,
-          features: sanitizeTextInput(body?.features || description, 12000),
-          tech_stack: techStack,
-          target: sanitizeTextInput(body?.target || 'fullstack', 40),
-          auth: body?.auth !== false,
-          roles: Array.isArray(body?.roles)
-            ? body.roles.map((r: unknown) => sanitizeTextInput(r, 40)).filter(Boolean)
-            : [...STANDARD_APP_ROLES],
-          marketplace: body?.marketplace !== false,
-        },
-      },
-    })
-
-    if (error) {
-      await emitPipelineEvent(admin, userId, 'builder_event', 'code_generate', 'failed', { error: error.message })
-      return err(error.message, 500)
-    }
-
-    await emitPipelineEvent(admin, userId, 'builder_event', 'code_generate', 'success', { project_name: projectName })
-    return json({ success: true, data })
-  }
-
-  return err('Not found', 404)
-}
-
-// ===================== 11. DATABASE GENERATOR =====================
-async function handleDb(method: string, pathParts: string[], body: any, userId: string) {
-  const action = pathParts[0]
-  const admin = adminClient()
-
-  // POST /db/generate
-  if (method === 'POST' && action === 'generate') {
-    await emitPipelineEvent(admin, userId, 'builder_event', 'db_generate', 'started')
-
-    const entities = Array.isArray(body?.entities) ? body.entities : []
-    const fallbackAppName = sanitizeTextInput(body?.app_name || 'app', 40)
-    const fallbackTableBase = `${fallbackAppName}_items`
-    const fallbackTableName = sanitizeSlug(fallbackTableBase).replace(/-/g, '_')
-    const baseTables = entities.length > 0
-      ? entities
-      : [{
-        name: fallbackTableName,
-        fields: [{ name: 'name', type: 'text' }],
-      }]
-
-    const sanitizedTables = baseTables
-      .map((entity: any) => {
-        const tableName = sanitizeSlug(entity?.name || '').replace(/-/g, '_')
-        if (!tableName) return null
-        const rawFields = Array.isArray(entity?.fields) ? entity.fields : []
-        const fields = rawFields
-          .map((field: any) => ({
-            name: sanitizeSlug(field?.name || '').replace(/-/g, '_'),
-            type: sanitizeTextInput(field?.type || 'text', 30).toLowerCase(),
-            required: field?.required !== false,
-          }))
-          .filter((f: any) => !!f.name)
-        return { name: tableName, fields }
-      })
-      .filter(Boolean) as Array<{ name: string; fields: Array<{ name: string; type: string; required: boolean }> }>
-
-    const sqlTypeMap: Record<string, string> = {
-      text: 'text',
-      string: 'text',
-      number: 'numeric',
-      int: 'integer',
-      integer: 'integer',
-      float: 'numeric',
-      boolean: 'boolean',
-      date: 'date',
-      datetime: 'timestamptz',
-      json: 'jsonb',
-      uuid: 'uuid',
-    }
-
-    const migrations = sanitizedTables.map((table) => {
-      const columns = [
-        'id uuid primary key default gen_random_uuid()',
-        ...table.fields.map((field) => `${field.name} ${sqlTypeMap[field.type] || 'text'}${field.required ? ' not null' : ''}`),
-        'created_at timestamptz default now()',
-        'updated_at timestamptz default now()',
-      ]
-      return `create table if not exists ${table.name} (\n  ${columns.join(',\n  ')}\n);`
-    })
-
-    const indexStatements = sanitizedTables.flatMap((table) =>
-      table.fields
-        .filter(
-          (field) =>
-            field.name.endsWith('_id') ||
-            DB_INDEX_HINT_PATTERNS.some((pattern) => field.name.includes(pattern))
-        )
-        .map((field) => `create index if not exists idx_${table.name}_${field.name} on ${table.name} (${field.name});`)
-    )
-    const indexes = Array.from(new Set(indexStatements))
-
-    const result = {
-      tables: sanitizedTables.map((t) => ({ name: t.name, fields: t.fields })),
-      relations: sanitizedTables.flatMap((t) => t.fields.filter((f) => f.name.endsWith('_id')).map((f) => ({
-        table: t.name,
-        field: f.name,
-        relation: f.name.replace(/_id$/, ''),
-      }))),
-      indexes,
-      migrations,
-    }
-
-    await emitPipelineEvent(admin, userId, 'builder_event', 'db_generate', 'success', {
-      tables: result.tables.length,
-      relations: result.relations.length,
-      indexes: result.indexes.length,
-    })
-    return json({ success: true, data: result })
-  }
-
-  return err('Not found', 404)
-}
-
-// ===================== 12. BUILD ENGINE =====================
-async function handleBuild(method: string, pathParts: string[], body: any, userId: string, sb: any) {
-  const action = pathParts[0]
-  const admin = adminClient()
-
-  // POST /build/run
-  if (method === 'POST' && action === 'run') {
-    const slug = sanitizeSlug(body?.slug || body?.repo_name || body?.app_name || 'vala-app')
-    await emitPipelineEvent(admin, userId, 'builder_event', 'build_run', 'started', { slug })
-
-    const queueInsert = await sb
-      .from('apk_build_queue')
-      .insert({
-        repo_name: sanitizeTextInput(body?.repo_name || slug || 'unnamed'),
-        repo_url: sanitizeTextInput(body?.repo_url || buildGithubRepoUrl(slug || '')),
-        slug: slug || 'unnamed',
-        build_status: 'pending',
-        target_industry: sanitizeTextInput(body?.target_industry || '', 60) || null,
-      })
-      .select()
-      .single()
-
-    if (queueInsert.error) {
-      await emitPipelineEvent(admin, userId, 'builder_event', 'build_run', 'failed', { error: queueInsert.error.message })
-      return err(queueInsert.error.message, 500)
-    }
-
-    const factoryTrigger = await sb.functions.invoke('apk-factory', {
-      body: {
-        action: 'trigger_build',
-        data: {
-          slug: slug || 'unnamed',
-          repo_url: sanitizeTextInput(body?.repo_url || ''),
-          product_id: sanitizeTextInput(body?.product_id || '', 80) || undefined,
-        },
-      },
-    })
-
-    await emitPipelineEvent(admin, userId, 'builder_event', 'build_run', 'success', {
-      queue_id: queueInsert.data?.id,
-      factory_error: factoryTrigger.error?.message || null,
-    })
-
-    return json({
-      success: true,
-      data: {
-        queued_build: queueInsert.data,
-        factory_trigger: factoryTrigger.data || null,
-        factory_trigger_error: factoryTrigger.error?.message || null,
-      },
-    })
-  }
-
-  return err('Not found', 404)
 }
 
 // ===================== 13. AI CHAT =====================
@@ -3458,9 +3487,13 @@ Deno.serve(async (req) => {
       case 'marketplace': return await handleMarketplace(req.method, subParts, body, userId, sb)
       case 'keys': return await handleKeys(req.method, subParts, body, userId, sb)
       case 'projects':
+      case 'servers':
       case 'deploy':
       case 'deploy-targets':
+      case 'dns':
       case 'domain':
+      case 'ssl':
+      case 'git':
       case 'server':
         return await handleServers(req.method, [module, ...subParts], body, userId, sb)
       case 'github': return await handleGithub(req.method, subParts, body, userId, sb)
