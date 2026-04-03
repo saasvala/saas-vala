@@ -517,6 +517,12 @@ export const leadsApi = {
 
 };
 
+// ===================== FEEDBACK =====================
+export const feedbackApi = {
+  post: (data: { rating: number; message?: string; source?: string }) =>
+    apiCall('POST', 'feedback', data),
+};
+
 export const seoApi = {
   scan: (data?: { urls?: string[]; product_id?: string; mode?: 'quick' | 'full' }) =>
     apiCall('POST', 'seo/scan', data),

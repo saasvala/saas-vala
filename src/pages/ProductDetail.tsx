@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, ShoppingCart, CreditCard, ExternalLink, Download } from 'lucide-react';
+import { ArrowLeft, ShoppingCart, CreditCard, ExternalLink, Download, PlayCircle } from 'lucide-react';
 import { MarketplaceHeader } from '@/components/marketplace/MarketplaceHeader';
 import { useMarketplaceProducts } from '@/hooks/useMarketplaceProducts';
 import { useMarketplaceActions } from '@/hooks/useMarketplaceActions';
@@ -29,6 +29,7 @@ export default function ProductDetail() {
   const { toggleItem, isInCart } = useCart();
   const { user } = useAuth();
   const { trackPromoClick, addToCart: addToCartServer } = useMarketplaceActions();
+  const [previewMode, setPreviewMode] = useState(false);
 
   const product = useMemo(() => products.find((item) => item.id === id), [products, id]);
   const productMeta = hasProductMeta(product) ? product : undefined;
@@ -46,16 +47,7 @@ export default function ProductDetail() {
     try { localStorage.setItem('sv_last_promo_ref', refCode); } catch {}
   }, [refCode, trackPromoClick]);
 
-  useEffect(() => {
-    if (loading) return;
-    if (id && !product) {
-      navigate('/marketplace', { replace: true });
-      return;
-    }
-    if (product && needsSubscriptionRedirect) {
-      navigate('/subscription', { replace: true });
-    }
-  }, [loading, id, product, needsSubscriptionRedirect, navigate]);
+
 
   if (loading) {
     return (
@@ -95,17 +87,6 @@ export default function ProductDetail() {
     );
   }
 
-  const inCart = isInCart(product.id);
-  const localizedPrice = formatLocalizedPrice(product.price, product.currency);
-  const isBuilding = ['building', 'queued', 'pending'].includes(String(product.build_status || '').toLowerCase());
-  const screenshots = useMemo(() => {
-    const rawScreenshots = hasScreenshots(product) ? product.screenshots : undefined;
-    if (Array.isArray(rawScreenshots)) {
-      const unique = rawScreenshots.filter((shot: unknown) => typeof shot === 'string' && shot.trim());
-      return Array.from(new Set(unique));
-    }
-    return product.image ? [product.image] : [];
-  }, [product]);
 
   const handleBuyNow = () => {
     if (!user) {
@@ -124,10 +105,6 @@ export default function ProductDetail() {
     }
     if (!product.apk_enabled) {
       toast.info('Coming Soon');
-      return;
-    }
-    if (isBuilding) {
-      toast.info('Building...');
       return;
     }
     try {
@@ -161,7 +138,7 @@ export default function ProductDetail() {
               <h1 className="text-2xl font-black text-foreground">{product.title}</h1>
               <p className="text-sm text-muted-foreground mt-1">{product.subtitle}</p>
             </div>
-            <Badge variant="outline" className="text-base font-black">{localizedPrice}</Badge>
+            <Badge variant="outline" className="text-base font-black">${Number(product.price || 0).toFixed(2)}</Badge>
           </div>
 
           {screenshots.length > 0 && (
@@ -206,13 +183,29 @@ export default function ProductDetail() {
             <Button onClick={handleBuyNow}>
               <CreditCard className="h-4 w-4 mr-2" /> Buy Now
             </Button>
-            <Button variant="secondary" onClick={handleDownload} disabled={!product.apk_enabled || isBuilding}>
+            <Button variant="secondary" onClick={handleDownload} disabled={!product.apk_enabled}>
               <Download className="h-4 w-4 mr-2" /> Download APK
+            </Button>
+            {!!product.demo_url && (
+              <Button variant="outline" onClick={() => {
+                if (!product.demo_url) return;
+                window.open(product.demo_url, '_blank', 'noopener,noreferrer');
+              }}>
+                <PlayCircle className="h-4 w-4 mr-2" /> Live Demo
+              </Button>
+            )}
+            <Button variant="outline" onClick={() => setPreviewMode((v) => !v)}>
+              Preview Mode {previewMode ? 'On' : 'Off'}
             </Button>
             <Button variant="ghost" onClick={() => navigate(`/app/${product.id}`)}>
               <ExternalLink className="h-4 w-4 mr-2" /> Access
             </Button>
           </div>
+          {previewMode && (
+            <div className="rounded-md border border-primary/40 bg-primary/10 p-3 text-sm text-primary">
+              Preview Mode enabled: purchase and access actions are shown for product trial visualization.
+            </div>
+          )}
         </section>
       </main>
     </div>
