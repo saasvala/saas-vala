@@ -110,6 +110,10 @@ const DEFAULT_GITHUB_ORG = Deno.env.get('GITHUB_DEFAULT_ORG') || 'saasvala'
 const STANDARD_APP_ROLES = ['admin', 'user'] as const
 const DB_INDEX_HINT_PATTERNS = (Deno.env.get('DB_INDEX_HINT_PATTERNS') || 'email,status').split(',').map((v) => v.trim()).filter(Boolean)
 const DEFAULT_COMMISSION_RATE = 10
+const NOTIFY_ALLOWED_TRIGGERS = ['payment_success', 'payment_fail', 'apk_ready', 'reseller_sale', 'billing_due'] as const
+const NOTIFY_ALLOWED_CHANNELS = ['in_app', 'email', 'system_alert'] as const
+const NOTIFY_CHANNEL_SET = new Set<string>(NOTIFY_ALLOWED_CHANNELS)
+const NOTIFY_TRIGGER_SET = new Set<string>(NOTIFY_ALLOWED_TRIGGERS)
 const FINAL_RESELLER_GAP_FEATURE_KEYS = [
   'tier_based_dynamic_commission_engine',
   'per_product_commission_override',
@@ -8334,8 +8338,7 @@ async function handleNotify(method: string, pathParts: string[], body: any, user
   // POST /notify/send
   if (method === 'POST' && action === 'send') {
     const trigger = String(body?.trigger || '').trim().toLowerCase()
-    const allowedTriggers = new Set(['payment_success', 'payment_fail', 'apk_ready', 'reseller_sale', 'billing_due'])
-    if (!allowedTriggers.has(trigger)) {
+    if (!NOTIFY_TRIGGER_SET.has(trigger)) {
       return err('Invalid trigger', 422, 'VALIDATION_ERROR')
     }
 
@@ -8346,7 +8349,7 @@ async function handleNotify(method: string, pathParts: string[], body: any, user
     const type = ['info', 'success', 'warning', 'error'].includes(typeRaw) ? typeRaw : 'info'
     const channelsRaw = Array.isArray(body?.channels) ? body.channels : ['in_app']
     const channels = Array.from(new Set(channelsRaw.map((v: any) => String(v || '').trim().toLowerCase())))
-      .filter((v) => ['in_app', 'email', 'system_alert'].includes(v))
+      .filter((v) => NOTIFY_CHANNEL_SET.has(v))
     if (!channels.length) return err('At least one valid channel is required', 422, 'VALIDATION_ERROR')
 
     const targetUserId = String(body?.user_id || userId)
@@ -8408,14 +8411,15 @@ async function handleNotify(method: string, pathParts: string[], body: any, user
 
   // GET /notify/list
   if (method === 'GET' && action === 'list') {
-    const limit = Math.min(100, Math.max(1, Number(body?.limit || 25)))
+    const limit = Math.min(100, Math.max(1, Number(body?.limit || new URL(String(body?.__request_url || ''), 'http://localhost').searchParams.get('limit') || 25)))
+    const rawChannelsFromQuery = new URL(String(body?.__request_url || ''), 'http://localhost').searchParams.get('channels')
     const listChannelsRaw = Array.isArray(body?.channels)
       ? body.channels
-      : String(body?.channels || 'in_app,email,system_alert').split(',')
+      : String(rawChannelsFromQuery || body?.channels || NOTIFY_ALLOWED_CHANNELS.join(',')).split(',')
     const listChannels = new Set(
       listChannelsRaw
         .map((v: any) => String(v || '').trim().toLowerCase())
-        .filter((v: string) => ['in_app', 'email', 'system_alert'].includes(v))
+        .filter((v: string) => NOTIFY_CHANNEL_SET.has(v))
     )
 
     const result: Record<string, unknown> = {}
@@ -8456,8 +8460,9 @@ async function handleSessionManagement(method: string, pathParts: string[], body
 
   // GET /sessions
   if (method === 'GET' && !action) {
-    const limit = Math.min(100, Math.max(1, Number(body?.limit || 25)))
-    const onlyActive = String(body?.active || 'true').toLowerCase() !== 'false'
+    const reqUrl = new URL(String(body?.__request_url || ''), 'http://localhost')
+    const limit = Math.min(100, Math.max(1, Number(reqUrl.searchParams.get('limit') || body?.limit || 25)))
+    const onlyActive = String(reqUrl.searchParams.get('active') || body?.active || 'true').toLowerCase() !== 'false'
     let query = sb
       .from('user_sessions')
       .select('id,user_id,ip_address,user_agent,device_type,location,is_active,last_activity,revoked_at,created_at,updated_at')
@@ -8522,6 +8527,7 @@ Deno.serve(async (req) => {
     } else {
       url.searchParams.forEach((v, k) => { body[k] = v })
     }
+    body.__request_url = req.url
 
     // Auth endpoints don't require JWT
     if (module === 'auth') {
