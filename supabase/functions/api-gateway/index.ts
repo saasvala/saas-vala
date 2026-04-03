@@ -3244,6 +3244,7 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
     if (!error && data) return ok(data)
 
     // Backward-compat fallback for environments still persisting finalized statuses in apk_builds.
+    // Remove this fallback after all environments fully migrate to apk_build_queue-only status storage.
     const { data: fallbackData, error: fallbackError } = await sb.from('apk_builds').select('*').eq('id', buildId).maybeSingle()
     if (fallbackError || !fallbackData) return err('APK build not found', 404, 'NOT_FOUND')
     return ok(fallbackData)
@@ -4073,7 +4074,7 @@ async function handleSystemHealth(method: string, pathParts: string[], body: any
     .maybeSingle()
 
   if (error) {
-    if (/does not exist/i.test(String(error.message || ''))) {
+    if (String((error as { code?: string })?.code || '') === '42P01' || /does not exist/i.test(String(error.message || ''))) {
       return ok({ module: moduleName, status: 'healthy', last_check: now, stored: false })
     }
     return err(error.message)
