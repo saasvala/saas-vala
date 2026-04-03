@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { autoApi, adsApi, audienceApi, videoApi, socialApi } from '@/lib/api';
 
 interface AutoPilotFeature {
   id: string;
@@ -129,41 +130,112 @@ const statusConfig = {
 export function AutoPilotPanel() {
   const [featureList, setFeatureList] = useState(features);
   const [masterEnabled, setMasterEnabled] = useState(false);
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
 
-  const handleToggleFeature = (featureId: string) => {
-    setFeatureList(prev => prev.map(f => {
-      if (f.id === featureId) {
-        const newEnabled = !f.isEnabled;
-        toast.success(`${f.name} ${newEnabled ? 'enabled' : 'paused'}`);
-        return { 
-          ...f, 
-          isEnabled: newEnabled,
-          status: newEnabled ? 'running' : 'paused'
-        };
-      }
-      return f;
-    }));
+  const blendSuccessRate = (prevRate: number, latestSuccess: boolean) => {
+    // 90% previous reliability + 10% latest run outcome (100 on success, 0 on failure).
+    const latestScore = latestSuccess ? 100 : 0;
+    return Math.min(100, prevRate === 0 ? latestScore : Math.round((prevRate * 9 + latestScore) / 10));
   };
 
-  const handleRunNow = (feature: AutoPilotFeature) => {
-    toast.promise(
-      new Promise(resolve => setTimeout(resolve, 2000)),
-      {
-        loading: `Running ${feature.name}...`,
-        success: `${feature.name} completed successfully!`,
-        error: `${feature.name} failed`
-      }
-    );
+  const runFeatureNow = async (featureId: string) => {
+    switch (featureId) {
+      case 'auto-seo':
+        return autoApi.run({ action: 'generate_seo_backlinks', data: { productName: 'Auto SEO', productDescription: 'Auto SEO optimization task' } });
+      case 'auto-google-ads':
+        return adsApi.optimize({ goal: 'conversions', audience: 'business owners', budget: 'auto' });
+      case 'auto-video':
+        return videoApi.create({ product: 'SaaS Product', tone: 'professional' });
+      case 'auto-country':
+        return audienceApi.discover({ business: 'SaaS', market: 'india-africa' });
+      case 'auto-posting':
+        return socialApi.publish({ platforms: ['linkedin', 'x', 'facebook'], intent: 'automated-post' });
+      case 'auto-audience':
+        return audienceApi.discover({ business: 'SaaS', market: 'global' });
+      default:
+        return autoApi.run({ action: 'handle_client_request', data: { requestType: featureId, requestDetails: 'Auto pilot execution' } });
+    }
   };
 
-  const handleMasterToggle = () => {
-    setMasterEnabled(!masterEnabled);
-    setFeatureList(prev => prev.map(f => ({
-      ...f,
-      isEnabled: !masterEnabled,
-      status: !masterEnabled ? 'running' : 'paused'
-    })));
-    toast.success(masterEnabled ? 'All auto-features paused' : 'All auto-features activated');
+  const handleToggleFeature = async (featureId: string) => {
+    const current = featureList.find((f) => f.id === featureId);
+    if (!current) return;
+    const newEnabled = !current.isEnabled;
+    setBusy((prev) => ({ ...prev, [featureId]: true }));
+    try {
+      await autoApi.run({
+        action: 'handle_client_request',
+        data: {
+          requestId: featureId,
+          requestType: 'auto_feature_toggle',
+          requestDetails: `${featureId}:${newEnabled ? 'enable' : 'pause'}`,
+          clientName: 'autopilot',
+        },
+      });
+      setFeatureList(prev => prev.map(f => {
+        if (f.id === featureId) {
+          return {
+            ...f,
+            isEnabled: newEnabled,
+            status: newEnabled ? 'running' : 'paused',
+            nextRun: newEnabled ? 'Scheduled' : 'Not scheduled',
+          };
+        }
+        return f;
+      }));
+      toast.success(`${current.name} ${newEnabled ? 'enabled' : 'paused'}`);
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to update feature state');
+    } finally {
+      setBusy((prev) => ({ ...prev, [featureId]: false }));
+    }
+  };
+
+  const handleRunNow = async (feature: AutoPilotFeature) => {
+    setBusy((prev) => ({ ...prev, [feature.id]: true }));
+    try {
+      await runFeatureNow(feature.id);
+      setFeatureList((prev) => prev.map((f) => f.id === feature.id ? {
+        ...f,
+        status: 'running',
+        todayActions: f.todayActions + 1,
+        totalActions: f.totalActions + 1,
+        successRate: blendSuccessRate(f.successRate, true),
+        lastRun: 'Just now',
+        nextRun: f.isEnabled ? 'Scheduled' : 'Not scheduled',
+      } : f));
+      toast.success(`${feature.name} completed successfully!`);
+    } catch (e: any) {
+      setFeatureList((prev) => prev.map((f) => f.id === feature.id ? { ...f, status: 'error' } : f));
+      toast.error(e?.message || `${feature.name} failed`);
+    } finally {
+      setBusy((prev) => ({ ...prev, [feature.id]: false }));
+    }
+  };
+
+  const handleMasterToggle = async () => {
+    const newValue = !masterEnabled;
+    try {
+      await autoApi.run({
+        action: 'handle_client_request',
+        data: {
+          requestId: 'autopilot-master',
+          requestType: 'autopilot_master',
+          requestDetails: newValue ? 'enable_all' : 'pause_all',
+          clientName: 'autopilot',
+        },
+      });
+      setMasterEnabled(newValue);
+      setFeatureList(prev => prev.map(f => ({
+        ...f,
+        isEnabled: newValue,
+        status: newValue ? 'running' : 'paused',
+        nextRun: newValue ? 'Scheduled' : 'Not scheduled',
+      })));
+      toast.success(newValue ? 'All auto-features activated' : 'All auto-features paused');
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to update master auto-pilot');
+    }
   };
 
   const runningCount = featureList.filter(f => f.status === 'running').length;
@@ -213,6 +285,7 @@ export function AutoPilotPanel() {
                 <Switch 
                   checked={masterEnabled} 
                   onCheckedChange={handleMasterToggle}
+                  aria-label="Toggle Auto-Pilot master mode"
                 />
               </div>
             </div>
@@ -261,10 +334,12 @@ export function AutoPilotPanel() {
                     </div>
                   </div>
                   
-                  <Switch
-                    checked={feature.isEnabled}
-                    onCheckedChange={() => handleToggleFeature(feature.id)}
-                  />
+                   <Switch
+                     checked={feature.isEnabled}
+                     onCheckedChange={() => handleToggleFeature(feature.id)}
+                     disabled={!!busy[feature.id]}
+                     aria-label={`Toggle ${feature.name}`}
+                   />
                 </div>
               </CardHeader>
               
@@ -319,7 +394,7 @@ export function AutoPilotPanel() {
                     variant="outline"
                     className="flex-1 h-7 text-xs gap-1"
                     onClick={() => handleRunNow(feature)}
-                    disabled={!feature.isEnabled}
+                    disabled={!feature.isEnabled || !!busy[feature.id]}
                   >
                     <Play className="h-3 w-3" />
                     Run Now

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -40,6 +40,7 @@ import {
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
+import { aiApi } from '@/lib/api';
 
 interface AiModel {
   id: string;
@@ -168,35 +169,87 @@ export function AiModelManager() {
   const [showApiKeys, setShowApiKeys] = useState<Record<string, boolean>>({});
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingModel, setEditingModel] = useState<AiModel | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  const toggleModel = (id: string) => {
-    setModels(prev => prev.map(m => 
-      m.id === id ? { ...m, enabled: !m.enabled, status: !m.enabled ? 'active' : 'inactive' } : m
-    ));
-    toast.success('Model status updated');
+  const fetchModels = async () => {
+    setLoading(true);
+    try {
+      const res = await aiApi.modelsList();
+      const rows = Array.isArray(res?.data) ? res.data : [];
+      if (rows.length) {
+        const allowedProviders = new Set(['openai', 'google', 'anthropic', 'custom']);
+        const mapped: AiModel[] = rows.map((m: any, idx: number) => {
+          const normalizedProvider = String(m.provider || '').toLowerCase();
+          if (normalizedProvider && !allowedProviders.has(normalizedProvider)) {
+            console.warn('AiModelManager: unknown provider mapped to custom', { provider: m.provider, modelId: m.id });
+          }
+          const provider = (allowedProviders.has(normalizedProvider) ? normalizedProvider : 'custom') as AiModel['provider'];
+          return {
+            id: m.id,
+            name: m.name || m.model_id || `Model ${idx + 1}`,
+            provider,
+            version: m.model_id || m.name || '1.0',
+            apiKey: '••••••••••••',
+            tokenCost: Number(m.input_cost_per_1k || 0),
+            maxTokens: Number(m.max_tokens || 0),
+            priority: idx + 1,
+            enabled: !!m.is_active,
+            status: m.is_active ? 'active' : 'inactive',
+            isFailover: true,
+          };
+        });
+        setModels(mapped);
+      }
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to load models');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchModels();
+  }, []);
+
+  const toggleModel = async (id: string) => {
+    const current = models.find((m) => m.id === id);
+    if (!current) return;
+    const enabled = !current.enabled;
+    try {
+      await aiApi.modelsUpdate({ id, is_active: enabled });
+      setModels(prev => prev.map(m =>
+        m.id === id ? { ...m, enabled, status: enabled ? 'active' : 'inactive' } : m
+      ));
+      toast.success('Model status updated');
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to update model status');
+    }
   };
 
   const toggleApiKeyVisibility = (id: string) => {
     setShowApiKeys(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
-  const handleTest = (model: AiModel) => {
-    toast.promise(
-      new Promise((resolve) => setTimeout(resolve, 2000)),
-      {
-        loading: `Testing ${model.name}...`,
-        success: `${model.name} is responding correctly!`,
-        error: `${model.name} test failed`
-      }
-    );
+  const handleTest = async (model: AiModel) => {
+    try {
+      await aiApi.modelsTest({ model: model.version });
+      toast.success(`${model.name} is responding correctly!`);
+    } catch (e: any) {
+      toast.error(e?.message || `${model.name} test failed`);
+    }
   };
 
-  const handleDelete = (id: string) => {
-    setModels(prev => prev.filter(m => m.id !== id));
-    toast.success('Model removed');
+  const handleDelete = async (id: string) => {
+    try {
+      await aiApi.modelsDelete({ id });
+      setModels(prev => prev.filter(m => m.id !== id));
+      toast.success('Model removed');
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to remove model');
+    }
   };
 
-  const handleSaveModel = (formData: FormData) => {
+  const handleSaveModel = async (formData: FormData) => {
     const newModel: AiModel = {
       id: crypto.randomUUID(),
       name: formData.get('name') as string,
@@ -210,9 +263,24 @@ export function AiModelManager() {
       status: 'active',
       isFailover: true
     };
-    setModels(prev => [...prev, newModel]);
-    setIsAddDialogOpen(false);
-    toast.success('Model added successfully');
+    try {
+      const res = await aiApi.modelsCreate({
+        name: newModel.name,
+        provider: newModel.provider,
+        model_id: newModel.version,
+        description: `${newModel.name} (${newModel.version})`,
+        input_cost_per_1k: newModel.tokenCost,
+        output_cost_per_1k: newModel.tokenCost,
+        max_tokens: newModel.maxTokens,
+        is_active: true,
+      });
+      const createdId = res?.data?.id || newModel.id;
+      setModels(prev => [...prev, { ...newModel, id: createdId }]);
+      setIsAddDialogOpen(false);
+      toast.success('Model added successfully');
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to add model');
+    }
   };
 
   return (
@@ -228,6 +296,7 @@ export function AiModelManager() {
             <p className="text-sm text-muted-foreground mt-1">
               Manage AI providers with auto-failover enabled
             </p>
+            {loading && <p className="text-xs text-muted-foreground mt-1">Loading models...</p>}
           </div>
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="gap-1">

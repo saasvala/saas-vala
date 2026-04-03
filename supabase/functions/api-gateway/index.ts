@@ -198,6 +198,25 @@ function validateRequired(body: any, fields: string[]) {
   return null
 }
 
+function toPositiveNumber(value: unknown, fallback = 0) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback
+  return parsed
+}
+
+async function sha256Hex(value: string) {
+  const bytes = new TextEncoder().encode(String(value || ''))
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+function maskApiToken(value: string) {
+  const raw = String(value || '')
+  if (!raw) return ''
+  if (raw.length <= 10) return `${raw.slice(0, 2)}...${raw.slice(-2)}`
+  return `${raw.slice(0, 6)}...${raw.slice(-4)}`
+}
+
 function toCsvValue(value: unknown) {
   if (value === null || value === undefined) return ''
   const str = String(value)
@@ -2600,7 +2619,189 @@ async function handleAi(method: string, pathParts: string[], body: any, userId: 
     return json({ data })
   }
 
+  // POST /ai/gateway
+  if (method === 'POST' && action === 'gateway') {
+    const autoPilot = body?.auto_pilot !== false
+    const requestedModel = sanitizeTextInput(body?.model || '')
+    const inputText = sanitizeTextInput(body?.input || body?.prompt || '')
+    const messages = Array.isArray(body?.messages) ? body.messages : (inputText ? [{ role: 'user', content: inputText }] : [])
+    if (!messages.length) return err('Missing AI input', 422, 'VALIDATION_ERROR')
 
+    const incomingApiKey = String(reqIdempotencyFromMeta(body?.meta) || body?.api_key || '').trim()
+    let apiKeyRow: any = null
+    if (incomingApiKey) {
+      const hashed = await sha256Hex(incomingApiKey)
+      const { data: keyData } = await admin.from('ai_api_keys').select('*').eq('key_hash', hashed).maybeSingle()
+      if (!keyData) return err('Invalid API key', 401, 'INVALID_API_KEY')
+      if (keyData.status !== 'active') return err('API key inactive', 403, 'API_KEY_INACTIVE')
+      if (keyData.expires_at && new Date(keyData.expires_at) <= new Date()) return err('API key expired', 403, 'API_KEY_EXPIRED')
+      if (Number(keyData.total_limit || 0) > 0 && Number(keyData.used || 0) >= Number(keyData.total_limit || 0)) {
+        return err('API key quota exceeded', 429, 'API_KEY_QUOTA_EXCEEDED')
+      }
+      const keyRateLimitRes = await enforceRateLimit(admin, userId, `ai-key/${keyData.id}`)
+      if (keyRateLimitRes) return keyRateLimitRes
+      apiKeyRow = keyData
+    }
+
+    const providers = [
+      { name: 'openai', enabled: true, invoke: () => sb.functions.invoke('ai-chat', { body: { messages, model: requestedModel || 'openai/gpt-5-mini', stream: false, user_id: userId } }) },
+      { name: 'elevenlabs_tts', enabled: !!body?.tts_text, invoke: () => sb.functions.invoke('elevenlabs-tts', { body: { text: sanitizeTextInput(body?.tts_text || ''), voiceId: body?.voice_id, returnBase64: true } }) },
+    ]
+
+    const preferredOrder = autoPilot
+      ? providers
+      : [
+        ...providers.filter((p) => p.name === requestedModel || p.name === body?.provider),
+        ...providers.filter((p) => p.name !== requestedModel && p.name !== body?.provider),
+      ]
+    const requestedProvider = sanitizeTextInput(body?.provider || requestedModel || '')
+
+    let providerName = ''
+    let providerResponse: any = null
+    let lastError = ''
+    for (const provider of preferredOrder) {
+      if (!provider.enabled) continue
+      try {
+        const result = await provider.invoke()
+        if (result?.error) {
+          lastError = result.error.message || `${provider.name} failed`
+          await admin.from('activity_logs').insert({
+            entity_type: 'api_error_event',
+            entity_id: provider.name,
+            action: 'provider_failed',
+            performed_by: userId,
+            details: { provider: provider.name, error: lastError, source: 'ai_gateway_failover' },
+          })
+          continue
+        }
+        providerName = provider.name
+        providerResponse = result?.data || null
+        break
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e)
+        await admin.from('activity_logs').insert({
+          entity_type: 'api_error_event',
+          entity_id: provider.name,
+          action: 'provider_failed',
+          performed_by: userId,
+          details: { provider: provider.name, error: lastError, source: 'ai_gateway_exception' },
+        })
+      }
+    }
+
+    if (!providerResponse) return err(lastError || 'No provider available', 503, 'AI_PROVIDER_UNAVAILABLE')
+
+    const usage = providerResponse?.usage || {}
+    const inputTokens = toPositiveNumber(usage?.prompt_tokens ?? usage?.input_tokens ?? body?.estimated_input_tokens, 0)
+    const outputTokens = toPositiveNumber(usage?.completion_tokens ?? usage?.output_tokens ?? body?.estimated_output_tokens, 0)
+    const totalTokens = inputTokens + outputTokens
+
+    let selectedModelId = requestedModel || body?.model || providerResponse?.model || providerName
+    let modelCost = Number((totalTokens * 0.00001).toFixed(6))
+    const { data: modelRow } = await admin.from('ai_models').select('*').eq('model_id', selectedModelId).maybeSingle()
+    if (modelRow) {
+      modelCost = ((Number(modelRow.input_cost_per_1k || 0) * inputTokens) + (Number(modelRow.output_cost_per_1k || 0) * outputTokens)) / 1000
+      selectedModelId = modelRow.model_id
+    }
+
+    const { data: wallet } = await admin.from('wallets').select('id, balance').eq('user_id', userId).maybeSingle()
+    if (!wallet) return err('Wallet not found', 404)
+    const available = Number(wallet.balance || 0)
+    if (available < modelCost) return err('Insufficient balance', 402, 'LOW_BALANCE')
+
+    const newBalance = Number(wallet.balance || 0) - modelCost
+    const txInsert = await admin.from('transactions').insert({
+      wallet_id: wallet.id,
+      type: 'debit',
+      amount: modelCost,
+      balance_after: newBalance,
+      status: 'completed',
+      description: `AI gateway usage (${selectedModelId})`,
+      created_by: userId,
+      reference_type: 'ai_gateway',
+      reference_id: crypto.randomUUID(),
+      meta: { provider: providerName, model: selectedModelId, input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: totalTokens },
+    }).select('id').single()
+    if (txInsert.error) return err(txInsert.error.message)
+
+    await admin.from('wallets').update({ balance: newBalance, updated_at: nowIso() }).eq('id', wallet.id)
+    await admin.from('wallet_ledger').insert({
+      wallet_id: wallet.id,
+      user_id: userId,
+      entry_type: 'debit',
+      amount: modelCost,
+      balance_before: wallet.balance || 0,
+      balance_after: newBalance,
+      reference_type: 'ai_gateway',
+      reference_id: txInsert.data?.id || null,
+      metadata: { provider: providerName, model: selectedModelId, input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: totalTokens },
+    })
+
+    await admin.from('ai_usage').insert({
+      user_id: userId,
+      model: selectedModelId,
+      endpoint: body?.module || 'ai_gateway',
+      tokens_input: inputTokens,
+      tokens_output: outputTokens,
+      cost: modelCost,
+      session_id: body?.session_id || null,
+    })
+
+    const dailyDate = new Date().toISOString().slice(0, 10)
+    const { data: dayRow } = await admin.from('ai_usage_daily').select('*')
+      .eq('user_id', userId).eq('model', selectedModelId).eq('date', dailyDate).maybeSingle()
+    if (!dayRow) {
+      await admin.from('ai_usage_daily').insert({
+        user_id: userId,
+        model: selectedModelId,
+        date: dailyDate,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        request_count: 1,
+        total_cost: modelCost,
+      })
+    } else {
+      await admin.from('ai_usage_daily').update({
+        input_tokens: Number(dayRow.input_tokens || 0) + inputTokens,
+        output_tokens: Number(dayRow.output_tokens || 0) + outputTokens,
+        request_count: Number(dayRow.request_count || 0) + 1,
+        total_cost: Number(dayRow.total_cost || 0) + modelCost,
+        updated_at: nowIso(),
+      }).eq('id', dayRow.id)
+    }
+
+    if (apiKeyRow?.id) {
+      await admin.from('ai_api_keys').update({
+        used: Number(apiKeyRow.used || 0) + 1,
+        last_used_at: nowIso(),
+      }).eq('id', apiKeyRow.id)
+    }
+
+    await admin.from('activity_logs').insert({
+      entity_type: 'ai_usage_event',
+      entity_id: selectedModelId,
+      action: 'usage_logged',
+      performed_by: userId,
+      details: { provider: providerName, tokens: totalTokens, cost: modelCost },
+    })
+    await admin.from('activity_logs').insert({
+      entity_type: 'billing_event',
+      entity_id: wallet.id,
+      action: 'wallet_deducted',
+      performed_by: userId,
+      details: { amount: modelCost, balance_after: newBalance, model: selectedModelId },
+    })
+
+    return json({
+      success: true,
+      data: providerResponse,
+      routing: { auto_pilot: autoPilot, provider: providerName, model: selectedModelId, fallback_used: !!requestedProvider && providerName !== requestedProvider },
+      billing: { deducted: modelCost, balance_after: newBalance },
+      usage: { input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: totalTokens },
+    })
+  }
+
+  return err('Not found', 404)
 }
 
 // ===================== 13. AI CHAT =====================
@@ -2655,6 +2856,208 @@ async function handleApiKeys(method: string, pathParts: string[], body: any, use
       .eq('user_id', userId).order('date', { ascending: false }).limit(30)
     if (error) return err(error.message)
     return json({ data })
+  }
+
+  return err('Not found', 404)
+}
+
+async function handleManagedApiKeys(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const admin = adminClient()
+  const action = pathParts[0]
+
+  // POST /keys/create
+  if (method === 'POST' && action === 'create') {
+    const limitPerMin = Math.max(1, Number(body?.limit_per_min || 60))
+    const totalLimit = Math.max(0, Number(body?.total_limit || 0))
+    const expiresAt = body?.expires_at ? new Date(String(body.expires_at)).toISOString() : null
+    const tokenPlain = `sk-vala-${crypto.randomUUID().replace(/-/g, '')}`
+    const keyHash = await sha256Hex(tokenPlain)
+    const actorRoles = await getUserRoles(userId)
+    const isReseller = actorRoles.includes('reseller')
+    const targetUserId = isReseller && body?.user_id ? String(body.user_id) : userId
+    const ownerType = isReseller ? 'reseller' : 'user'
+
+    const { data, error } = await admin.from('ai_api_keys').insert({
+      user_id: targetUserId,
+      owner_user_id: userId,
+      owner_type: ownerType,
+      key_hash: keyHash,
+      key_prefix: tokenPlain.slice(0, 12),
+      key_masked: maskApiToken(tokenPlain),
+      limit_per_min: limitPerMin,
+      total_limit: totalLimit,
+      used: 0,
+      expires_at: expiresAt,
+      status: 'active',
+      metadata: {
+        label: sanitizeTextInput(body?.label || ''),
+        module_access: Array.isArray(body?.module_access) ? body.module_access : [],
+      },
+    }).select('*').single()
+    if (error) return err(error.message)
+
+    await logActivity(admin, 'managed_api_key', data.id, 'created', userId, { target_user_id: targetUserId })
+    return json({ data: { ...data, key: tokenPlain } }, 201)
+  }
+
+  // POST /keys/revoke
+  if (method === 'POST' && action === 'revoke') {
+    const keyId = String(body?.key_id || '').trim()
+    if (!keyId) return err('key_id is required', 422, 'VALIDATION_ERROR')
+    const actorRoles = await getUserRoles(userId)
+    const isAdmin = actorRoles.includes('admin') || actorRoles.includes('super_admin')
+    const isReseller = actorRoles.includes('reseller')
+    const q = admin.from('ai_api_keys').select('*').eq('id', keyId)
+    const { data: keyRow } = await (isAdmin ? q.maybeSingle() : isReseller ? q.eq('owner_user_id', userId).maybeSingle() : q.eq('user_id', userId).maybeSingle())
+    if (!keyRow) return err('API key not found', 404)
+
+    const { error } = await admin.from('ai_api_keys').update({ status: 'revoked', revoked_at: nowIso() }).eq('id', keyId)
+    if (error) return err(error.message)
+    await logActivity(admin, 'managed_api_key', keyId, 'revoked', userId)
+    return json({ success: true })
+  }
+
+  // GET /keys/usage
+  if (method === 'GET' && action === 'usage') {
+    const keyId = String(body?.key_id || '').trim()
+    const actorRoles = await getUserRoles(userId)
+    const isAdmin = actorRoles.includes('admin') || actorRoles.includes('super_admin')
+    const isReseller = actorRoles.includes('reseller')
+    let query = admin.from('ai_api_keys').select('*').order('created_at', { ascending: false })
+    if (!isAdmin && isReseller) query = query.eq('owner_user_id', userId)
+    if (!isAdmin && !isReseller) query = query.eq('user_id', userId)
+    if (keyId) query = query.eq('id', keyId)
+    const { data, error } = await query
+    if (error) return err(error.message)
+    return json({ data })
+  }
+
+  return err('Not found', 404)
+}
+
+async function handleModels(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const admin = adminClient()
+  const action = pathParts[0]
+  const isSuperAdmin = await isSuperAdminUser(userId)
+
+  // GET /models/list
+  if (method === 'GET' && action === 'list') {
+    const { data, error } = await sb.from('ai_models').select('*').order('provider').order('name')
+    if (error) return err(error.message)
+    return json({ data })
+  }
+
+  // POST /models/update
+  if (method === 'POST' && action === 'update') {
+    if (!isSuperAdmin) return err('Forbidden', 403)
+    const id = String(body?.id || '').trim()
+    if (!id) return err('id is required', 422, 'VALIDATION_ERROR')
+
+    const payload: Record<string, unknown> = {}
+    if (body?.name !== undefined) payload.name = sanitizeTextInput(body.name, 120)
+    if (body?.provider !== undefined) payload.provider = sanitizeTextInput(body.provider, 60)
+    if (body?.model_id !== undefined) payload.model_id = sanitizeTextInput(body.model_id, 120)
+    if (body?.description !== undefined) payload.description = sanitizeTextInput(body.description, 400)
+    if (body?.is_active !== undefined) payload.is_active = !!body.is_active
+    if (body?.input_cost_per_1k !== undefined) payload.input_cost_per_1k = toPositiveNumber(body.input_cost_per_1k, 0)
+    if (body?.output_cost_per_1k !== undefined) payload.output_cost_per_1k = toPositiveNumber(body.output_cost_per_1k, 0)
+    if (body?.max_tokens !== undefined) payload.max_tokens = Math.floor(toPositiveNumber(body.max_tokens, 0))
+    if (body?.capabilities !== undefined) payload.capabilities = body.capabilities
+    payload.updated_at = nowIso()
+
+    const { data, error } = await admin.from('ai_models').update(payload).eq('id', id).select('*').single()
+    if (error) return err(error.message)
+    await logActivity(admin, 'ai_model', id, 'updated', userId, payload)
+    return json({ data })
+  }
+
+  // POST /models/create
+  if (method === 'POST' && action === 'create') {
+    if (!isSuperAdmin) return err('Forbidden', 403)
+    const modelId = sanitizeTextInput(body?.model_id || body?.name || '').toLowerCase().replace(/\s+/g, '-')
+    const name = sanitizeTextInput(body?.name || '')
+    const provider = sanitizeTextInput(body?.provider || '')
+    if (!name || !provider || !modelId) return err('name, provider, model_id are required', 422, 'VALIDATION_ERROR')
+    const { data, error } = await admin.from('ai_models').insert({
+      name,
+      provider,
+      model_id: modelId,
+      description: sanitizeTextInput(body?.description || ''),
+      is_active: body?.is_active !== false,
+      input_cost_per_1k: toPositiveNumber(body?.input_cost_per_1k, 0),
+      output_cost_per_1k: toPositiveNumber(body?.output_cost_per_1k, 0),
+      max_tokens: Math.floor(toPositiveNumber(body?.max_tokens, 0)),
+      capabilities: body?.capabilities || null,
+      is_default: false,
+    }).select('*').single()
+    if (error) return err(error.message)
+    await logActivity(admin, 'ai_model', data.id, 'created', userId, { model_id: modelId })
+    return json({ data }, 201)
+  }
+
+  // POST /models/delete
+  if (method === 'POST' && action === 'delete') {
+    if (!isSuperAdmin) return err('Forbidden', 403)
+    const id = String(body?.id || '').trim()
+    if (!id) return err('id is required', 422, 'VALIDATION_ERROR')
+    const { error } = await admin.from('ai_models').delete().eq('id', id)
+    if (error) return err(error.message)
+    await logActivity(admin, 'ai_model', id, 'deleted', userId)
+    return json({ success: true })
+  }
+
+  // POST /models/test
+  if (method === 'POST' && action === 'test') {
+    const model = sanitizeTextInput(body?.model || '')
+    if (!model) return err('model is required', 422, 'VALIDATION_ERROR')
+    const res = await sb.functions.invoke('ai-chat', {
+      body: { user_id: userId, model, messages: [{ role: 'user', content: 'Health check: respond with OK' }] },
+    })
+    if (res.error) return err(res.error.message, 500)
+    return json({ success: true, data: res.data })
+  }
+
+  return err('Not found', 404)
+}
+
+async function handleAiModule(method: string, pathParts: string[], body: any, userId: string, sb: any, moduleName: 'ads' | 'audience' | 'video' | 'social') {
+  const action = pathParts[0] || 'run'
+
+  if (method === 'GET' && action === 'usage') {
+    const { data, error } = await sb.from('ai_usage_daily').select('*')
+      .eq('user_id', userId)
+      .ilike('model', `${moduleName}%`)
+      .order('date', { ascending: false })
+      .limit(30)
+    if (error) return err(error.message)
+    return json({ data })
+  }
+
+  if (method === 'POST') {
+    let prompt = ''
+    if (moduleName === 'ads') {
+      prompt = sanitizeTextInput(body?.prompt || `Optimize Google Ads campaign. Goal: ${body?.goal || 'conversions'}. Audience: ${body?.audience || 'general'}. Budget: ${body?.budget || 'flexible'}.`)
+    }
+    if (moduleName === 'audience') {
+      prompt = sanitizeTextInput(body?.prompt || `Discover target audience segments and interest mapping for: ${body?.business || 'SaaS business'}. Market: ${body?.market || 'global'}.`)
+    }
+    if (moduleName === 'video') {
+      prompt = sanitizeTextInput(body?.prompt || `Create a video script and production steps for: ${body?.product || 'product'}. Tone: ${body?.tone || 'professional'}.`)
+    }
+    if (moduleName === 'social') {
+      prompt = sanitizeTextInput(body?.prompt || `Create social posts for platforms ${Array.isArray(body?.platforms) ? body.platforms.join(', ') : 'linkedin, x, facebook'} with hashtags and CTA.`)
+    }
+    if (!prompt) return err('prompt is required', 422, 'VALIDATION_ERROR')
+
+    return await handleAi('POST', ['gateway'], {
+      auto_pilot: true,
+      module: moduleName,
+      model: body?.model || `${moduleName}-auto`,
+      input: prompt,
+      messages: [{ role: 'user', content: prompt }],
+      api_key: body?.api_key,
+      session_id: body?.session_id,
+    }, userId, sb)
   }
 
   return err('Not found', 404)
@@ -3485,7 +3888,12 @@ Deno.serve(async (req) => {
       case 'reseller': return await handleResellerOnboarding(req.method, subParts, body, userId, sb)
       case 'admin': return await handleAdminResellerApplications(req.method, subParts, body, userId, sb)
       case 'marketplace': return await handleMarketplace(req.method, subParts, body, userId, sb)
-      case 'keys': return await handleKeys(req.method, subParts, body, userId, sb)
+      case 'keys':
+        if (subParts[0] === 'create' || subParts[0] === 'revoke' || subParts[0] === 'usage') {
+          return await handleManagedApiKeys(req.method, subParts, body, userId, sb)
+        }
+        return await handleKeys(req.method, subParts, body, userId, sb)
+      case 'models': return await handleModels(req.method, subParts, body, userId, sb)
       case 'projects':
       case 'servers':
       case 'deploy':
@@ -3513,6 +3921,14 @@ Deno.serve(async (req) => {
       case 'leads':
       case 'seo':
         return await handleSeoLeads(req.method, [module, ...subParts], body, userId, sb)
+      case 'ads':
+        return await handleAiModule(req.method, subParts, body, userId, sb, 'ads')
+      case 'audience':
+        return await handleAiModule(req.method, subParts, body, userId, sb, 'audience')
+      case 'video':
+        return await handleAiModule(req.method, subParts, body, userId, sb, 'video')
+      case 'social':
+        return await handleAiModule(req.method, subParts, body, userId, sb, 'social')
       default:
         return err(`Unknown module: ${module}`, 404)
     }
