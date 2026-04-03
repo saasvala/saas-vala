@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { z } from 'https://esm.sh/zod@3.25.76'
+import { decodeBase64 } from 'https://deno.land/std@0.224.0/encoding/base64.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -3819,7 +3820,11 @@ async function fetchGithubRepoFile(repoUrl: string, filePath: string, token?: st
     },
   })
   if (response.status === 404) return null
-  if (!response.ok) throw new Error(`GitHub scan failed for ${filePath} (${response.status})`)
+  if (!response.ok) {
+    const errorBody = await response.text()
+    console.error('GitHub scan request failed', { filePath, status: response.status, body: errorBody.slice(0, 500) })
+    throw new Error(`GitHub scan failed for ${filePath} (${response.status})`)
+  }
   return await response.json()
 }
 
@@ -3833,7 +3838,8 @@ async function scanGitRepository(repoUrl: string, githubToken?: string) {
 
   let packageJson: any = null
   if (packageFile?.content) {
-    const decoded = atob(String(packageFile.content).replace(/\n/g, ''))
+    const encoded = String(packageFile.content).replace(/\n/g, '')
+    const decoded = new TextDecoder().decode(decodeBase64(encoded))
     try { packageJson = JSON.parse(decoded) } catch { packageJson = null }
   }
 
@@ -4120,6 +4126,8 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
 
   // GET /apk/download/:id
   if (method === 'GET' && pathParts[0] === 'download' && pathParts[1]) {
+    const SIGNED_URL_EXPIRY_SECONDS = 300
+    const SIGNED_URL_EXPIRY_MS = SIGNED_URL_EXPIRY_SECONDS * 1000
     const identifier = String(pathParts[1] || '').trim()
     const now = new Date()
 
@@ -4218,7 +4226,10 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
 
         const balance = Number(wallet?.balance || 0)
         if (wallet?.id && balance >= amount) {
-          const newBalance = Number((balance - amount).toFixed(2))
+          const balanceCents = Math.round(balance * 100)
+          const amountCents = Math.round(amount * 100)
+          const newBalanceCents = balanceCents - amountCents
+          const newBalance = newBalanceCents / 100
           await admin.from('wallets').update({ balance: newBalance, updated_at: nowIso() }).eq('id', wallet.id)
           await admin.from('transactions').insert({
             wallet_id: wallet.id,
@@ -4255,7 +4266,7 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
     }
 
     const { data: signedUrl, error: signedUrlError } = await admin.storage.from('apks')
-      .createSignedUrl(apkPath, 300)
+      .createSignedUrl(apkPath, SIGNED_URL_EXPIRY_SECONDS)
     if (signedUrlError || !signedUrl?.signedUrl) return err('Failed to generate download URL', 500)
 
     await admin.from('apk_download_logs').insert({
@@ -4263,7 +4274,7 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
       user_id: userId,
       license_key: body?.license_key || (walletAutoDeducted ? 'wallet-auto-deduct' : 'paid-access'),
       download_ip: readClientIp(),
-      signed_url_expires_at: new Date(Date.now() + 300000).toISOString(),
+      signed_url_expires_at: new Date(Date.now() + SIGNED_URL_EXPIRY_MS).toISOString(),
     })
 
     return json({ allowed: true, url: signedUrl.signedUrl, download_url: signedUrl.signedUrl })
