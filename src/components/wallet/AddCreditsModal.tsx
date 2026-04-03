@@ -56,6 +56,7 @@ const cryptoDetails = {
 };
 
 type PayMethod = 'upi' | 'bank' | 'wise' | 'remit' | 'crypto' | 'card';
+const MANUAL_PAY_METHODS: PayMethod[] = ['bank', 'wise', 'remit', 'crypto', 'card'];
 
 export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsModalProps) {
   const [amount, setAmount] = useState<number>(1000);
@@ -68,7 +69,7 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
   const [retryCount, setRetryCount] = useState(0);
 
   const finalAmount = customAmount ? parseInt(customAmount) || 0 : amount;
-  const isManualMethod = payMethod === 'bank' || payMethod === 'wise' || payMethod === 'remit' || payMethod === 'crypto' || payMethod === 'card';
+  const isManualMethod = MANUAL_PAY_METHODS.includes(payMethod);
 
   const handleClose = () => {
     setStep('form');
@@ -116,7 +117,7 @@ export function AddCreditsModal({ open, onOpenChange, onSuccess }: AddCreditsMod
     try {
       await walletApi.createRequest({
         amount: finalAmount,
-        method: payMethod === 'crypto' ? 'crypto' : payMethod === 'card' ? 'bank_transfer' : 'bank_transfer',
+        method: payMethod === 'crypto' ? 'crypto' : 'bank_transfer',
         txn_id: txnRef,
         source: 'manual',
         payload: {

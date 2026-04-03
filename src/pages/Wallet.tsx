@@ -226,6 +226,7 @@ export default function Wallet() {
   };
 
   const exportLocal = (format: 'csv' | 'pdf') => {
+    const header = ['txn_id', 'reference', 'type', 'amount', 'status', 'source', 'provider', 'details_masked', 'created_at'] as const;
     const rows = filteredTransactions.map((tx) => {
       const { source, provider, masked } = getSourceDetails(tx);
       return {
@@ -241,7 +242,6 @@ export default function Wallet() {
       };
     });
     if (format === 'csv') {
-      const header = Object.keys(rows[0] || { txn_id: '', reference: '', type: '', amount: '', status: '', source: '', provider: '', details_masked: '', created_at: '' });
       const escaped = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
       const csv = [header.join(','), ...rows.map((r) => header.map((k) => escaped(r[k as keyof typeof r])).join(','))].join('\n');
       downloadBlob(csv, `wallet-transactions-${Date.now()}.csv`, 'text/csv;charset=utf-8;');
@@ -250,7 +250,7 @@ export default function Wallet() {
     const content = rows
       .map((r) => `${r.created_at} | ${r.txn_id} | ${r.type} | ${r.amount} | ${r.status} | ${r.source} | ${r.provider} | ${r.details_masked} | ${r.reference}`)
       .join('\n');
-    downloadBlob(content || 'No transactions', `wallet-transactions-${Date.now()}.pdf`, 'application/pdf');
+    downloadBlob(content || 'No transactions', `wallet-transactions-${Date.now()}.txt`, 'text/plain;charset=utf-8;');
   };
 
   const handleExport = async (format: 'csv' | 'pdf') => {
@@ -269,11 +269,19 @@ export default function Wallet() {
         window.open(payload.url, '_blank', 'noopener,noreferrer');
         return;
       }
+      if (format === 'pdf') {
+        toast.error('PDF export is not supported in local fallback. Please use CSV export.');
+        return;
+      }
       exportLocal(format);
-      toast.success(`Exported ${format.toUpperCase()}`);
+      toast.success('Exported CSV');
     } catch {
-      exportLocal(format);
-      toast.success(`Exported ${format.toUpperCase()}`);
+      if (format === 'pdf') {
+        toast.error('PDF export failed and local PDF fallback is unavailable. Please export CSV.');
+        return;
+      }
+      exportLocal('csv');
+      toast.success('Exported CSV');
     }
   };
 

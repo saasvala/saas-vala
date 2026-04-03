@@ -21,6 +21,16 @@ import {
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
   Search,
   Lock,
   Unlock,
@@ -48,6 +58,9 @@ export function AdminWalletManager() {
   const [showAdjustModal, setShowAdjustModal] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [requests, setRequests] = useState<Array<{ id: string; amount: number; method: string; txn_id: string; status: string; created_at: string }>>([]);
+  const [deleteTargetWallet, setDeleteTargetWallet] = useState<WalletType | null>(null);
+  const [rejectRequestId, setRejectRequestId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
 
   const filteredWallets = allWallets.filter((wallet) =>
     wallet.user_id.toLowerCase().includes(searchQuery.toLowerCase())
@@ -75,13 +88,12 @@ export function AdminWalletManager() {
   };
 
   const handleDeleteWallet = async (wallet: WalletType) => {
-    const confirmed = window.confirm('Delete this wallet? This action is irreversible.');
-    if (!confirmed) return;
     setProcessing(true);
     try {
       await walletApi.adminDelete({ wallet_id: wallet.id, note: 'Admin delete wallet' });
       toast.success('Wallet deleted');
       await fetchAllWallets();
+      setDeleteTargetWallet(null);
     } catch {
       toast.error('Failed to delete wallet');
     }
@@ -110,14 +122,15 @@ export function AdminWalletManager() {
     setProcessing(false);
   };
 
-  const rejectRequest = async (requestId: string) => {
-    const reason = window.prompt('Rejection reason') || '';
+  const rejectRequest = async (requestId: string, reason: string) => {
     if (!reason.trim()) return;
     setProcessing(true);
     try {
       await walletApi.rejectRequest(requestId, reason.trim());
       toast.success('Transaction rejected');
       await loadRequests();
+      setRejectRequestId(null);
+      setRejectReason('');
     } catch {
       toast.error('Failed to reject transaction');
     }
@@ -301,7 +314,7 @@ export function AdminWalletManager() {
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8 text-destructive hover:text-destructive"
-                        onClick={() => handleDeleteWallet(wallet)}
+                        onClick={() => setDeleteTargetWallet(wallet)}
                         disabled={processing}
                         title="Delete wallet"
                       >
@@ -348,7 +361,7 @@ export function AdminWalletManager() {
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-2">
                       <Button size="sm" className="bg-success hover:bg-success/90 text-white" onClick={() => approveRequest(req.id)} disabled={processing}>Approve</Button>
-                      <Button size="sm" variant="destructive" onClick={() => rejectRequest(req.id)} disabled={processing}>Reject</Button>
+                      <Button size="sm" variant="destructive" onClick={() => setRejectRequestId(req.id)} disabled={processing}>Reject</Button>
                     </div>
                   </TableCell>
                 </TableRow>
@@ -425,6 +438,58 @@ export function AdminWalletManager() {
             >
               {processing && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               {adjustmentType === 'credit' ? 'Add Credit' : 'Deduct Balance'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={Boolean(deleteTargetWallet)} onOpenChange={(open) => !open && setDeleteTargetWallet(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete wallet?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the selected wallet. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={processing}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteTargetWallet && handleDeleteWallet(deleteTargetWallet)}
+              disabled={processing || !deleteTargetWallet}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog open={Boolean(rejectRequestId)} onOpenChange={(open) => !open && setRejectRequestId(null)}>
+        <DialogContent className="sm:max-w-md bg-background border-border">
+          <DialogHeader>
+            <DialogTitle>Reject transaction request</DialogTitle>
+            <DialogDescription>
+              Provide a rejection reason for audit and user visibility.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="reject-reason">Reason</Label>
+            <Textarea
+              id="reject-reason"
+              placeholder="Enter rejection reason"
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              rows={3}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRejectRequestId(null)} disabled={processing}>Cancel</Button>
+            <Button
+              variant="destructive"
+              onClick={() => rejectRequestId && rejectRequest(rejectRequestId, rejectReason)}
+              disabled={processing || !rejectReason.trim() || !rejectRequestId}
+            >
+              Reject
             </Button>
           </DialogFooter>
         </DialogContent>

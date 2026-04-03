@@ -3,7 +3,7 @@
 -- wallets compatibility extensions
 ALTER TABLE public.wallets
   ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'user' CHECK (role IN ('admin', 'reseller', 'user')),
-  ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active' CHECK (status IN ('active', 'suspended'));
+  ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active' CHECK (status IN ('active', 'suspended', 'frozen'));
 
 -- transactions source tracking extensions
 ALTER TABLE public.transactions
