@@ -109,6 +109,9 @@ const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SEC
 const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
 const DEFAULT_GITHUB_ORG = Deno.env.get('GITHUB_DEFAULT_ORG') || 'saasvala'
 const STANDARD_APP_ROLES = ['admin', 'user'] as const
+const WALLET_SYNC_ENDPOINTS = ['wallet/add', 'wallet/withdraw', 'wallet/refund', 'wallet/lock', 'wallet/unlock'] as const
+const LEDGER_DEBIT_ENTRY_TYPES = new Set(['debit', 'lock'])
+const LEDGER_CREDIT_ENTRY_TYPES = new Set(['credit', 'unlock', 'refund'])
 const DB_INDEX_HINT_PATTERNS = (Deno.env.get('DB_INDEX_HINT_PATTERNS') || 'email,status').split(',').map((v) => v.trim()).filter(Boolean)
 const DEFAULT_COMMISSION_RATE = 10
 const NOTIFY_ALLOWED_TRIGGERS = ['payment_success', 'payment_fail', 'apk_ready', 'reseller_sale', 'billing_due'] as const
@@ -895,6 +898,206 @@ function adminClient() {
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
   )
+}
+
+function getOrCreateTraceId(req: Request, body: any) {
+  const headerTrace = String(req.headers.get('x-trace-id') || '').trim()
+  const bodyTrace = String(body?.trace_id || '').trim()
+  return headerTrace || bodyTrace || crypto.randomUUID()
+}
+
+function toPermissionRole(roles: string[]) {
+  if (roles.includes('super_admin') || roles.includes('admin')) return 'admin'
+  if (roles.includes('reseller')) return 'reseller'
+  return 'user'
+}
+
+function resolvePermissionAction(method: string, module: string, subParts: string[]) {
+  const endpoint = `${module}/${subParts[0] || ''}`.replace(/\/$/, '')
+  if (module === 'commerce' && subParts[0] === 'buy-now') return { module: 'commerce', action: 'buy_now', endpoint }
+  if (module === 'wallet' && subParts[0] === 'add') return { module: 'wallet', action: 'add_money', endpoint }
+  if ((module === 'key' || module === 'keys') && (subParts[0] === 'generate' || subParts[0] === 'create')) return { module: 'keys', action: 'generate_key', endpoint }
+  if (module === 'apk' && (subParts[0] === 'download' || subParts[0] === 'fetch')) return { module: 'marketplace', action: 'apk_download', endpoint }
+  if (module === 'ai' && (subParts[0] === 'run' || subParts[0] === 'gateway')) return { module: 'ai', action: 'ai_run', endpoint }
+  if (method === 'GET') return { module, action: 'read', endpoint }
+  if (method === 'POST') return { module, action: 'create', endpoint }
+  if (method === 'PUT') return { module, action: 'update', endpoint }
+  if (method === 'DELETE') return { module, action: 'delete', endpoint }
+  return { module, action: 'read', endpoint }
+}
+
+async function enforceRolePermission(admin: any, userId: string, method: string, module: string, subParts: string[]) {
+  const actorRoles = await getUserRoles(userId)
+  const role = toPermissionRole(actorRoles)
+  const permission = resolvePermissionAction(method, module, subParts)
+
+  const [rolePermRes, systemPermRes] = await Promise.all([
+    admin
+      .from('role_permissions')
+      .select('allowed')
+      .eq('role', role)
+      .eq('module', permission.module)
+      .eq('action', permission.action)
+      .maybeSingle(),
+    admin
+      .from('system_role_access_registry')
+      .select('allowed')
+      .eq('role_name', role)
+      .eq('module_key', permission.module)
+      .eq('permission_key', permission.action)
+      .maybeSingle(),
+  ])
+
+  const rolePermDenied = !isTableMissingError(rolePermRes.error) && rolePermRes.data && rolePermRes.data.allowed === false
+  const systemPermDenied = !isTableMissingError(systemPermRes.error) && systemPermRes.data && systemPermRes.data.allowed === false
+  const rolePermAllowed = rolePermRes.data?.allowed === true
+  const systemPermAllowed = systemPermRes.data?.allowed === true
+  const permissionConfigured = !!rolePermRes.data || !!systemPermRes.data
+
+  if (rolePermDenied || systemPermDenied) {
+    return { ok: false, code: 'PERMISSION_DENIED', details: { role, ...permission } }
+  }
+  if (permissionConfigured && !(rolePermAllowed || systemPermAllowed)) {
+    return { ok: false, code: 'PERMISSION_NOT_ALLOWED', details: { role, ...permission } }
+  }
+  return { ok: true, role, permission }
+}
+
+async function writeTraceLogSafe(
+  admin: any,
+  params: {
+    trace_id: string
+    user_id?: string | null
+    module: string
+    action: string
+    api_endpoint: string
+    request_payload?: Record<string, unknown>
+    response_status?: number
+    execution_time?: number
+    db_queries?: unknown[]
+  },
+) {
+  try {
+    await admin.from('trace_logs').insert({
+      trace_id: params.trace_id,
+      user_id: params.user_id || null,
+      module: params.module,
+      action: params.action,
+      api_endpoint: params.api_endpoint,
+      request_payload: params.request_payload || {},
+      response_status: params.response_status || null,
+      execution_time: params.execution_time || null,
+      db_queries: params.db_queries || [],
+      created_at: nowIso(),
+    })
+  } catch {
+    // no-op
+  }
+}
+
+async function enqueueEventAndQueueSafe(
+  admin: any,
+  params: {
+    traceId: string
+    eventType: string
+    module: string
+    endpoint: string
+    payload: Record<string, unknown>
+    responseStatus: number
+  },
+) {
+  const eventPayload = {
+    module: params.module,
+    endpoint: params.endpoint,
+    response_status: params.responseStatus,
+    payload: params.payload,
+  }
+  try {
+    await admin.from('events').insert({
+      type: params.eventType,
+      payload: eventPayload,
+      status: 'pending',
+      trace_id: params.traceId,
+      created_at: nowIso(),
+    })
+  } catch {
+    // no-op
+  }
+  try {
+    await admin.from('queues').insert({
+      queue_name: params.module || 'api',
+      job_data: eventPayload,
+      retry_count: 0,
+      status: params.responseStatus >= 200 && params.responseStatus < 400 ? 'done' : 'queued',
+      trace_id: params.traceId,
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    })
+  } catch {
+    // no-op
+  }
+}
+
+async function syncLedgerEntrySafe(admin: any, walletId: string, referenceType: string, referenceId: string | null) {
+  try {
+    const { data: latestLedger } = await admin
+      .from('wallet_ledger')
+      .select('entry_type,amount,balance_after,created_at')
+      .eq('wallet_id', walletId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (!latestLedger) return
+    const entryType = String(latestLedger.entry_type || '').toLowerCase()
+    const amount = Number(latestLedger.amount || 0)
+    if (!Number.isFinite(amount) || amount <= 0) return
+
+    const existing = await admin
+      .from('ledger_entries')
+      .select('entry_id')
+      .eq('wallet_id', walletId)
+      .eq('reference_type', referenceType)
+      .eq('reference_id', referenceId || '')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (existing.data?.entry_id) return
+
+    const debit = LEDGER_DEBIT_ENTRY_TYPES.has(entryType) ? amount : 0
+    const credit = LEDGER_CREDIT_ENTRY_TYPES.has(entryType) ? amount : 0
+    await admin.from('ledger_entries').insert({
+      wallet_id: walletId,
+      debit,
+      credit,
+      balance_after: Number(latestLedger.balance_after || 0),
+      reference_type: referenceType,
+      reference_id: referenceId || '',
+      created_at: nowIso(),
+    })
+  } catch {
+    // no-op
+  }
+}
+
+async function runWalletLedgerSyncSafe(admin: any, userId: string, endpointKey: string, body: any) {
+  if (!WALLET_SYNC_ENDPOINTS.includes(endpointKey)) return
+  try {
+    const requestedWalletId = body?.wallet_id ? String(body.wallet_id).trim() : null
+    const walletQuery = requestedWalletId
+      ? admin.from('wallets').select('id').eq('id', requestedWalletId).maybeSingle()
+      : admin.from('wallets').select('id').eq('user_id', userId).maybeSingle()
+    const { data: wallet } = await walletQuery
+    if (!wallet?.id) return
+    await syncLedgerEntrySafe(
+      admin,
+      wallet.id,
+      body?.reference_type ? String(body.reference_type) : endpointKey.replace('/', '_'),
+      body?.reference_id ? String(body.reference_id) : null,
+    )
+  } catch {
+    // no-op
+  }
 }
 
 async function getUserRoles(userId: string) {
@@ -9130,6 +9333,9 @@ Deno.serve(async (req) => {
       url.searchParams.forEach((v, k) => { body[k] = v })
     }
     body.__request_url = req.url
+    const traceId = getOrCreateTraceId(req, body)
+    body.trace_id = traceId
+    const startedAt = Date.now()
 
     // Auth endpoints don't require JWT
     if (module === 'auth') {
@@ -9177,6 +9383,21 @@ Deno.serve(async (req) => {
     if (!auth) return err('Unauthorized', 401)
 
     const { userId, supabase: sb } = auth
+    const admin = adminClient()
+    const permissionCheck = await enforceRolePermission(admin, userId, req.method, module, subParts)
+    if (!permissionCheck.ok) {
+      await writeTraceLogSafe(admin, {
+        trace_id: traceId,
+        user_id: userId,
+        module: module || 'unknown',
+        action: `${req.method.toLowerCase()}_denied`,
+        api_endpoint: `${module}/${subParts[0] || ''}`,
+        request_payload: { body, reason: permissionCheck.code },
+        response_status: 403,
+        execution_time: Date.now() - startedAt,
+      })
+      return fail('Forbidden', 403, 'PERMISSION_DENIED', permissionCheck.details)
+    }
     if (module === 'admin') {
       const allowed = await checkRole(userId, 'ADMIN')
       if (!allowed) return err('unauthorized', 403, 'UNAUTHORIZED')
@@ -9191,7 +9412,6 @@ Deno.serve(async (req) => {
 
     const isMutation = ['POST', 'PUT', 'DELETE'].includes(req.method)
     const idempotencyKey = isMutation ? readIdempotencyKey(req, body) : null
-    const admin = adminClient()
     if (isMutation && idempotencyKey) {
       const replay = await readIdempotentResponse(admin, userId, endpointKey, idempotencyKey)
       if (replay) return replay
@@ -9343,9 +9563,30 @@ Deno.serve(async (req) => {
     if (isMutation && idempotencyKey && routeResponse.status >= 200 && routeResponse.status < 300) {
       await writeIdempotentResponse(admin, userId, endpointKey, idempotencyKey, routeResponse)
     }
+    await writeTraceLogSafe(admin, {
+      trace_id: traceId,
+      user_id: userId,
+      module: module || 'unknown',
+      action: `${req.method.toLowerCase()}_${subParts[0] || 'root'}`,
+      api_endpoint: endpointKey,
+      request_payload: { body },
+      response_status: routeResponse.status,
+      execution_time: Date.now() - startedAt,
+    })
+    if (isMutation) {
+      await enqueueEventAndQueueSafe(admin, {
+        traceId,
+        eventType: `${module}_${subParts[0] || 'root'}_${routeResponse.status >= 200 && routeResponse.status < 400 ? 'success' : 'failed'}`,
+        module,
+        endpoint: endpointKey,
+        payload: { user_id: userId, method: req.method, status: routeResponse.status },
+        responseStatus: routeResponse.status,
+      })
+      await runWalletLedgerSyncSafe(admin, userId, endpointKey, body)
+    }
     return routeResponse
   } catch (e) {
     console.error('API Gateway Error:', e)
-    return err('Internal server error', 500)
+    return fail('Internal server error', 500, 'INTERNAL_ERROR', { fallback: true, retryable: true })
   }
 })
