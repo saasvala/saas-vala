@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 import { keysApi } from '@/lib/api';
 import { supabase } from '@/integrations/supabase/client';
@@ -33,7 +33,7 @@ export function useLicenseKeys() {
   const [keys, setKeys] = useState<LicenseKey[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchKeys = async () => {
+  const fetchKeys = useCallback(async () => {
     setLoading(true);
     try {
       const res = await keysApi.list();
@@ -54,7 +54,7 @@ export function useLicenseKeys() {
       console.error(e);
     }
     setLoading(false);
-  };
+  }, []);
 
   const generateKeyString = (): string => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -122,7 +122,7 @@ export function useLicenseKeys() {
 
   useEffect(() => {
     fetchKeys();
-  }, []);
+  }, [fetchKeys]);
 
   useEffect(() => {
     const channel = supabase
@@ -142,7 +142,7 @@ export function useLicenseKeys() {
       unsubscribeQuickEvents();
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [fetchKeys]);
 
   return {
     keys,

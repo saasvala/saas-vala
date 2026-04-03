@@ -399,7 +399,7 @@ function AppRoutes() {
         {/* Protected routes */}
         <Route path="/onboarding" element={<AuthGuard><Onboarding /></AuthGuard>} />
         <Route path="/dashboard" element={<AuthGuard>{setupDone ? <Dashboard /> : <Navigate to="/onboarding" replace />}</AuthGuard>} />
-        <Route path="/admin/dashboard" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/dashboard" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/dashboard" element={<AuthGuard><RoleGuard role="super_admin"><Dashboard /></RoleGuard></AuthGuard>} />
         <Route path="/support" element={<AuthGuard><Support /></AuthGuard>} />
         <Route path="/support/ticket" element={<AuthGuard><SupportTicket /></AuthGuard>} />
         <Route path="/feedback" element={<AuthGuard><Feedback /></AuthGuard>} />

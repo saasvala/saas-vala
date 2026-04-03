@@ -9,6 +9,7 @@ import { useQuickActionEngine } from '@/hooks/useQuickActionEngine';
 import { apkApi, keysApi, serversApi, walletApi } from '@/lib/api';
 import { toast } from 'sonner';
 import { useAuth } from '@/hooks/useAuth';
+import { cn } from '@/lib/utils';
 
 const actions = [
   {
@@ -92,6 +93,16 @@ export function QuickActions() {
       .slice(0, 56);
   };
 
+  const getActionButtonClass = (actionKey: string, baseClass: string) => {
+    const state = getActionState(actionKey);
+    return cn(
+      'gap-1.5 text-xs font-medium h-8 transition-all',
+      baseClass,
+      state === 'loading' && 'shadow-[0_0_18px_rgba(59,130,246,0.55)]',
+      state === 'success' && 'ring-2 ring-emerald-400/70 bg-emerald-500/20 text-emerald-500 border-emerald-400/40',
+    );
+  };
+
   const runQuickAction = async (action: typeof actions[number]) => {
     const routeValid = VALID_ROUTES.has(action.href);
     if (!routeValid) {
@@ -111,11 +122,19 @@ export function QuickActions() {
       toast.error('API not mapped');
       return;
     }
+    if (!action.eventType) {
+      console.error('[quick-action] event not mapped', action.key);
+      toast.error('Event mapping missing');
+      return;
+    }
 
     const configByKey: Record<string, { run: () => Promise<void>; validate?: () => string | null }> = {
       add_product: {
         run: async () => {
-          const name = `Quick Product ${new Date().toISOString().replace(/\D/g, '').slice(-8)}`;
+          const suffix = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+            ? crypto.randomUUID().slice(0, 8)
+            : `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          const name = `Quick Product ${suffix}`;
           await createProduct({
             name,
             slug: createProductSlug(name),
@@ -185,7 +204,7 @@ export function QuickActions() {
     await handleQuickAction({
       key: action.key,
       role: action.role,
-      eventType: action.eventType!,
+      eventType: action.eventType,
       validate: selectedConfig.validate,
       action: selectedConfig.run,
       onSuccess: () => {
@@ -219,7 +238,7 @@ export function QuickActions() {
               onClick={() => void runQuickAction(action)}
               size="sm"
               disabled={getActionState(action.key) === 'loading'}
-              className={`gap-1.5 text-xs font-medium h-8 transition-all ${action.className} ${getActionState(action.key) === 'loading' ? 'shadow-[0_0_18px_rgba(59,130,246,0.55)]' : ''} ${getActionState(action.key) === 'success' ? 'ring-2 ring-emerald-400/70 bg-emerald-500/20 text-emerald-500 border-emerald-400/40' : ''}`}
+              className={getActionButtonClass(action.key, action.className)}
             >
               {getActionState(action.key) === 'loading'
                 ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
