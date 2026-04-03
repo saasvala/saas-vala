@@ -622,7 +622,7 @@ async function handleProducts(method: string, pathParts: string[], body: any, us
   return err('Not found', 404)
 }
 
-async function countRowsSafe(sb: any, table: string) {
+async function countTableRows(sb: any, table: string) {
   try {
     const { count, error } = await sb.from(table).select('id', { count: 'exact', head: true })
     if (error) return 0
@@ -636,10 +636,10 @@ async function handleDashboard(method: string, userId: string, sb: any) {
   if (method !== 'GET') return err('Not found', 404)
 
   const [productsCount, leadsCount, subscriptionsCount, aiUsageCount] = await Promise.all([
-    countRowsSafe(sb, 'products'),
-    countRowsSafe(sb, 'leads'),
-    countRowsSafe(sb, 'subscriptions'),
-    countRowsSafe(sb, 'ai_usage_daily'),
+    countTableRows(sb, 'products'),
+    countTableRows(sb, 'leads'),
+    countTableRows(sb, 'subscriptions'),
+    countTableRows(sb, 'ai_usage_daily'),
   ])
 
   const { data: wallet } = await sb.from('wallets').select('balance, locked_balance').eq('user_id', userId).maybeSingle()
@@ -3243,6 +3243,7 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
     const { data, error } = await sb.from('apk_build_queue').select('*').eq('id', buildId).maybeSingle()
     if (!error && data) return ok(data)
 
+    // Backward-compat fallback for environments still persisting finalized statuses in apk_builds.
     const { data: fallbackData, error: fallbackError } = await sb.from('apk_builds').select('*').eq('id', buildId).maybeSingle()
     if (fallbackError || !fallbackData) return err('APK build not found', 404, 'NOT_FOUND')
     return ok(fallbackData)
@@ -4056,7 +4057,7 @@ async function handleSystemHealth(method: string, pathParts: string[], body: any
   const isAdmin = await isSuperAdminUser(userId)
   if (!isAdmin) return err('Forbidden', 403, 'FORBIDDEN')
 
-  const moduleName = sanitizeTextInput(body?.module || 'api-gateway', 128) || 'api-gateway'
+  const moduleName = sanitizeTextInput(body?.module, 128) || 'api-gateway'
   const now = nowIso()
   const admin = adminClient()
 

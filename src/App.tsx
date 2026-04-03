@@ -325,11 +325,11 @@ function AppRoutes() {
         <Route path="/app/:id" element={<AppRouteGuarded />} />
         <Route path="/app/:productId" element={<AppRouteGuarded />} />
         <Route path="/products" element={<AuthGuard><Products /></AuthGuard>} />
-        <Route path="/products/:id" element={<ProductRouteGuarded />} />
         <Route path="/products/create" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/add-product" replace /></RoleGuard></AuthGuard>} />
         <Route path="/products/update/:id" element={<ProductEditRouteGuarded />} />
         <Route path="/products/edit/:id" element={<ProductEditRouteGuarded />} />
         <Route path="/products/upload" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/add-product" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/products/:id" element={<ProductRouteGuarded />} />
         <Route path="/keys" element={<AuthGuard><Keys /></AuthGuard>} />
         <Route path="/keys/generate" element={<AuthGuard><Navigate to="/keys" replace /></AuthGuard>} />
         <Route path="/servers" element={<AuthGuard><Servers /></AuthGuard>} />
@@ -355,7 +355,6 @@ function AppRoutes() {
         <Route path="/chat" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/chat/:id" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/ai-chat" element={<AuthGuard><AiChat /></AuthGuard>} />
-        <Route path="/chat" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/chat/history" element={<AuthGuard><Navigate to="/ai-chat" replace /></AuthGuard>} />
         <Route path="/saas-ai-dashboard" element={<AuthGuard><SaasAiDashboard /></AuthGuard>} />
         <Route path="/marketplace-admin" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/marketplace" replace /></RoleGuard></AuthGuard>} />
