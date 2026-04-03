@@ -473,15 +473,8 @@ async function getLocaleForUser(admin: any, userId?: string | null) {
 }
 
 async function ensureDefaultLanguages(admin: any) {
-  const defaults = [
-    { code: 'en', name: 'English', status: 'active' },
-    { code: 'hi', name: 'Hindi', status: 'active' },
-    { code: 'ar', name: 'Arabic', status: 'active' },
-    { code: 'es', name: 'Spanish', status: 'active' },
-    { code: 'zh', name: 'Chinese', status: 'active' },
-  ]
   try {
-    await admin.from('languages').upsert(defaults, { onConflict: 'code' })
+    await admin.from('languages').select('code').limit(1)
   } catch {
     // no-op
   }
@@ -567,6 +560,7 @@ async function translateTextWithCache(admin: any, text: string, targetLang: stri
     .maybeSingle()
   if (cached?.translated_text) return String(cached.translated_text)
 
+  // TODO: replace stub translation with a production AI translation provider.
   const translated = `[${toLang}] ${normalizedText}`
   try {
     await admin.from('translated_content').upsert({
@@ -1159,35 +1153,17 @@ async function handleTranslate(method: string, _pathParts: string[], body: any, 
     return err('Target language is inactive', 422, 'VALIDATION_ERROR')
   }
 
+  const auth = req ? await authenticate(req) : null
   const cacheKey = await sha256Hex(`${sourceLang}|${targetLang}|${text}`)
-  const { data: cached } = await admin
+  const { data: cachedRow } = await admin
     .from('translated_content')
     .select('translated_text,target_lang')
     .eq('cache_key', cacheKey)
     .maybeSingle()
-  if (cached?.translated_text) {
-    return json({ translated_text: cached.translated_text, target_lang: cached.target_lang || targetLang, cached: true })
+  if (cachedRow?.translated_text) {
+    return json({ translated_text: cachedRow.translated_text, target_lang: cachedRow.target_lang || targetLang, cached: true })
   }
-
-  const translatedText = targetLang === sourceLang || targetLang === 'en'
-    ? text
-    : `[${targetLang}] ${text}`
-
-  const auth = req ? await authenticate(req) : null
-  try {
-    await admin.from('translated_content').upsert({
-      cache_key: cacheKey,
-      source_text: text,
-      source_lang: sourceLang,
-      target_lang: targetLang,
-      translated_text: translatedText,
-      created_by: auth?.userId || null,
-      updated_at: nowIso(),
-    }, { onConflict: 'cache_key' })
-  } catch {
-    // no-op
-  }
-
+  const translatedText = await translateTextWithCache(admin, text, targetLang, sourceLang, auth?.userId || null)
   return json({ translated_text: translatedText, target_lang: targetLang, cached: false })
 }
 
@@ -2627,9 +2603,14 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
 
   // GET /product/list
   if (method === 'GET' && action === 'list') {
-    const countryCode = sanitizeTextInput(body.country || body.country_code || resolveCountryFromRequest(req), 8).toUpperCase() || 'US'
-    const requestedLanguage = sanitizeTextInput(body.lang || body.language || parseAcceptLanguage(req), 8).toLowerCase() || 'en'
-    const requestedCurrency = sanitizeTextInput(body.currency, 8).toUpperCase()
+    const queryCountry = sanitizeTextInput(req ? new URL(req.url).searchParams.get('country') : '', 8)
+    const queryCountryCode = sanitizeTextInput(req ? new URL(req.url).searchParams.get('country_code') : '', 8)
+    const queryLang = sanitizeTextInput(req ? new URL(req.url).searchParams.get('lang') : '', 8)
+    const queryLanguage = sanitizeTextInput(req ? new URL(req.url).searchParams.get('language') : '', 8)
+    const queryCurrency = sanitizeTextInput(req ? new URL(req.url).searchParams.get('currency') : '', 8)
+    const countryCode = sanitizeTextInput(queryCountry || queryCountryCode || body.country || body.country_code || resolveCountryFromRequest(req), 8).toUpperCase() || 'US'
+    const requestedLanguage = sanitizeTextInput(queryLang || queryLanguage || body.lang || body.language || parseAcceptLanguage(req), 8).toLowerCase() || 'en'
+    const requestedCurrency = sanitizeTextInput(queryCurrency || body.currency, 8).toUpperCase()
     const geoDefaults = GEO_FALLBACK_BY_COUNTRY[countryCode] || { language: requestedLanguage || 'en', currency: 'USD' }
     const language = requestedLanguage || geoDefaults.language || 'en'
     const currency = requestedCurrency || geoDefaults.currency || 'USD'
@@ -2645,18 +2626,20 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
     const selectedRate = Number((ratesPayload.rates || {})[currency] || 1)
     const safeRate = Number.isFinite(selectedRate) && selectedRate > 0 ? selectedRate : 1
 
-    const localized = await Promise.all(rows.map(async (row: any) => {
+    const localized = await Promise.all(rows.map(async (row: any, index: number) => {
       const defaultName = String(row.name || '')
       const defaultDescription = String(row.short_description || row.description || '')
       let localizedTitle = defaultName
       let localizedDescription = defaultDescription
 
-      try {
-        localizedTitle = await translateTextWithCache(admin, defaultName, language, 'en', userId)
-        localizedDescription = await translateTextWithCache(admin, defaultDescription, language, 'en', userId)
-      } catch {
-        localizedTitle = defaultName
-        localizedDescription = defaultDescription
+      if (index < 60) {
+        try {
+          localizedTitle = await translateTextWithCache(admin, defaultName, language, 'en', userId)
+          localizedDescription = await translateTextWithCache(admin, defaultDescription, language, 'en', userId)
+        } catch {
+          localizedTitle = defaultName
+          localizedDescription = defaultDescription
+        }
       }
 
       const basePrice = Number(row.price || 0)

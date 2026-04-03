@@ -57,6 +57,7 @@ const defaultFeatures = [
 ];
 
 const defaultTechStack = ['React', 'Node.js', 'PostgreSQL'];
+const DEFAULT_PRODUCT_PRICE = 5;
 
 export const CATEGORY_ROW_MAP: Record<string, string[]> = {
   upcoming: ['upcoming', 'coming_soon', 'pipeline'],
@@ -102,7 +103,7 @@ export function mapDbProduct(product: any, index: number): MarketplaceProduct {
     subtitle: product.short_description || product.description?.substring(0, 80) || 'Professional Software Solution',
     image: product.thumbnail_url || stockImages[index % stockImages.length],
     status: product.status === 'draft' ? 'draft' : product.trending ? 'bestseller' : 'live',
-    price: Number(product.price_converted ?? product.price) || 5,
+    price: Number(product.price_converted ?? product.price) || DEFAULT_PRODUCT_PRICE,
     features, techStack: defaultTechStack,
     category: product.business_type || 'Software',
     businessType: product.business_type || '',
@@ -117,8 +118,8 @@ export function mapDbProduct(product: any, index: number): MarketplaceProduct {
     currency: product.currency || undefined,
     language: product.language || undefined,
     country_code: product.country_code || undefined,
-    price_base_usd: Number(product.price_base_usd ?? product.price) || 5,
-    price_converted: Number(product.price_converted ?? product.price) || 5,
+    price_base_usd: Number(product.price_base_usd ?? product.price) || DEFAULT_PRODUCT_PRICE,
+    price_converted: Number(product.price_converted ?? product.price) || DEFAULT_PRODUCT_PRICE,
   };
 }
 

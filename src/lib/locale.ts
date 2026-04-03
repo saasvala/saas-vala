@@ -50,7 +50,7 @@ function normalizeCountry(value: unknown) {
 }
 
 function normalizeLanguage(value: unknown) {
-  const lang = String(value || '').trim().toLowerCase().slice(0, 2)
+  const lang = String(value || '').trim().toLowerCase().slice(0, 3)
   return lang || DEFAULT_LOCALE.language
 }
 

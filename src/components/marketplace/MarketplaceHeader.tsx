@@ -155,7 +155,9 @@ export function MarketplaceHeader() {
                 >
                   <span>{c.flag}</span>
                   <span>{c.symbol} {c.code}</span>
-                  {c.code === selectedCurrency.code && <span className="ml-auto text-primary">✓</span>}
+                  {c.code === selectedCurrency.code && (
+                    <span className="ml-auto text-primary" role="img" aria-label="Selected">✓</span>
+                  )}
                 </DropdownMenuItem>
               ))}
             </DropdownMenuContent>
@@ -184,7 +186,9 @@ export function MarketplaceHeader() {
                 >
                   <span>{lang.flag}</span>
                   <span>{lang.name}</span>
-                  {lang.code === selectedLanguage.code && <span className="ml-auto text-primary">✓</span>}
+                  {lang.code === selectedLanguage.code && (
+                    <span className="ml-auto text-primary" role="img" aria-label="Selected">✓</span>
+                  )}
                 </DropdownMenuItem>
               ))}
             </DropdownMenuContent>

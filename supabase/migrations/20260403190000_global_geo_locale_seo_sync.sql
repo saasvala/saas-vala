@@ -60,14 +60,28 @@ ALTER TABLE public.seo_meta ENABLE ROW LEVEL SECURITY;
 
 DO $$
 BEGIN
+  IF to_regproc('public.has_role') IS NULL THEN
+    RAISE NOTICE 'public.has_role function not found; skipping role-based RLS policies for geo locale seo sync tables';
+  END IF;
+END $$;
+
+DO $$
+BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_policies
     WHERE schemaname = 'public' AND tablename = 'languages' AND policyname = 'Public can read active languages'
   ) THEN
-    CREATE POLICY "Public can read active languages"
-      ON public.languages
-      FOR SELECT
-      USING (status = 'active' OR has_role(auth.uid(), 'super_admin'));
+    IF to_regproc('public.has_role') IS NOT NULL THEN
+      CREATE POLICY "Public can read active languages"
+        ON public.languages
+        FOR SELECT
+        USING (status = 'active' OR has_role(auth.uid(), 'super_admin'));
+    ELSE
+      CREATE POLICY "Public can read active languages"
+        ON public.languages
+        FOR SELECT
+        USING (status = 'active');
+    END IF;
   END IF;
 END $$;
 
@@ -77,11 +91,13 @@ BEGIN
     SELECT 1 FROM pg_policies
     WHERE schemaname = 'public' AND tablename = 'languages' AND policyname = 'Super admin full access languages'
   ) THEN
-    CREATE POLICY "Super admin full access languages"
-      ON public.languages
-      FOR ALL
-      USING (has_role(auth.uid(), 'super_admin'))
-      WITH CHECK (has_role(auth.uid(), 'super_admin'));
+    IF to_regproc('public.has_role') IS NOT NULL THEN
+      CREATE POLICY "Super admin full access languages"
+        ON public.languages
+        FOR ALL
+        USING (has_role(auth.uid(), 'super_admin'))
+        WITH CHECK (has_role(auth.uid(), 'super_admin'));
+    END IF;
   END IF;
 END $$;
 
@@ -105,11 +121,13 @@ BEGIN
     SELECT 1 FROM pg_policies
     WHERE schemaname = 'public' AND tablename = 'translated_content' AND policyname = 'Super admin full access translated content'
   ) THEN
-    CREATE POLICY "Super admin full access translated content"
-      ON public.translated_content
-      FOR ALL
-      USING (has_role(auth.uid(), 'super_admin'))
-      WITH CHECK (has_role(auth.uid(), 'super_admin'));
+    IF to_regproc('public.has_role') IS NOT NULL THEN
+      CREATE POLICY "Super admin full access translated content"
+        ON public.translated_content
+        FOR ALL
+        USING (has_role(auth.uid(), 'super_admin'))
+        WITH CHECK (has_role(auth.uid(), 'super_admin'));
+    END IF;
   END IF;
 END $$;
 
@@ -132,11 +150,13 @@ BEGIN
     SELECT 1 FROM pg_policies
     WHERE schemaname = 'public' AND tablename = 'currency_rates' AND policyname = 'Super admin full access currency rates'
   ) THEN
-    CREATE POLICY "Super admin full access currency rates"
-      ON public.currency_rates
-      FOR ALL
-      USING (has_role(auth.uid(), 'super_admin'))
-      WITH CHECK (has_role(auth.uid(), 'super_admin'));
+    IF to_regproc('public.has_role') IS NOT NULL THEN
+      CREATE POLICY "Super admin full access currency rates"
+        ON public.currency_rates
+        FOR ALL
+        USING (has_role(auth.uid(), 'super_admin'))
+        WITH CHECK (has_role(auth.uid(), 'super_admin'));
+    END IF;
   END IF;
 END $$;
 
@@ -159,11 +179,13 @@ BEGIN
     SELECT 1 FROM pg_policies
     WHERE schemaname = 'public' AND tablename = 'seo_meta' AND policyname = 'Super admin full access seo meta'
   ) THEN
-    CREATE POLICY "Super admin full access seo meta"
-      ON public.seo_meta
-      FOR ALL
-      USING (has_role(auth.uid(), 'super_admin'))
-      WITH CHECK (has_role(auth.uid(), 'super_admin'));
+    IF to_regproc('public.has_role') IS NOT NULL THEN
+      CREATE POLICY "Super admin full access seo meta"
+        ON public.seo_meta
+        FOR ALL
+        USING (has_role(auth.uid(), 'super_admin'))
+        WITH CHECK (has_role(auth.uid(), 'super_admin'));
+    END IF;
   END IF;
 END $$;
 

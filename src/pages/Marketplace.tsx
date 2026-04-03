@@ -84,9 +84,12 @@ export default function Marketplace() {
   const [searchResults, setSearchResults] = useState<SearchResultRow[] | null>(null);
   const [currencyRatesReady, setCurrencyRatesReady] = useState(false);
 
+  const queryCountry = (searchParams.get('country') || '').toUpperCase()
+  const queryLang = (searchParams.get('lang') || '').toLowerCase()
+
   useEffect(() => {
-    const fromQueryCountry = (searchParams.get('country') || '').toUpperCase()
-    const fromQueryLang = (searchParams.get('lang') || '').toLowerCase()
+    const fromQueryCountry = queryCountry
+    const fromQueryLang = queryLang
     const fromStorage = getStoredLocale()
     const bootstrap = {
       country: fromQueryCountry || fromStorage.country || DEFAULT_LOCALE.country,
@@ -111,8 +114,7 @@ export default function Marketplace() {
       }
     }
     void run()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [queryCountry, queryLang])
 
   useEffect(() => {
     if (!localeResolved) return
@@ -157,6 +159,19 @@ export default function Marketplace() {
 
   // Handle ?buy=PRODUCT_ID query param coming from cart checkout
   useEffect(() => {
+    if (!queryCountry && !queryLang) return
+    setLocale((prev) => {
+      const next = {
+        country: queryCountry || prev.country || DEFAULT_LOCALE.country,
+        language: queryLang || prev.language || DEFAULT_LOCALE.language,
+        currency: prev.currency || DEFAULT_LOCALE.currency,
+      }
+      storeLocale(next)
+      return next
+    })
+  }, [queryCountry, queryLang])
+
+  useEffect(() => {
     if (buyParamHandled.current) return;
     const buyId = searchParams.get('buy');
     if (!buyId || !products.length) return;
@@ -167,8 +182,7 @@ export default function Marketplace() {
       setSearchParams((prev) => { prev.delete('buy'); return prev; }, { replace: true });
       handleBuyNow(product as Product);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [products, searchParams]);
+  }, [products, searchParams, setSearchParams]);
 
   const handleBuyNow = async (product: Product) => {
     if (!user) { toast.error('Please sign in to purchase'); return; }
