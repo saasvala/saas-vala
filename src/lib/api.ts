@@ -111,11 +111,23 @@ export const resellersApi = {
     apiCall('GET', 'resellers', params),
 
   create: (data: any) => apiCall('POST', 'resellers', data),
+  get: (id: string) => apiCall('GET', `resellers/${id}`),
   update: (id: string, data: any) => apiCall('PUT', `resellers/${id}`, data),
+  allow: (reseller_id: string) => apiCall('POST', 'reseller/allow', { reseller_id }),
+  suspend: (reseller_id: string) => apiCall('POST', 'reseller/suspend', { reseller_id }),
+  block: (reseller_id: string) => apiCall('POST', 'reseller/block', { reseller_id }),
+  activity: (reseller_id?: string) => apiCall('GET', 'reseller/activity', reseller_id ? { reseller_id } : undefined),
+  logResellerActivity: (data: {
+    reseller_id: string;
+    action: string;
+    module?: string;
+    details?: Record<string, unknown>;
+    ip_address?: string;
+  }) => apiCall('POST', 'reseller/activity', data),
   sales: (id: string) => apiCall('GET', `resellers/${id}/sales`),
   clients: () => apiCall('GET', 'resellers/clients'),
-  exportData: (type: 'resellers' | 'sales' | 'commissions') =>
-    apiCall('GET', 'admin/reseller-export', { type }),
+  exportData: (type: 'resellers' | 'sales' | 'commissions' | 'activity') =>
+    apiCall('GET', 'reseller/export', { type }),
 };
 
 export const resellerOnboardingApi = {

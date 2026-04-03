@@ -1588,11 +1588,39 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
   // POST /resellers
   if (method === 'POST') {
     if (!isAdmin) return err('Forbidden', 403)
+    const userIdInput = String(body?.user_id || '').trim()
+    if (!userIdInput) return err('user_id is required', 422, 'VALIDATION_ERROR')
+    const commissionParsed = parseCommissionPercent(body?.commission_percent, 10)
+    if (!commissionParsed.ok) return err(commissionParsed.error, 422, 'VALIDATION_ERROR')
+    const creditParsed = parseCreditLimit(body?.credit_limit, 0)
+    if (!creditParsed.ok) return err(creditParsed.error, 422, 'VALIDATION_ERROR')
+    const requestedStatus = normalizeResellerStatus(body?.status) || 'pending'
+    const status = requestedStatus === 'inactive' ? 'pending' : requestedStatus
+    const isActive = status === 'active'
+    const isVerified = body?.is_verified === true && status === 'active'
+    const companyName = sanitizeTextInput(body?.company_name || '', 180) || null
 
     const { data, error } = await sb.from('resellers').insert({
-      user_id: body.user_id,
-      company_name: body.company_name,
-      commission_percent: commissionPercent,
+      user_id: userIdInput,
+      company_name: companyName,
+      commission_percent: commissionParsed.value,
+      commission_rate: commissionParsed.value,
+      credit_limit: creditParsed.value,
+      is_active: isActive,
+      is_verified: isVerified,
+      status,
+      kyc_status: isVerified ? 'verified' : 'pending',
+      credit_used: 0,
+      meta: body?.meta && typeof body.meta === 'object' ? body.meta : {},
+    }).select('*').single()
+    if (error) return err(error.message)
+
+    await logActivity(admin, 'reseller', data.id, 'create', userId, {
+      status,
+      company_name: companyName,
+      commission_percent: commissionParsed.value,
+      credit_limit: creditParsed.value,
+    })
 
     return json({ data }, 201)
   }
@@ -1600,13 +1628,75 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
   // PUT /resellers/:id
   if (method === 'PUT' && id) {
     if (!isAdmin) return err('Forbidden', 403)
-
+    const { data: existing, error: existingError } = await admin
+      .from('resellers')
+      .select('id, status, is_active, is_verified, company_name, commission_percent, credit_limit')
+      .eq('id', id)
+      .maybeSingle()
+    if (existingError) return err(existingError.message)
+    if (!existing) return err('Reseller not found', 404)
 
     const updates: any = {}
     if (body.company_name !== undefined) updates.company_name = body.company_name
     if (body.commission_percent !== undefined) {
+      const parsed = parseCommissionPercent(body.commission_percent)
+      if (!parsed.ok) return err(parsed.error, 422, 'VALIDATION_ERROR')
+      updates.commission_percent = parsed.value
+      updates.commission_rate = parsed.value
+    }
+    if (body.credit_limit !== undefined) {
+      const parsed = parseCreditLimit(body.credit_limit)
+      if (!parsed.ok) return err(parsed.error, 422, 'VALIDATION_ERROR')
+      updates.credit_limit = parsed.value
+    }
+    if (body.status !== undefined) {
+      const normalized = normalizeResellerStatus(body.status)
+      if (!normalized) return err('Invalid status', 422, 'VALIDATION_ERROR')
+      updates.status = normalized === 'inactive' ? 'pending' : normalized
+      if (updates.status === 'active') updates.is_active = true
+      if (updates.status === 'suspended' || updates.status === 'pending') updates.is_active = false
+    }
+    if (body.is_active !== undefined) {
+      updates.is_active = body.is_active === true
+      if (body.status === undefined) {
+        if (updates.is_active) {
+          updates.status = 'active'
+        } else if (existing.status === 'pending') {
+          updates.status = 'pending'
+        } else {
+          updates.status = 'suspended'
+        }
+      }
+    }
+    if (body.is_verified !== undefined) {
+      updates.is_verified = body.is_verified === true
+      updates.kyc_status = updates.is_verified ? 'verified' : 'pending'
+    }
+    if (body.kyc_status !== undefined) {
+      const normalizedKyc = normalizeKycStatus(body.kyc_status)
+      if (!normalizedKyc) return err('Invalid kyc_status', 422, 'VALIDATION_ERROR')
+      updates.kyc_status = normalizedKyc
+      updates.is_verified = normalizedKyc === 'verified'
+    }
+    const hasMeaningfulUpdates = Object.keys(updates).length > 0
+    if (!hasMeaningfulUpdates) return json({ success: true, data: existing })
+    updates.updated_at = nowIso()
 
-    return json({ success: true })
+    const { data: updated, error: updateError } = await admin
+      .from('resellers')
+      .update(updates)
+      .eq('id', id)
+      .select('*')
+      .single()
+    if (updateError) return err(updateError.message)
+
+    await logActivity(admin, 'reseller', id, 'update', userId, {
+      previous_status: existing.status,
+      new_status: updated.status,
+      updates,
+    })
+
+    return json({ success: true, data: updated })
   }
 
   // GET /resellers/commission-logs
@@ -1730,9 +1820,214 @@ async function handleResellers(method: string, pathParts: string[], body: any, u
 }
 
 // ===================== 3B. RESELLER ONBOARDING =====================
-async function handleResellerOnboarding(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+async function handleResellerOnboarding(method: string, pathParts: string[], body: any, userId: string, sb: any, req?: Request) {
   const admin = adminClient()
   const action = pathParts[0]
+
+  if (method === 'POST' && ['allow', 'suspend', 'block'].includes(action)) {
+    const isAdmin = await isSuperAdminUser(userId)
+    if (!isAdmin) return err('Forbidden', 403)
+    const resellerId = String(body?.reseller_id || body?.id || '').trim()
+    if (!resellerId) return err('reseller_id is required', 422, 'VALIDATION_ERROR')
+
+    const { data: current, error: currentError } = await admin
+      .from('resellers')
+      .select('id,user_id,status,is_active,is_verified,company_name')
+      .eq('id', resellerId)
+      .maybeSingle()
+    if (currentError) return err(currentError.message)
+    if (!current) return err('Reseller not found', 404)
+
+    const actionToState: Record<string, { status: string; is_active: boolean; activity: string }> = {
+      allow: { status: 'active', is_active: true, activity: 'approve' },
+      suspend: { status: 'suspended', is_active: false, activity: 'suspend' },
+      block: { status: 'inactive', is_active: false, activity: 'block' },
+    }
+    const target = actionToState[action]
+    const updatePayload: Record<string, unknown> = {
+      status: target.status,
+      is_active: target.is_active,
+      updated_at: nowIso(),
+    }
+    if (action === 'allow') {
+      updatePayload.is_verified = true
+      updatePayload.kyc_status = 'verified'
+    }
+
+    const { data: updated, error: updateError } = await admin
+      .from('resellers')
+      .update(updatePayload)
+      .eq('id', resellerId)
+      .select('*')
+      .single()
+    if (updateError) return err(updateError.message)
+
+    await logActivity(admin, 'reseller', resellerId, target.activity, userId, {
+      from_status: current.status || null,
+      to_status: target.status,
+      company_name: current.company_name || null,
+    })
+
+    return json({ success: true, data: updated })
+  }
+
+  // GET /reseller/activity?reseller_id=
+  if (method === 'GET' && action === 'activity') {
+    const isAdmin = await isSuperAdminUser(userId)
+    const resellerId = String(req ? (new URL(req.url)).searchParams.get('reseller_id') || '' : '').trim()
+    let entityId = resellerId
+    if (!entityId) {
+      const { data: ownReseller, error: ownErr } = await sb
+        .from('resellers')
+        .select('id')
+        .eq('user_id', userId)
+        .maybeSingle()
+      if (ownErr) return err(ownErr.message)
+      if (!ownReseller?.id) return json({ data: [] })
+      entityId = ownReseller.id
+    } else if (!isAdmin) {
+      const { data: ownReseller, error: ownErr } = await sb
+        .from('resellers')
+        .select('id')
+        .eq('user_id', userId)
+        .maybeSingle()
+      if (ownErr) return err(ownErr.message)
+      if (!ownReseller?.id || ownReseller.id !== entityId) return err('Forbidden', 403)
+    }
+
+    const importantActions = ['login', 'logout', 'key_generated', 'wallet_credit', 'wallet_debit', 'sales_made', 'product_purchase', 'api_usage']
+    const query = admin
+      .from('activity_logs')
+      .select('id,action,entity_type,entity_id,details,performed_by,created_at')
+      .eq('entity_type', 'reseller')
+      .eq('entity_id', entityId)
+      .order('created_at', { ascending: false })
+      .limit(100)
+
+    const { data, error } = await query
+    if (error) return err(error.message)
+
+    const normalized = (data || []).map((row: any) => {
+      const actionName = String(row.action || '').toLowerCase()
+      const mappedAction = actionName === 'approve' ? 'approved' : actionName
+      const details = row.details && typeof row.details === 'object' ? row.details : {}
+      return {
+        ...row,
+        action: mappedAction,
+        module: (details as any).module || (importantActions.includes(mappedAction) ? 'reseller' : 'admin'),
+      }
+    })
+    return json({ data: normalized })
+  }
+
+  // POST /reseller/activity
+  if (method === 'POST' && action === 'activity') {
+    const requestedResellerId = String(body?.reseller_id || '').trim()
+    const actionName = String(body?.action || '').trim().toLowerCase()
+    if (!requestedResellerId || !actionName) return err('reseller_id and action are required', 422, 'VALIDATION_ERROR')
+    const allowedActions = new Set([
+      'login',
+      'logout',
+      'key_generated',
+      'wallet_credit',
+      'wallet_debit',
+      'sales_made',
+      'product_purchase',
+      'api_usage',
+      'approve',
+      'suspend',
+      'block',
+      'create',
+      'update',
+      'delete',
+    ])
+    if (!allowedActions.has(actionName)) return err('Unsupported action', 422, 'VALIDATION_ERROR')
+
+    const isAdmin = await isSuperAdminUser(userId)
+    const { data: ownReseller, error: ownErr } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
+    if (ownErr) return err(ownErr.message)
+    if (!isAdmin && (!ownReseller?.id || ownReseller.id !== requestedResellerId)) return err('Forbidden', 403)
+
+    const details = body?.details && typeof body.details === 'object' ? body.details : {}
+    await logActivity(admin, 'reseller', requestedResellerId, actionName, userId, {
+      module: String(body?.module || 'reseller').slice(0, 80),
+      ip_address: String(body?.ip_address || readClientIp()).slice(0, 80),
+      ...details,
+    })
+
+    return json({ success: true })
+  }
+
+  // GET /reseller/export
+  if (method === 'GET' && action === 'export') {
+    const isAdmin = await isSuperAdminUser(userId)
+    if (!isAdmin) return err('Forbidden', 403)
+    const type = String(req ? (new URL(req.url)).searchParams.get('type') || 'resellers' : 'resellers')
+    if (!['resellers', 'sales', 'commissions', 'activity'].includes(type)) {
+      return err('Invalid export type', 422, 'VALIDATION_ERROR')
+    }
+
+    if (type === 'resellers') {
+      const { data, error } = await admin
+        .from('resellers')
+        .select('id,user_id,company_name,commission_percent,credit_limit,credit_used,is_active,is_verified,status,created_at')
+        .order('created_at', { ascending: false })
+      if (error) return err(error.message)
+      const csv = toCsv(
+        ['id', 'user_id', 'company_name', 'commission_percent', 'credit_limit', 'credit_used', 'is_active', 'is_verified', 'status', 'created_at'],
+        (data || []) as Record<string, unknown>[],
+      )
+      return json({ filename: 'resellers.csv', csv })
+    }
+
+    if (type === 'sales') {
+      const { data: resellerRows } = await admin.from('resellers').select('id,user_id,company_name')
+      const resellerUserIds = (resellerRows || []).map((r: any) => r.user_id).filter(Boolean)
+      const salesHeaders = ['id', 'created_by', 'amount', 'status', 'created_at', 'company_name']
+      if (resellerUserIds.length === 0) return json({ filename: 'reseller-sales.csv', csv: toCsv(salesHeaders, []) })
+      const { data: txRows, error } = await admin
+        .from('transactions')
+        .select('id,created_by,amount,status,created_at')
+        .in('created_by', resellerUserIds)
+        .order('created_at', { ascending: false })
+      if (error) return err(error.message)
+      const companyByUser: Record<string, string> = {}
+      ;(resellerRows || []).forEach((r: any) => { companyByUser[r.user_id] = r.company_name || '' })
+      const rows = (txRows || []).map((r: any) => ({
+        ...r,
+        company_name: companyByUser[r.created_by] || '',
+      }))
+      const csv = toCsv(salesHeaders, rows)
+      return json({ filename: 'reseller-sales.csv', csv })
+    }
+
+    if (type === 'commissions') {
+      const { data, error } = await admin
+        .from('reseller_commission_logs')
+        .select('id,reseller_id,order_id,payment_id,commission_rate,amount,status,created_at')
+        .order('created_at', { ascending: false })
+      if (error) return err(error.message)
+      const csv = toCsv(
+        ['id', 'reseller_id', 'order_id', 'payment_id', 'commission_rate', 'amount', 'status', 'created_at'],
+        (data || []) as Record<string, unknown>[],
+      )
+      return json({ filename: 'reseller-commissions.csv', csv })
+    }
+
+    const { data, error } = await admin
+      .from('activity_logs')
+      .select('id,entity_id,action,performed_by,details,created_at')
+      .eq('entity_type', 'reseller')
+      .order('created_at', { ascending: false })
+      .limit(5000)
+    if (error) return err(error.message)
+    const rows = (data || []).map((item: any) => ({
+      ...item,
+      details: JSON.stringify(item.details || {}),
+    }))
+    const csv = toCsv(['id', 'entity_id', 'action', 'performed_by', 'details', 'created_at'], rows as Record<string, unknown>[])
+    return json({ filename: 'reseller-activity.csv', csv })
+  }
 
   // POST /reseller/apply
   if (method === 'POST' && action === 'apply') {
@@ -7805,7 +8100,7 @@ Deno.serve(async (req) => {
       case 'api-usage':
 
       case 'reseller':
-        routeResponse = await handleResellerOnboarding(req.method, subParts, body, userId, sb)
+        routeResponse = await handleResellerOnboarding(req.method, subParts, body, userId, sb, req)
         break
       case 'resellers':
         routeResponse = await handleResellers(req.method, subParts, body, userId, sb)
