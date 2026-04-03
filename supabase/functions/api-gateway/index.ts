@@ -578,6 +578,14 @@ async function isSuperAdminUser(userId: string) {
   return roles.includes('super_admin')
 }
 
+async function checkRole(userId: string, role: 'ADMIN' | 'RESELLER') {
+  const roles = await getUserRoles(userId)
+  if (role === 'ADMIN') {
+    return roles.includes('super_admin') || roles.includes('admin')
+  }
+  return roles.includes('reseller')
+}
+
 function normalizeResellerStatus(value: unknown) {
   const normalized = String(value || '').trim().toLowerCase()
   if (['active', 'suspended', 'pending', 'inactive'].includes(normalized)) return normalized
@@ -6460,6 +6468,14 @@ Deno.serve(async (req) => {
     if (!auth) return err('Unauthorized', 401)
 
     const { userId, supabase: sb } = auth
+    if (module === 'admin') {
+      const allowed = await checkRole(userId, 'ADMIN')
+      if (!allowed) return err('unauthorized', 403, 'UNAUTHORIZED')
+    }
+    if (module === 'reseller') {
+      const allowed = await checkRole(userId, 'RESELLER')
+      if (!allowed) return err('unauthorized', 403, 'UNAUTHORIZED')
+    }
     const endpointKey = `${module}/${subParts[0] || ''}`
     const rateLimitRes = await enforceRateLimit(adminClient(), userId, endpointKey, req)
     if (rateLimitRes) return rateLimitRes
