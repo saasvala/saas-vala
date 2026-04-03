@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils';
 type StepStatus = 'idle' | 'running' | 'done' | 'error';
 const DEFAULT_GITHUB_ORG = import.meta.env.VITE_GITHUB_ORG || 'saasvala';
 const MAX_AUTO_FIX_RETRIES = 2;
+const MAX_BUILD_RETRIES = 2;
 const DEFAULT_LIVE_DOMAIN = import.meta.env.VITE_DEFAULT_LIVE_DOMAIN || 'saasvala.com';
 
 interface WorkflowStep {
@@ -191,12 +192,22 @@ export default function ValaBuilder() {
       updateStep('build', 'running');
       addOutput('🔨 Building project...');
 
-      const buildRes = await ultraBuilderApi.buildRun({
-        app_name: appName,
-        slug,
-        repo_name: slug,
-        repo_url: `https://github.com/${DEFAULT_GITHUB_ORG}/${slug}`,
-      });
+      let buildRes: any = null;
+      for (let attempt = 1; attempt <= MAX_BUILD_RETRIES; attempt++) {
+        buildRes = await ultraBuilderApi.buildRun({
+          app_name: appName,
+          slug,
+          repo_name: slug,
+          repo_url: `https://github.com/${DEFAULT_GITHUB_ORG}/${slug}`,
+          fallback_config: attempt > 1,
+          attempt,
+        });
+        if (buildRes?.success) break;
+        if (attempt < MAX_BUILD_RETRIES) {
+          addOutput(`⚠️ Build retry ${attempt}/${MAX_BUILD_RETRIES} with fallback config...`);
+          await new Promise((r) => setTimeout(r, attempt * 800));
+        }
+      }
       if (!buildRes?.success) throw new Error('Build failed');
 
       updateStep('build', 'done');
@@ -207,7 +218,15 @@ export default function ValaBuilder() {
       const deployRes = await ultraBuilderApi.deployFull({
         filePath: `${slug}/build.zip`,
       });
-      if (!deployRes?.success) throw new Error('Deploy failed');
+      if (!deployRes?.success) {
+        try {
+          await ultraBuilderApi.rollback(slug);
+          addOutput('↩️ Deployment failed, rollback to last stable triggered');
+        } catch {
+          addOutput('⚠️ Deployment failed and rollback trigger failed');
+        }
+        throw new Error('Deploy failed');
+      }
 
       const liveUrl = deployRes?.data?.deployment?.url || `https://${slug}.${DEFAULT_LIVE_DOMAIN}`;
       const repoUrl = `https://github.com/${DEFAULT_GITHUB_ORG}/${slug}`;

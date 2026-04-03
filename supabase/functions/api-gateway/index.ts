@@ -326,6 +326,19 @@ async function sha256Hex(value: string) {
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
+async function hmacSha256Hex(secret: string, payload: string) {
+  const enc = new TextEncoder()
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const signature = await crypto.subtle.sign('HMAC', key, enc.encode(payload))
+  return Array.from(new Uint8Array(signature)).map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
 async function redisGetJson<T = unknown>(key: string): Promise<T | null> {
   const base = Deno.env.get('REDIS_REST_URL')
   const token = Deno.env.get('REDIS_REST_TOKEN')
@@ -3218,10 +3231,12 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
       ? await sb.from('payments').select('*').eq('id', body.payment_id).maybeSingle()
       : { data: null as any }
 
-    const providedSignature = String(body.signature || '')
+    const providedSignature = String(body.signature || '').trim()
     const expectedSignature = Deno.env.get('PAYMENT_WEBHOOK_SECRET')
     if (!expectedSignature) return err('Webhook secret not configured', 503, 'CONFIG_ERROR')
-    const signatureValid = timingSafeEqualText(providedSignature, expectedSignature)
+    const payloadRaw = JSON.stringify(body.payload || body)
+    const computedSignature = await hmacSha256Hex(expectedSignature, payloadRaw)
+    const signatureValid = timingSafeEqualText(providedSignature, computedSignature)
 
     const { data: webhook, error: webhookError } = await sb.from('webhooks').insert({
       provider: body.provider,
@@ -3281,7 +3296,9 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
     if (missing) return err(missing, 422, 'VALIDATION_ERROR')
     const expected = Deno.env.get('PAYMENT_WEBHOOK_SECRET')
     if (!expected) return err('Webhook secret not configured', 503, 'CONFIG_ERROR')
-    const valid = String(body.signature) === expected
+    const payloadRaw = JSON.stringify(body.payload || body.data || {})
+    const computedSignature = await hmacSha256Hex(expected, payloadRaw)
+    const valid = timingSafeEqualText(String(body.signature || '').trim(), computedSignature)
     return json({ valid })
   }
 

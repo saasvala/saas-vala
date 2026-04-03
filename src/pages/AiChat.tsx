@@ -277,7 +277,14 @@ export default function AiChat() {
         const contentType = resp.headers.get('content-type') || '';
         if (!contentType.includes('text/event-stream')) {
           const data = await resp.json().catch(() => ({} as any));
-          const text = data?.response || data?.message || data?.content || '';
+          const candidate = data?.response ?? data?.message ?? data?.content ?? '';
+          const text = typeof candidate === 'string' ? candidate.trim() : '';
+          if (!text) {
+            const fallback = '⚠️ AI response format invalid. Please retry.';
+            onDelta(fallback);
+            onDone();
+            return;
+          }
           const toolResults: ToolResultData[] = (data?.tool_results || []).map((tr: any) => ({
             name: tr.name, result: tr.result,
           }));

@@ -4,7 +4,15 @@ import { savePostLoginRedirect, savePreLogoutState } from './sessionState';
 const API_BASE = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v1`;
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
-  const { data: { session } } = await supabase.auth.getSession();
+  let { data: { session } } = await supabase.auth.getSession();
+  const refreshGraceSeconds = Number(import.meta.env.VITE_TOKEN_REFRESH_GRACE_SECONDS || 60);
+  const expiresInSeconds = Number(session?.expires_at || 0) - Math.floor(Date.now() / 1000);
+  if (session?.refresh_token && Number.isFinite(expiresInSeconds) && expiresInSeconds > 0 && expiresInSeconds <= refreshGraceSeconds) {
+    const { data, error } = await supabase.auth.refreshSession();
+    if (!error && data?.session) {
+      session = data.session;
+    }
+  }
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
@@ -46,7 +54,8 @@ async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promi
       const res = await fetch(url, { ...config, signal: controller.signal });
       clearTimeout(timeout);
       if (RETRYABLE_STATUS_CODES.has(res.status) && attempt < API_MAX_RETRIES) {
-        await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+        const retryDelayMs = Math.min(4000, 250 * (2 ** attempt)) + Math.floor(Math.random() * 120);
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         continue;
       }
       return res;
@@ -54,7 +63,8 @@ async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promi
       clearTimeout(timeout);
       lastError = error;
       if (attempt < API_MAX_RETRIES) {
-        await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+        const retryDelayMs = Math.min(4000, 250 * (2 ** attempt)) + Math.floor(Math.random() * 120);
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         continue;
       }
     }
@@ -436,6 +446,8 @@ export interface ApkDownloadResponse {
   allowed?: boolean;
   url?: string;
   download_url?: string;
+  checksum?: string;
+  checksum_verified?: boolean;
   message?: string;
 }
 
@@ -455,6 +467,7 @@ export const ultraBuilderApi = {
   autoFix: (data: any) => apiCall('POST', 'ai/auto-fix', data),
   buildRun: (data: any) => apiCall('POST', 'build/run', data),
   deployFull: (data: any) => apiCall('POST', 'deploy/full', data),
+  rollback: (serverId: string) => apiCall('POST', 'deploy/rollback', { server_id: serverId }),
   apkBuild: (data: any) => apiCall('POST', 'apk/build', data),
 };
 
