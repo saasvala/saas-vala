@@ -9,6 +9,8 @@ const verifyLicensePath = path.resolve(process.cwd(), 'supabase/functions/verify
 const licenseSyncPolicyPath = path.resolve(process.cwd(), 'supabase/functions/license-sync-policy/index.ts');
 const apkFactoryPath = path.resolve(process.cwd(), 'supabase/functions/apk-factory/index.ts');
 const autoApkPipelinePath = path.resolve(process.cwd(), 'supabase/functions/auto-apk-pipeline/index.ts');
+const builderFactoryCorePath = path.resolve(process.cwd(), 'supabase/migrations/20260404034000_builder_factory_core_additive.sql');
+const builderMicroSchemaPath = path.resolve(process.cwd(), 'supabase/migrations/20260404042000_builder_micro_flow_schema_additive.sql');
 
 function mustRead(file: string) {
   return fs.readFileSync(file, 'utf8');
@@ -146,5 +148,35 @@ describe('ZERO DEAD FLOW acceptance gates', () => {
     expect(source.includes('resource_class')).toBeTruthy();
     expect(source.includes('build_target')).toBeTruthy();
     expect(source.includes('order("priority_score", { ascending: false })')).toBeTruthy();
+  });
+
+  test('builder create flow seeds initiated trace + architecture + route/api validation + queue jobs', () => {
+    const source = mustRead(gatewayPath);
+    expect(source.includes('POST /builder/create')).toBeTruthy();
+    expect(source.includes("status: 'initiated'")).toBeTruthy();
+    expect(source.includes('trace_id')).toBeTruthy();
+    expect(source.includes("entry_action: 'builder_create'")).toBeTruthy();
+    expect(source.includes("entry_api: '/builder/create'")).toBeTruthy();
+    expect(source.includes(".from('project_architecture')")).toBeTruthy();
+    expect(source.includes('builder queue seed failed')).toBeTruthy();
+    expect(source.includes('required_routes')).toBeTruthy();
+  });
+
+  test('builder retry path enforces self-heal max retry loop', () => {
+    const source = mustRead(gatewayPath);
+    expect(source.includes('BUILDER_RETRY_LIMIT_REACHED')).toBeTruthy();
+    expect(source.includes('retry_limit: BUILDER_MAX_RETRIES')).toBeTruthy();
+    expect(source.includes("loop: 'DEBUG_AI'")).toBeTruthy();
+  });
+
+  test('builder schema includes architecture and debug/deploy queues', () => {
+    const core = mustRead(builderFactoryCorePath);
+    expect(core.includes('CREATE TABLE IF NOT EXISTS public.projects')).toBeTruthy();
+    expect(core.includes('CREATE TABLE IF NOT EXISTS public.ai_tasks')).toBeTruthy();
+
+    const additive = mustRead(builderMicroSchemaPath);
+    expect(additive.includes('CREATE TABLE IF NOT EXISTS public.project_architecture')).toBeTruthy();
+    expect(additive.includes('CREATE TABLE IF NOT EXISTS public.debug_queue')).toBeTruthy();
+    expect(additive.includes('CREATE TABLE IF NOT EXISTS public.deploy_queue')).toBeTruthy();
   });
 });

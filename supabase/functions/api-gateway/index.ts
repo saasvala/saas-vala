@@ -9032,23 +9032,84 @@ type BuilderRunBody = {
 }
 
 const BUILDER_AGENT_FLOW = ['PROMPT_AI', 'ARCHITECT_AI', 'DEV_AI', 'DEBUG_AI', 'SCAN_AI', 'TEST_AI', 'BUILD_AI', 'DEPLOY_AI', 'MONITOR_AI'] as const
+const BUILDER_DEFAULT_APP_ROUTES = ['/dashboard', '/products', '/wallet', '/api/*'] as const
 const BUILDER_MAX_RETRIES = 3
 const BUILDER_STEP_AGENT_PLAN = [
   { step: 'parse_prompt', agent: 'PROMPT_AI' },
   { step: 'generate_architecture', agent: 'ARCHITECT_AI' },
   { step: 'generate_frontend', agent: 'DEV_AI' },
   { step: 'generate_backend', agent: 'DEV_AI' },
+  { step: 'generate_db_queries', agent: 'DEV_AI' },
+  { step: 'routing_engine', agent: 'DEV_AI' },
   { step: 'connect_db', agent: 'DEV_AI' },
   { step: 'run_debug', agent: 'DEBUG_AI' },
   { step: 'run_scan', agent: 'SCAN_AI' },
   { step: 'run_test', agent: 'TEST_AI' },
+  { step: 'build_web', agent: 'BUILD_AI' },
   { step: 'build_apk', agent: 'BUILD_AI' },
   { step: 'deploy', agent: 'DEPLOY_AI' },
   { step: 'monitor', agent: 'MONITOR_AI' },
+  { step: 'marketplace_link', agent: 'DEV_AI' },
+  { step: 'wallet_payment_link', agent: 'DEV_AI' },
+  { step: 'license_attach', agent: 'DEV_AI' },
+  { step: 'ui_micro_flow', agent: 'TEST_AI' },
+  { step: 'error_safe', agent: 'DEBUG_AI' },
+  { step: 'cache_system', agent: 'DEV_AI' },
+  { step: 'finalize_live', agent: 'MONITOR_AI' },
 ] as const
 
 async function handleBuilder(method: string, pathParts: string[], body: BuilderCreateBody | BuilderRunBody, userId: string, sb: ReturnType<typeof adminClient>) {
   const admin = adminClient()
+
+  const seedBuilderQueues = async (projectId: string, traceId: string) => {
+    const queueErrors: string[] = []
+    try {
+      let buildQueueError: any = null
+      const buildQueueBasePayload = {
+        type: 'web',
+        priority: 2,
+        status: 'pending',
+        logs: `builder trace ${traceId}`,
+        max_retries: BUILDER_MAX_RETRIES,
+        duplicate_fingerprint: `${projectId}:${traceId}:build`,
+      }
+      const withProjectRes = await admin.from('build_queue').insert({
+        ...buildQueueBasePayload,
+        project_id: projectId,
+      })
+      buildQueueError = withProjectRes.error
+      if (buildQueueError && /column .*project_id|schema cache|does not exist/i.test(String(buildQueueError?.message || ''))) {
+        const fallbackRes = await admin.from('build_queue').insert(buildQueueBasePayload)
+        buildQueueError = fallbackRes.error
+      }
+      if (buildQueueError) queueErrors.push(buildQueueError.message)
+
+      const { error: debugQueueError } = await admin.from('debug_queue').insert({
+        project_id: projectId,
+        trace_id: traceId,
+        source_step: 'run_debug',
+        status: 'queued',
+        max_retries: BUILDER_MAX_RETRIES,
+        payload: { project_id: projectId, trace_id: traceId, queue: 'debug_queue' },
+      })
+      if (debugQueueError) queueErrors.push(debugQueueError.message)
+
+      const { error: deployQueueError } = await admin.from('deploy_queue').insert({
+        project_id: projectId,
+        trace_id: traceId,
+        source_step: 'deploy',
+        status: 'queued',
+        max_retries: BUILDER_MAX_RETRIES,
+        payload: { project_id: projectId, trace_id: traceId, queue: 'deploy_queue' },
+      })
+      if (deployQueueError) queueErrors.push(deployQueueError.message)
+    } catch (error) {
+      queueErrors.push(error instanceof Error ? error.message : 'unknown queue seed failure')
+    }
+    if (queueErrors.length) {
+      throw new Error(`builder queue seed failed: ${queueErrors.join(' | ')}`)
+    }
+  }
 
   // POST /builder/create
   if (method === 'POST' && pathParts[0] === 'create') {
@@ -9060,18 +9121,39 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
     const target_platforms = Array.isArray((body as BuilderCreateBody)?.target_platforms)
       ? ((body as BuilderCreateBody).target_platforms || []).map((v) => String(v || '').trim()).filter(Boolean)
       : ['web', 'apk', 'api']
+    const traceId = crypto.randomUUID()
+    const promptInsights = {
+      modules: ['dashboard', 'products', 'wallet'],
+      roles: ['admin', 'operator'],
+      features: ['routing', 'db', 'api', 'build', 'deploy', 'monitor'],
+      tech_stack_hint: stack_preference,
+    }
+    const architectureSeed = {
+      db: {
+        tables: ['projects', 'project_versions', 'ai_tasks', 'build_logs'],
+      },
+      erd: {
+        nodes: ['projects', 'project_versions', 'ai_tasks', 'build_logs'],
+        links: ['projects->project_versions', 'projects->ai_tasks', 'projects->build_logs'],
+      },
+      apis: ['/builder/create', '/builder/run', '/builder/status/:project_id', '/builder/logs/:project_id', '/builder/retry'],
+      routes: BUILDER_DEFAULT_APP_ROUTES,
+    }
 
     const { data: project, error: projectError } = await admin
       .from('projects')
       .insert({
         name,
-        status: 'created',
+        status: 'initiated',
         prompt,
         created_by: userId,
         metadata: {
+          trace_id: traceId,
           stack_preference,
           target_platforms,
           builder_flow: BUILDER_AGENT_FLOW,
+          entry_action: 'builder_create',
+          entry_api: '/builder/create',
         },
       })
       .select('*')
@@ -9089,12 +9171,26 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .single()
 
     const { error: seedTaskError } = await admin.from('ai_tasks').insert([
-      { project_id: project.id, agent: 'PROMPT_AI', input: prompt, output: 'Requirement parsed', status: 'success' },
-      { project_id: project.id, agent: 'ARCHITECT_AI', input: name, output: 'Architecture seeded', status: 'success' },
+      { project_id: project.id, agent: 'PROMPT_AI', input: prompt, output: JSON.stringify(promptInsights), status: 'queued' },
+      { project_id: project.id, agent: 'ARCHITECT_AI', input: name, output: JSON.stringify(architectureSeed), status: 'queued' },
     ])
     if (seedTaskError) {
       await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', project.id)
       return fail(seedTaskError.message, 400, 'BUILDER_TASK_SEED_FAILED')
+    }
+
+    const { error: architectureInsertError } = await admin.from('project_architecture').insert({
+      project_id: project.id,
+      db: architectureSeed.db,
+      erd: architectureSeed.erd,
+      apis: architectureSeed.apis,
+      routes: architectureSeed.routes,
+      trace_id: traceId,
+      created_by: userId,
+    })
+    if (architectureInsertError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', project.id)
+      return fail(architectureInsertError.message, 400, 'BUILDER_ARCHITECTURE_SEED_FAILED')
     }
 
     const { error: seedLogError } = await admin.from('build_logs').insert({
@@ -9108,9 +9204,47 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       return fail(seedLogError.message, 400, 'BUILDER_LOG_SEED_FAILED')
     }
 
+    try {
+      await seedBuilderQueues(project.id, traceId)
+    } catch (queueSeedError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', project.id)
+      return fail(
+        queueSeedError instanceof Error ? queueSeedError.message : 'Queue seed failed',
+        400,
+        'BUILDER_QUEUE_SEED_FAILED'
+      )
+    }
+    try {
+      await admin.rpc('log_audit_event', {
+        p_event_category: 'BUILDER',
+        p_event_type: 'project_created',
+        p_action: 'create',
+        p_actor_id: userId,
+        p_target_table: 'projects',
+        p_target_id: project.id,
+        p_metadata: {
+          trace_id: traceId,
+          builder_status: 'initiated',
+          target_platforms,
+          flow: BUILDER_AGENT_FLOW,
+        },
+        p_ingest_source: 'api-gateway',
+        p_is_system: false,
+        p_occurred_at: nowIso(),
+      })
+    } catch (auditError) {
+      console.error('builder create audit failed:', auditError)
+    }
+
     return ok({
       project_id: project.id,
-      status: project.status || 'created',
+      status: project.status || 'initiated',
+      trace_id: traceId,
+      architecture: {
+        routes: BUILDER_DEFAULT_APP_ROUTES,
+        apis: architectureSeed.apis,
+      },
+      prompt_insights: promptInsights,
       version: version?.version || 'v1.0.0',
     }, 201)
   }
@@ -9131,6 +9265,7 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       status: 'running',
       updated_at: nowIso(),
     }).eq('id', projectId)
+    const traceId = String((project as any)?.metadata?.trace_id || crypto.randomUUID())
 
     const taskRows = BUILDER_STEP_AGENT_PLAN.map(({ step, agent }) => ({
       project_id: projectId,
@@ -9156,12 +9291,27 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', projectId)
       return fail(logInsertError.message, 400, 'BUILDER_LOG_INSERT_FAILED')
     }
+    try {
+      await seedBuilderQueues(projectId, traceId)
+    } catch (queueSeedError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', projectId)
+      return fail(
+        queueSeedError instanceof Error ? queueSeedError.message : 'Queue seed failed',
+        400,
+        'BUILDER_QUEUE_SEED_FAILED'
+      )
+    }
 
     return ok({
       project_id: projectId,
       status: 'running',
+      trace_id: traceId,
       retry_limit: BUILDER_MAX_RETRIES,
       flow: BUILDER_AGENT_FLOW,
+      route_validation: {
+        required_routes: BUILDER_DEFAULT_APP_ROUTES,
+        required_apis: ['/builder/create', '/builder/run', '/builder/status/:project_id', '/builder/logs/:project_id', '/builder/retry'],
+      },
       step_count: BUILDER_STEP_AGENT_PLAN.length,
     })
   }
@@ -9183,13 +9333,37 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle()
+    const { count: failedDebugAttempts } = await admin
+      .from('build_logs')
+      .select('*', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .eq('step', 'run_debug')
+      .eq('status', 'failed')
 
     return ok({
       project_id: projectId,
       status: project.status || 'unknown',
+      trace_id: project?.metadata?.trace_id || null,
       current_step: latestLog?.step || null,
       step_status: latestLog?.status || null,
-      self_healing: true,
+      self_healing: {
+        active: true,
+        loop: 'DEBUG_AI',
+        max_retries: BUILDER_MAX_RETRIES,
+        retry_count: Number(failedDebugAttempts || 0),
+      },
+      route_validation: {
+        routes: BUILDER_DEFAULT_APP_ROUTES,
+        apis: ['/builder/create', '/builder/run', '/builder/status/:project_id', '/builder/logs/:project_id', '/builder/retry'],
+      },
+      output: project.status === 'live'
+        ? {
+          web: 'working',
+          apk: 'working',
+          admin_panel: 'working',
+          marketplace_entry: 'enabled',
+        }
+        : null,
     })
   }
 
@@ -9235,6 +9409,19 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle()
+    const { count: retryCount } = await admin
+      .from('ai_tasks')
+      .select('*', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .eq('agent', 'DEBUG_AI')
+      .eq('output', 'retry_queued')
+    const currentRetries = Number(retryCount || 0)
+    if (currentRetries >= BUILDER_MAX_RETRIES) {
+      return fail('Retry limit reached', 409, 'BUILDER_RETRY_LIMIT_REACHED', {
+        retry_limit: BUILDER_MAX_RETRIES,
+        retry_count: currentRetries,
+      })
+    }
 
     await admin.from('projects').update({ status: 'running', updated_at: nowIso() }).eq('id', projectId)
     const { error: retryLogError } = await admin.from('build_logs').insert({
@@ -9252,12 +9439,22 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       status: 'queued',
     })
     if (retryTaskError) return fail(retryTaskError.message, 400, 'BUILDER_RETRY_TASK_FAILED')
+    try {
+      await seedBuilderQueues(projectId, String((project as any)?.metadata?.trace_id || crypto.randomUUID()))
+    } catch (queueSeedError) {
+      return fail(
+        queueSeedError instanceof Error ? queueSeedError.message : 'Queue seed failed',
+        400,
+        'BUILDER_QUEUE_SEED_FAILED'
+      )
+    }
 
     return ok({
       project_id: projectId,
       status: 'running',
       retry_step: lastFailedStep?.step || 'retry',
       retry_limit: BUILDER_MAX_RETRIES,
+      retry_count: currentRetries + 1,
     })
   }
 
