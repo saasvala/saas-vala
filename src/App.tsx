@@ -10,6 +10,7 @@ import { CartProvider } from "@/hooks/useCart";
 import { Loader2 } from "lucide-react";
 import React, { Suspense, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { APP_ROUTE_PATTERNS, registerRoutePatterns } from "@/lib/routeRegistry";
 
 // Only eagerly load the landing page (Marketplace) and Auth
 import Marketplace from "./pages/Marketplace";
@@ -436,6 +437,10 @@ function AppRoutes() {
   const { user } = useAuth();
   const setupDone = user?.id ? localStorage.getItem(`sv_onboarding_done_${user.id}`) === '1' : true;
 
+  useEffect(() => {
+    registerRoutePatterns(APP_ROUTE_PATTERNS);
+  }, []);
+
   return (
     <Suspense fallback={<PageLoader />}>
       <Routes>
@@ -640,8 +645,7 @@ function AppRoutes() {
         <Route path="/orders" element={<AuthGuard><Navigate to="/user/orders" replace /></AuthGuard>} />
         <Route path="/logout" element={<Logout />} />
         <Route path="/unauthorized" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/404" element={<SafeFallbackRoute />} />
-        <Route path="*" element={<SafeFallbackRoute />} />
+
 
       </Routes>
     </Suspense>

@@ -170,13 +170,17 @@ const RESELLER_FEATURE_KEY_SET = new Set<string>([
 type DomainEventType =
   | 'product_created'
   | 'lead_generated'
+  | 'build_complete'
   | 'build_completed'
+  | 'builder_complete'
   | 'payment_success'
+  | 'error_detected'
   | 'payment_init'
   | 'order_completed'
   | 'subscription_renewed'
   | 'subscription_activated'
   | 'license_key_assigned'
+  | 'user_signup'
   | 'banner_created'
   | 'banner_updated'
   | 'banner_deleted'
@@ -647,34 +651,39 @@ async function emitDomainEvent(
       status: 'queued',
       tenant_id: tenantId || null,
     })
-    const eventTypeMap: Record<string, string> = {
-      build_completed: 'apk_ready',
-      payment_success: 'payment_success',
-      lead_generated: 'lead_generated',
+
     }
-    const mappedEventType = eventTypeMap[eventType] || null
-    if (!mappedEventType) return
+    const mappedEventTypes = eventTypeMap[eventType] || []
+    if (!mappedEventTypes.length) return
     const { data: webhookEndpoints } = await admin
       .from('webhook_endpoints')
-      .select('id')
+      .select('id,events')
       .eq('is_active', true)
-      .contains('events', [mappedEventType])
     if (!Array.isArray(webhookEndpoints) || webhookEndpoints.length === 0) return
+    const endpointMatches = webhookEndpoints.map((endpoint: any) => {
+      const events = Array.isArray(endpoint?.events) ? endpoint.events.map((v: unknown) => String(v)) : []
+      const eventSet = new Set(events)
+      const endpointEventTypes = mappedEventTypes.filter((type) => eventSet.has(type))
+      return { endpointId: endpoint.id, endpointEventTypes }
+    }).filter((entry) => entry.endpointEventTypes.length > 0)
+    if (!endpointMatches.length) return
+    const deliveryRows = endpointMatches.flatMap(({ endpointId, endpointEventTypes }) =>
+      endpointEventTypes.map((mappedEventType) => ({
+        endpoint_id: endpointId,
+        event_type: mappedEventType,
+        payload: {
+          event: mappedEventType,
+          data: payload,
+          tenant_id: tenantId || null,
+        },
+        status: 'pending',
+        attempts: 0,
+      }))
+    )
+    if (!deliveryRows.length) return
     const { data: deliveries } = await admin
       .from('webhook_deliveries')
-      .insert(
-        webhookEndpoints.map((endpoint: any) => ({
-          endpoint_id: endpoint.id,
-          event_type: mappedEventType,
-          payload: {
-            event: mappedEventType,
-            data: payload,
-            tenant_id: tenantId || null,
-          },
-          status: 'pending',
-          attempts: 0,
-        }))
-      )
+      .insert(deliveryRows)
       .select('id,endpoint_id,event_type')
     if (!Array.isArray(deliveries) || deliveries.length === 0) return
     await admin.from('async_jobs').insert(
@@ -4470,6 +4479,7 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
 
   const isPaymentCreate =
     method === 'POST' && (
+      action === 'intent' ||
       (action === 'payment' && pathParts[1] === 'init') ||
       (action === 'create' && !pathParts[1])
     )
@@ -4827,6 +4837,11 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
       ref_code: refCode,
       referrer_id: referrerReseller.user_id,
     })
+    await emitDomainEvent(admin, 'user_signup', {
+      user_id: userId,
+      ref_code: refCode,
+      referrer_id: referrerReseller.user_id,
+    }, null)
 
     return json({ data: insertedReferral }, 201)
   }
@@ -6163,16 +6178,40 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     return await handleServers('POST', ['server', 'ai-action'], { server_id: serverId, action: 'fix_issues', params: body?.params || {} }, userId, sb)
   }
 
-  // POST /server/deploy/git
-  if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'git') {
+  const routeServerDeploy = async (preferApk: boolean) => {
+    if (preferApk) {
+      return await handleApk('POST', ['build'], body, userId, sb)
+    }
     const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
     if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
     return await handleServers('POST', ['git', 'deploy'], { server_id: serverId }, userId, sb)
   }
 
+  // POST /server/deploy/git
+  if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'git') {
+    return await routeServerDeploy(false)
+  }
+
+  // POST /server/deploy
+  if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && !thirdSegment) {
+    const deployParameterValues = [body?.deploy_kind, body?.deploy_type, body?.type]
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter(Boolean)
+    const uniqueDeployTypes = Array.from(new Set(deployParameterValues))
+    if (uniqueDeployTypes.length > 1) {
+      return fail('Conflicting deploy type aliases', 422, 'VALIDATION_ERROR', {
+        deploy_kind: body?.deploy_kind || null,
+        deploy_type: body?.deploy_type || null,
+        type: body?.type || null,
+      })
+    }
+    const deployKind = uniqueDeployTypes[0] || ''
+    return await routeServerDeploy(deployKind === 'apk')
+  }
+
   // POST /server/deploy/apk
   if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'apk') {
-    return await handleApk('POST', ['build'], body, userId, sb)
+    return await routeServerDeploy(true)
   }
 
   // GET /server/deploy/status/:id
@@ -8561,6 +8600,11 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
     }
   }
 
+  // POST /apk/scan
+  if (method === 'POST' && pathParts[0] === 'scan') {
+    return await handleApk('POST', ['git-scan'], body, userId, sb)
+  }
+
   // POST /apk/build
   if (method === 'POST' && pathParts[0] === 'build' && !pathParts[1]) {
     const { data, error } = await sb.from('apk_build_queue').insert({
@@ -9237,6 +9281,14 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       console.error('builder create audit failed:', auditError)
     }
 
+    await emitDomainEvent(admin, 'builder_complete', {
+      project_id: project.id,
+      trace_id: traceId,
+      user_id: userId,
+      status: 'initiated',
+      source: 'builder_create',
+    }, null)
+
     return ok({
       project_id: project.id,
       status: project.status || 'initiated',
@@ -9484,6 +9536,8 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       return fail('Retry limit reached', 409, 'BUILDER_RETRY_LIMIT_REACHED', {
         retry_limit: BUILDER_MAX_RETRIES,
         retry_count: currentRetries,
+
+        loop: 'DEBUG_AI',
       })
     }
 
@@ -9520,6 +9574,11 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       retry_limit: BUILDER_MAX_RETRIES,
       retry_count: currentRetries + 1,
     })
+  }
+
+  // POST /builder/debug (DEBUG_AI alias: routes to retry/self-heal loop endpoint)
+  if (method === 'POST' && pathParts[0] === 'debug') {
+    return await handleBuilder('POST', ['retry'], body, userId, sb)
   }
 
   return fail('Route not found', 404, 'ROUTE_NOT_FOUND', { module: 'builder' })
@@ -11702,7 +11761,9 @@ Deno.serve(async (req) => {
     if (!SUPPORTED_API_VERSIONS.has(requestedVersion)) {
       return fail('Unsupported API version', 400, 'UNSUPPORTED_API_VERSION', { supported: Array.from(SUPPORTED_API_VERSIONS) })
     }
-    const normalizedPath = fullPath.replace(/^api\/v\d+\/?/, '')
+    const normalizedPath = fullPath
+      .replace(/^api\/v\d+\/?/, '')
+      .replace(/^api\/?/, '')
     const parts = normalizedPath.split('/').filter(Boolean)
     const module = parts[0]
     const subParts = parts.slice(1)
@@ -11844,6 +11905,25 @@ Deno.serve(async (req) => {
         break
       case 'marketplace':
         routeResponse = await handleMarketplace(req.method, subParts, body, userId, sb)
+        break
+      case 'cart':
+        if (subParts.length === 0) {
+          if (req.method === 'GET') {
+            routeResponse = await handleMarketplace(req.method, ['cart', 'list'], body, userId, sb)
+          } else {
+            routeResponse = fail('Route not found', 404, 'ROUTE_NOT_FOUND', {
+              module,
+              endpoint: `${module}/${subParts[0] || ''}`,
+              version: requestedVersion,
+              is_graceful_not_found: true,
+            })
+          }
+          break
+        }
+        routeResponse = await handleMarketplace(req.method, ['cart', ...subParts], body, userId, sb)
+        break
+      case 'orders':
+        routeResponse = await handleMarketplace(req.method, ['orders', ...subParts], body, userId, sb)
         break
       case 'payment':
         routeResponse = await handleMarketplace(req.method, subParts, body, userId, sb)
