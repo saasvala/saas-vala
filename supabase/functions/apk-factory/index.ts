@@ -161,7 +161,7 @@ Deno.serve(async (req) => {
       // Trigger: Dispatch APK build for a repo
       // ═══════════════════════════════════════
       case "trigger_build": {
-        const { slug, repo_url, product_id, callback_url, priority_tier, resource_class, build_target } = data || {};
+
         if (!slug)
           return respond({ error: "slug required" }, 400);
 
@@ -175,12 +175,6 @@ Deno.serve(async (req) => {
             method: "POST",
             body: JSON.stringify({
               ref: "main",
-                inputs: {
-                  repo_url: targetRepo,
-                  app_slug: slug,
-                  package_name: `com.saasvala.${slug.replace(/-/g, "_")}`,
-                  product_id: product_id || "",
-                  supabase_url: supabaseUrl,
 
 
         if (!dispatchRes.ok) {
@@ -194,21 +188,13 @@ Deno.serve(async (req) => {
           );
         }
 
-        // Update build queue
-        const admin = createClient(supabaseUrl, serviceKey);
-        await admin.from("apk_build_queue").upsert(
-          {
-            repo_name: slug,
-            repo_url: targetRepo,
-            slug,
-
 
         return respond({
           success: true,
           slug,
           repo_url: targetRepo,
           status: "building",
-          trace_id: requestTraceId,
+
           message: `🔧 APK build triggered via GitHub Actions for ${slug}`,
         });
       }
@@ -281,136 +267,20 @@ Deno.serve(async (req) => {
         if (!completeSlug)
           return respond({ error: "slug required" }, 400);
 
-        const admin = createClient(supabaseUrl, serviceKey);
 
-        if (apkCallbackSecret) {
-          const providedSig = callback_signature || req.headers.get("x-callback-signature") || "";
-          const canonical = stableStringify({
-            slug: completeSlug || "",
-            apk_path: apk_path || "",
-            status: buildStatus || "",
-            error: buildError || "",
-            product_id: pid || "",
-            artifact_checksum: artifact_checksum || "",
-            artifact_checksum_algorithm: artifact_checksum_algorithm || "sha256",
-            build_target: build_target || "apk",
-          });
-          const expectedSig = await hmacSha256Hex(apkCallbackSecret, canonical);
-          if (providedSig !== expectedSig) {
-            return respond({ error: "Invalid callback signature" }, 401);
-          }
+
+        const internalToken = Deno.env.get("APK_PIPELINE_INTERNAL_TOKEN") || "";
+
+
         }
 
-        if (buildStatus === "success" && apk_path) {
-          // Update build queue
-          await admin
-            .from("apk_build_queue")
-            .update({
-              build_status: "completed",
-              pipeline_stage: "ready",
-              trace_id: callbackTraceId || requestTraceId,
-              apk_file_path: apk_path,
-              build_completed_at: new Date().toISOString(),
-
-            })
-            .eq("slug", completeSlug);
-
-          // Store the storage object path (not a signed URL) so download-apk
-          // always generates a fresh short-lived signed URL at download time.
-          if (apk_path && pid) {
-            const { data: existingProduct } = await admin
-              .from("products")
-              .select("apk_url")
-              .eq("id", pid)
-              .maybeSingle();
-            await admin
-              .from("products")
-              .update({
-                apk_url: apk_path,
-                is_apk: true,
-                apk_enabled: true,
-                current_stable_apk_path: apk_path,
-                current_stable_apk_checksum: artifact_checksum || null,
-              })
-              .eq("id", pid);
-
-            const { data: latestVersion } = await admin
-              .from("apk_versions")
-              .select("version_code")
-              .eq("apk_id", pid)
-              .order("version_code", { ascending: false })
-              .limit(1)
-              .maybeSingle();
-            const nextVersionCode = Number(latestVersion?.version_code || 0) + 1;
-
-            await admin.from("apk_versions").insert({
-              apk_id: pid,
-              version_name: `${completeSlug}-${nextVersionCode}`,
-              version_code: Math.max(1, nextVersionCode),
-              file_path: apk_path,
-              checksum: artifact_checksum || null,
-              hash_algorithm: artifact_checksum_algorithm || "sha256",
-              build_target: build_target || "apk",
-              is_stable: true,
-              rollout_status: "active",
-              min_supported_version_code: 1,
-              force_update: false,
-            });
-
-            if (existingProduct?.apk_url) {
-              await admin
-                .from("apk_build_queue")
-                .update({ previous_stable_apk_path: existingProduct.apk_url })
-                .eq("slug", completeSlug);
-            }
-          }
-
-          // Update catalog
-          await admin
-            .from("source_code_catalog")
-            .update({ status: "completed" })
-            .eq("slug", completeSlug);
-
-          return respond({
-            success: true,
-            trace_id: callbackTraceId || requestTraceId,
-            message: `✅ APK for ${completeSlug} built and attached!`,
-          });
-        } else {
-          await admin
-            .from("apk_build_queue")
-            .update({
-              build_status: "failed",
-              pipeline_stage: "failed",
-              trace_id: callbackTraceId || requestTraceId,
-              build_error: buildError || "Unknown error",
-              build_completed_at: new Date().toISOString(),
-
-            })
-            .eq("slug", completeSlug);
-
-          const { data: queued } = await admin
-            .from("apk_build_queue")
-            .select("product_id, previous_stable_apk_path")
-            .eq("slug", completeSlug)
-            .maybeSingle();
-
-          if (queued?.product_id && queued?.previous_stable_apk_path) {
-            await admin
-              .from("products")
-              .update({
-                apk_url: queued.previous_stable_apk_path,
-                current_stable_apk_path: queued.previous_stable_apk_path,
-              })
-              .eq("id", queued.product_id);
-          }
-
-          return respond({
-            success: false,
-            trace_id: callbackTraceId || requestTraceId,
-            message: `❌ APK build failed for ${completeSlug}: ${buildError}`,
-          });
-        }
+        return respond({
+          success: buildStatus === "success",
+          message: buildStatus === "success"
+            ? `✅ Build callback forwarded for ${completeSlug}`
+            : `❌ Failed build callback forwarded for ${completeSlug}`,
+          pipeline: pipelineJson,
+        });
       }
 
       default:
@@ -454,6 +324,9 @@ on:
         default: 'com.saasvala.app'
       product_id:
         description: 'Product ID in database'
+        required: false
+      trace_id:
+        description: 'Pipeline trace id'
         required: false
       supabase_url:
         description: 'Supabase URL for callback'
@@ -521,27 +394,23 @@ jobs:
           npx cap add android
           npx cap sync
 
+      - name: Configure signing materials
+        run: |
+          if [ -n "\${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            umask 077
+            KEYSTORE_FILE="$(mktemp /tmp/release-keystore-XXXXXX.jks)"
+            echo "\${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > "$KEYSTORE_FILE"
+            echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> $GITHUB_ENV
+            echo "KEYSTORE_READY=true" >> $GITHUB_ENV
+          else
+            echo "KEYSTORE_READY=false" >> $GITHUB_ENV
+          fi
+
       - name: Build APK
         run: |
           cd target-app/android
           chmod +x gradlew
-          TARGET="\${{ github.event.inputs.build_target }}"
-          if [ "$TARGET" = "aab" ]; then
-            ./gradlew bundleRelease --no-daemon
-          else
-            ./gradlew assembleRelease --no-daemon
-          fi
-          
-          # Find the APK
-          ARTIFACT_PATH=\$(find . \\( -name "*.apk" -o -name "*.aab" \\) -type f | head -1)
-          if [ -n "$ARTIFACT_PATH" ]; then
-            if [[ "$ARTIFACT_PATH" == *.aab ]]; then
-              cp "$ARTIFACT_PATH" /tmp/\${{ github.event.inputs.app_slug }}.aab
-            else
-              cp "$ARTIFACT_PATH" /tmp/\${{ github.event.inputs.app_slug }}.apk
-            fi
-            ARTIFACT_CHECKSUM=\$(sha256sum "$ARTIFACT_PATH" | awk '{print $1}')
-            echo "ARTIFACT_CHECKSUM=$ARTIFACT_CHECKSUM" >> $GITHUB_ENV
+
             echo "APK_BUILT=true" >> $GITHUB_ENV
             echo "APK built: $ARTIFACT_PATH"
             ls -la "$ARTIFACT_PATH"
