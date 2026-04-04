@@ -163,7 +163,9 @@ export function useMarketplaceProducts(locale?: { country?: string; lang?: strin
     inFlightRef.current = false;
     if (pendingRefetchRef.current) {
       pendingRefetchRef.current = false;
-      void fetchProducts();
+      void fetchProducts().catch((error) => {
+        console.error('[marketplace-products-live] queued refetch failed', error);
+      });
     }
   }, [locale?.country, locale?.currency, locale?.lang]);
 
@@ -178,7 +180,12 @@ export function useMarketplaceProducts(locale?: { country?: string; lang?: strin
         fetchProducts();
       })
       .on('system', { event: 'error' }, (payload) => {
-        console.error('[marketplace-products-live] realtime subscription error', payload);
+        const details = (payload as { message?: string; error?: unknown }) || {};
+        console.error('[marketplace-products-live] realtime subscription error', {
+          message: details.message || null,
+          error: details.error || null,
+          payload,
+        });
       })
       .subscribe();
 
