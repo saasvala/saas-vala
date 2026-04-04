@@ -11702,7 +11702,9 @@ Deno.serve(async (req) => {
     if (!SUPPORTED_API_VERSIONS.has(requestedVersion)) {
       return fail('Unsupported API version', 400, 'UNSUPPORTED_API_VERSION', { supported: Array.from(SUPPORTED_API_VERSIONS) })
     }
-    const normalizedPath = fullPath.replace(/^api\/v\d+\/?/, '')
+    const normalizedPath = fullPath
+      .replace(/^api\/v\d+\/?/, '')
+      .replace(/^api\/?/, '')
     const parts = normalizedPath.split('/').filter(Boolean)
     const module = parts[0]
     const subParts = parts.slice(1)
@@ -11844,6 +11846,12 @@ Deno.serve(async (req) => {
         break
       case 'marketplace':
         routeResponse = await handleMarketplace(req.method, subParts, body, userId, sb)
+        break
+      case 'cart':
+        routeResponse = await handleMarketplace(req.method, ['cart', ...(subParts.length ? subParts : ['list'])], body, userId, sb)
+        break
+      case 'orders':
+        routeResponse = await handleMarketplace(req.method, ['orders', ...subParts], body, userId, sb)
         break
       case 'payment':
         routeResponse = await handleMarketplace(req.method, subParts, body, userId, sb)
