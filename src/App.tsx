@@ -8,7 +8,7 @@ import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import { SidebarProvider } from "@/hooks/useSidebarState";
 import { CartProvider } from "@/hooks/useCart";
 import { Loader2 } from "lucide-react";
-import React, { Suspense, useEffect, useState } from "react";
+import React, { Suspense, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 
 // Only eagerly load the landing page (Marketplace) and Auth
@@ -305,6 +305,17 @@ function ChatIdRedirect() {
   const { id } = useParams();
   const chatId = id ? encodeURIComponent(id) : '';
   return <Navigate to={chatId ? `/ai-chat?chat=${chatId}` : '/ai-chat'} replace />;
+}
+
+function SafeFallbackRoute() {
+  const location = useLocation();
+  const loggedRef = useRef(false);
+  useEffect(() => {
+    if (!import.meta.env.DEV || loggedRef.current) return;
+    loggedRef.current = true;
+    console.warn('[route-fallback] redirected to homepage:', `${location.pathname}${location.search}${location.hash}`);
+  }, [location.pathname, location.search, location.hash]);
+  return <Navigate to="/" replace />;
 }
 
 const SAFE_ROUTE_PARAM = /^[a-zA-Z0-9_-]+$/;
@@ -629,8 +640,8 @@ function AppRoutes() {
         <Route path="/orders" element={<AuthGuard><Navigate to="/user/orders" replace /></AuthGuard>} />
         <Route path="/logout" element={<Logout />} />
         <Route path="/unauthorized" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/404" element={<Navigate to="/" replace />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="/404" element={<SafeFallbackRoute />} />
+        <Route path="*" element={<SafeFallbackRoute />} />
 
       </Routes>
     </Suspense>
