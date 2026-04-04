@@ -6185,18 +6185,18 @@ async function handleServers(method: string, pathParts: string[], body: any, use
 
   // POST /server/deploy
   if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && !thirdSegment) {
-    const deployKindValues = [body?.deploy_kind, body?.deploy_type, body?.type]
+    const deployParameterValues = [body?.deploy_kind, body?.deploy_type, body?.type]
       .map((value) => String(value || '').trim().toLowerCase())
       .filter(Boolean)
-    const uniqueDeployKinds = Array.from(new Set(deployKindValues))
-    if (uniqueDeployKinds.length > 1) {
+    const uniqueDeployTypes = Array.from(new Set(deployParameterValues))
+    if (uniqueDeployTypes.length > 1) {
       return fail('Conflicting deploy type aliases', 422, 'VALIDATION_ERROR', {
         deploy_kind: body?.deploy_kind || null,
         deploy_type: body?.deploy_type || null,
         type: body?.type || null,
       })
     }
-    const deployKind = uniqueDeployKinds[0] || ''
+    const deployKind = uniqueDeployTypes[0] || ''
     return await routeServerDeploy(deployKind === 'apk')
   }
 
