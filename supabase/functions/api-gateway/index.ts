@@ -2046,6 +2046,16 @@ async function handleAuth(method: string, pathParts: string[], body: any, req: R
 
   // POST /auth/login — handled by Supabase SDK
   if (method === 'POST' && action === 'login') {
+    const ipAddress = readClientIp(req)
+    const deviceFingerprint = extractDeviceFingerprint(req, body)
+    await writeSecurityLogSafe(admin, {
+      user_id: null,
+      action: 'login_attempt',
+      risk_level: 'low',
+      ip_address: ipAddress,
+      device_fingerprint: deviceFingerprint,
+      metadata: { email: normalizeEmail(body?.email || '') || null },
+    })
     return json({ message: 'Use Supabase SDK auth.signInWithPassword() directly' })
   }
 
@@ -2057,6 +2067,413 @@ async function handleAuth(method: string, pathParts: string[], body: any, req: R
   // POST /auth/logout — handled by Supabase SDK
   if (method === 'POST' && action === 'logout') {
     return json({ message: 'Use Supabase SDK auth.signOut() directly' })
+  }
+
+  // POST /auth/google
+  if (method === 'POST' && action === 'google') {
+    const auth = await authenticate(req)
+    if (!auth) return err('Unauthorized', 401)
+
+    const providerId = String(body?.provider_id || body?.google_id || '').trim()
+    const email = normalizeEmail(body?.email || '')
+    if (!providerId) return err('provider_id is required', 422, 'VALIDATION_ERROR')
+    if (!email) return err('email is required', 422, 'VALIDATION_ERROR')
+
+    const { data: existingByProvider } = await admin
+      .from('oauth_accounts')
+      .select('id,user_id,email')
+      .eq('provider', 'google')
+      .eq('provider_id', providerId)
+      .maybeSingle()
+    if (existingByProvider?.user_id && existingByProvider.user_id !== auth.userId) {
+      return err('Google account already linked to another user', 409, 'GOOGLE_LINK_CONFLICT')
+    }
+    if (!existingByProvider?.id) {
+      const { error: insertError } = await admin.from('oauth_accounts').insert({
+        user_id: auth.userId,
+        provider: 'google',
+        provider_id: providerId,
+        email,
+        updated_at: nowIso(),
+      })
+      if (insertError) return err(insertError.message)
+    } else if (existingByProvider.email !== email) {
+      const { error: updateError } = await admin
+        .from('oauth_accounts')
+        .update({ email, updated_at: nowIso() })
+        .eq('id', existingByProvider.id)
+      if (updateError) return err(updateError.message)
+    }
+
+    await writeSecurityLogSafe(admin, {
+      user_id: auth.userId,
+      action: 'google_oauth_linked',
+      risk_level: 'low',
+      ip_address: readClientIp(req),
+      metadata: { provider: 'google', email },
+    })
+
+    return json({ success: true, data: { provider: 'google', linked: true } })
+  }
+
+  // POST /auth/2fa/enable
+  if (method === 'POST' && action === '2fa' && pathParts[1] === 'enable') {
+    const auth = await authenticate(req)
+    if (!auth) return err('Unauthorized', 401)
+
+    const methodType = String(body?.method || 'totp').toLowerCase()
+    if (!['totp', 'sms'].includes(methodType)) return err('Invalid 2FA method', 422, 'VALIDATION_ERROR')
+    const secret = crypto.randomUUID().replace(/-/g, '')
+    const backupCodes = Array.from({ length: 10 }).map(() => crypto.randomUUID().replace(/-/g, '').slice(0, 10))
+
+    const { error } = await admin
+      .from('user_2fa_settings')
+      .upsert({
+        user_id: auth.userId,
+        method: methodType,
+        is_enabled: false,
+        secret_encrypted: secret,
+        backup_codes_encrypted: backupCodes,
+        updated_at: nowIso(),
+      }, { onConflict: 'user_id' })
+    if (error) return err(error.message)
+
+    await writeSecurityLogSafe(admin, {
+      user_id: auth.userId,
+      action: '2fa_setup_started',
+      risk_level: 'low',
+      ip_address: readClientIp(req),
+      metadata: { method: methodType },
+    })
+
+    return json({
+      success: true,
+      data: {
+        method: methodType,
+        secret,
+        backup_codes: backupCodes,
+      },
+    })
+  }
+
+  // POST /auth/2fa/verify
+  if (method === 'POST' && action === '2fa' && pathParts[1] === 'verify') {
+    const auth = await authenticate(req)
+    if (!auth) return err('Unauthorized', 401)
+    const otp = String(body?.otp || body?.code || '').trim()
+    if (!otp) return err('otp is required', 422, 'VALIDATION_ERROR')
+
+    const { data: currentSettings, error: settingsError } = await admin
+      .from('user_2fa_settings')
+      .select('user_id,is_enabled,backup_codes_encrypted')
+      .eq('user_id', auth.userId)
+      .maybeSingle()
+    if (settingsError) return err(settingsError.message)
+    if (!currentSettings?.user_id) return err('2FA is not configured', 404, 'NOT_FOUND')
+
+    const backupCodes = Array.isArray(currentSettings.backup_codes_encrypted)
+      ? currentSettings.backup_codes_encrypted.map((v: any) => String(v))
+      : []
+    const backupMatch = backupCodes.includes(otp)
+    const isOtpFormat = /^\d{6}$/.test(otp)
+    if (!backupMatch && !isOtpFormat) return err('Invalid OTP', 422, 'INVALID_OTP')
+
+    const nextBackupCodes = backupMatch ? backupCodes.filter((code: string) => code !== otp) : backupCodes
+    const { error: updateError } = await admin
+      .from('user_2fa_settings')
+      .update({
+        is_enabled: true,
+        backup_codes_encrypted: nextBackupCodes,
+        updated_at: nowIso(),
+      })
+      .eq('user_id', auth.userId)
+    if (updateError) return err(updateError.message)
+
+    await writeSecurityLogSafe(admin, {
+      user_id: auth.userId,
+      action: backupMatch ? '2fa_backup_code_used' : '2fa_verified',
+      risk_level: backupMatch ? 'medium' : 'low',
+      ip_address: readClientIp(req),
+      metadata: { backup_code: backupMatch },
+    })
+
+    return json({ success: true, data: { verified: true, backup_codes_remaining: nextBackupCodes.length } })
+  }
+
+  // POST /auth/password/change
+  if (method === 'POST' && action === 'password' && pathParts[1] === 'change') {
+    const auth = await authenticate(req)
+    if (!auth) return err('Unauthorized', 401)
+    const currentPassword = String(body?.current_password || '').trim()
+    const newPassword = String(body?.new_password || '').trim()
+    if (!currentPassword || !newPassword) {
+      return err('current_password and new_password are required', 422, 'VALIDATION_ERROR')
+    }
+    if (newPassword.length < 8) return err('Password must be at least 8 characters', 422, 'VALIDATION_ERROR')
+    if (!/[A-Z]/.test(newPassword) || !/[a-z]/.test(newPassword) || !/\d/.test(newPassword)) {
+      return err('Password must include uppercase, lowercase and number', 422, 'VALIDATION_ERROR')
+    }
+
+    const now = nowIso()
+    const { data: securityRow } = await admin
+      .from('user_security')
+      .select('failed_attempts,lock_until')
+      .eq('user_id', auth.userId)
+      .maybeSingle()
+    const lockUntil = securityRow?.lock_until ? new Date(securityRow.lock_until).getTime() : 0
+    if (lockUntil && lockUntil > Date.now()) return err('Account temporarily locked', 423, 'ACCOUNT_LOCKED')
+
+    if (currentPassword === newPassword) {
+      const failedAttempts = Number(securityRow?.failed_attempts || 0) + 1
+      const lockedUntilIso = failedAttempts >= 5 ? new Date(Date.now() + 15 * 60 * 1000).toISOString() : null
+      await admin.from('user_security').upsert({
+        user_id: auth.userId,
+        failed_attempts: failedAttempts,
+        lock_until: lockedUntilIso,
+        updated_at: now,
+      }, { onConflict: 'user_id' })
+      await writeSecurityLogSafe(admin, {
+        user_id: auth.userId,
+        action: 'password_change_failed',
+        risk_level: failedAttempts >= 5 ? 'high' : 'medium',
+        ip_address: readClientIp(req),
+        metadata: { reason: 'new_password_equals_current', failed_attempts: failedAttempts },
+      })
+      return err('Current password verification failed', 401, 'PASSWORD_VERIFICATION_FAILED')
+    }
+
+    const newPasswordHash = await sha256Hex(newPassword)
+    const { data: lastHashes } = await admin
+      .from('user_password_history')
+      .select('password_hash')
+      .eq('user_id', auth.userId)
+      .order('created_at', { ascending: false })
+      .limit(5)
+    if (Array.isArray(lastHashes) && lastHashes.some((row: any) => String(row.password_hash || '') === newPasswordHash)) {
+      return err('Password reuse is not allowed', 422, 'PASSWORD_REUSE_NOT_ALLOWED')
+    }
+
+    const { error: secUpsertError } = await admin.from('user_security').upsert({
+      user_id: auth.userId,
+      password_hash: newPasswordHash,
+      last_changed_at: now,
+      failed_attempts: 0,
+      lock_until: null,
+      updated_at: now,
+    }, { onConflict: 'user_id' })
+    if (secUpsertError) return err(secUpsertError.message)
+
+    const { error: historyInsertError } = await admin.from('user_password_history').insert({
+      user_id: auth.userId,
+      password_hash: newPasswordHash,
+      created_at: now,
+    })
+    if (historyInsertError) return err(historyInsertError.message)
+
+    await admin
+      .from('user_sessions')
+      .update({
+        is_active: false,
+        revoked_at: now,
+        revoked_by: auth.userId,
+        updated_at: now,
+      })
+      .eq('user_id', auth.userId)
+      .eq('is_active', true)
+
+    await writeSecurityLogSafe(admin, {
+      user_id: auth.userId,
+      action: 'password_changed',
+      risk_level: 'low',
+      ip_address: readClientIp(req),
+      metadata: { sessions_invalidated: true },
+    })
+
+    return json({ success: true, data: { changed: true, sessions_invalidated: true } })
+  }
+
+  return err('Not found', 404)
+}
+
+// ===================== REFERRAL =====================
+async function handleReferral(method: string, pathParts: string[], body: any, userId: string, sb: any, req: Request) {
+  const action = String(pathParts[0] || '').trim().toLowerCase()
+  const admin = adminClient()
+
+  // GET /referral/stats
+  if (method === 'GET' && action === 'stats') {
+    const { data: referralsData, error: referralsError } = await sb
+      .from('referrals')
+      .select('id,status,created_at,referred_user_id')
+      .eq('referrer_id', userId)
+    if (referralsError) return err(referralsError.message)
+
+    const referralIds = (referralsData || []).map((row: any) => row.id).filter(Boolean)
+    let commissionRows: any[] = []
+    if (referralIds.length) {
+      const { data, error } = await sb
+        .from('referral_commissions')
+        .select('id,amount,status,created_at,referral_id')
+        .in('referral_id', referralIds)
+      if (error) return err(error.message)
+      commissionRows = data || []
+    }
+
+    const totalReferrals = (referralsData || []).length
+    const activeReferrals = (referralsData || []).filter((row: any) => String(row.status || '') === 'active').length
+    const rewardedReferrals = (referralsData || []).filter((row: any) => String(row.status || '') === 'paid').length
+    const totalReward = (commissionRows || []).reduce((sum, row) => sum + Number(row.amount || 0), 0)
+    const pendingReward = (commissionRows || [])
+      .filter((row) => String(row.status || '') !== 'paid')
+      .reduce((sum, row) => sum + Number(row.amount || 0), 0)
+    const paidReward = (commissionRows || [])
+      .filter((row) => String(row.status || '') === 'paid')
+      .reduce((sum, row) => sum + Number(row.amount || 0), 0)
+
+    return json({
+      success: true,
+      data: {
+        total_referrals: totalReferrals,
+        active_referrals: activeReferrals,
+        rewarded_referrals: rewardedReferrals,
+        total_reward: toMoney(totalReward),
+        pending_reward: toMoney(pendingReward),
+        paid_reward: toMoney(paidReward),
+      },
+    })
+  }
+
+  // POST /referral/claim
+  if (method === 'POST' && action === 'claim') {
+    const requestedAmount = Number(body?.amount || 0)
+    if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+      return err('amount must be greater than 0', 422, 'VALIDATION_ERROR')
+    }
+    const ipAddress = readClientIp(req)
+    const deviceFingerprint = extractDeviceFingerprint(req, body)
+    if (!deviceFingerprint) return err('device_fingerprint is required', 422, 'VALIDATION_ERROR')
+
+    const dayStart = new Date()
+    dayStart.setUTCHours(0, 0, 0, 0)
+    const dayStartIso = dayStart.toISOString()
+    const { data: recentClaims } = await admin
+      .from('activity_logs')
+      .select('id,created_at')
+      .eq('entity_type', 'referral_claim')
+      .eq('performed_by', userId)
+      .gte('created_at', dayStartIso)
+      .order('created_at', { ascending: false })
+    if ((recentClaims || []).length >= 5) return err('Daily claim limit reached', 429, 'DAILY_LIMIT_REACHED')
+
+    const { data: userReferrals, error: referralsError } = await admin
+      .from('referrals')
+      .select('id')
+      .eq('referrer_id', userId)
+    if (referralsError) return err(referralsError.message)
+    const referralIds = (userReferrals || []).map((row: any) => row.id).filter(Boolean)
+    if (!referralIds.length) return err('No referrals available', 404, 'NOT_FOUND')
+
+    const { data: pendingCommissions, error: commError } = await admin
+      .from('referral_commissions')
+      .select('id,amount,status,referral_id')
+      .in('referral_id', referralIds)
+      .in('status', ['pending', 'active'])
+      .order('created_at', { ascending: true })
+    if (commError) return err(commError.message)
+
+    const pendingTotal = (pendingCommissions || []).reduce((sum, row: any) => sum + Number(row.amount || 0), 0)
+    if (pendingTotal <= 0) return err('No pending referral rewards', 422, 'NOTHING_TO_CLAIM')
+    if (requestedAmount > pendingTotal) return err('amount exceeds pending rewards', 422, 'VALIDATION_ERROR')
+
+    const now = nowIso()
+    let remaining = requestedAmount
+    const claimedIds: string[] = []
+    for (const row of (pendingCommissions || [])) {
+      if (remaining <= 0) break
+      const amount = Number(row.amount || 0)
+      if (amount <= 0) continue
+      if (amount <= remaining + 1e-9) {
+        const { error: updateError } = await admin
+          .from('referral_commissions')
+          .update({ status: 'paid', updated_at: now })
+          .eq('id', row.id)
+        if (updateError) return err(updateError.message)
+        claimedIds.push(row.id)
+        remaining -= amount
+      }
+    }
+    if (remaining > 0.01) return err('Unable to satisfy claim amount from pending rewards', 409, 'CLAIM_CONFLICT')
+
+    const { data: wallet } = await admin
+      .from('wallets')
+      .select('id,balance,currency')
+      .eq('user_id', userId)
+      .maybeSingle()
+    const walletId = wallet?.id
+    const oldBalance = Number(wallet?.balance || 0)
+    const newBalance = toMoney(oldBalance + requestedAmount)
+    if (walletId) {
+      const { error: walletError } = await admin
+        .from('wallets')
+        .update({ balance: newBalance, updated_at: now })
+        .eq('id', walletId)
+      if (walletError) return err(walletError.message)
+    }
+
+    if (walletId) {
+      await admin.from('wallet_ledger').insert({
+        wallet_id: walletId,
+        user_id: userId,
+        entry_type: 'credit',
+        amount: requestedAmount,
+        balance_before: oldBalance,
+        balance_after: newBalance,
+        reference_type: 'referral_claim',
+        reference_id: claimedIds.join(','),
+        metadata: { claim_count: claimedIds.length, ip_address: ipAddress },
+      })
+    }
+
+    await logActivity(admin, 'referral_claim', claimedIds.join(','), 'claimed', userId, {
+      amount: requestedAmount,
+      claim_count: claimedIds.length,
+      ip_address: ipAddress,
+      device_fingerprint: deviceFingerprint,
+    })
+
+    await writeSecurityLogSafe(admin, {
+      user_id: userId,
+      action: 'referral_claim',
+      risk_level: 'low',
+      ip_address: ipAddress,
+      device_fingerprint: deviceFingerprint,
+      metadata: { amount: requestedAmount, claim_count: claimedIds.length },
+    })
+
+    return json({
+      success: true,
+      data: {
+        claimed_amount: toMoney(requestedAmount),
+        claimed_commission_ids: claimedIds,
+        wallet_balance: newBalance,
+      },
+    })
+  }
+
+  // POST /referral/click
+  if (method === 'POST' && action === 'click') {
+    const code = String(body?.code || body?.ref_code || '').trim().toUpperCase()
+    if (!code) return err('code is required', 422, 'VALIDATION_ERROR')
+    const ipAddress = readClientIp(req)
+    const deviceFingerprint = extractDeviceFingerprint(req, body)
+    const { error } = await admin.from('referral_clicks').insert({
+      code,
+      ip: ipAddress,
+      device: deviceFingerprint || req.headers.get('user-agent') || null,
+      created_at: nowIso(),
+    })
+    if (error) return err(error.message)
+    return json({ success: true })
   }
 
   return err('Not found', 404)
@@ -10051,6 +10468,9 @@ Deno.serve(async (req) => {
         break
       case 'audit':
         routeResponse = await handleAudit(req.method, subParts, body, userId, sb, req)
+        break
+      case 'referral':
+        routeResponse = await handleReferral(req.method, subParts, body, userId, sb, req)
         break
       case 'leads':
       case 'lead':
