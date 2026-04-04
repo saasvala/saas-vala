@@ -49,7 +49,10 @@ const API_MAX_RETRY_DELAY_MS = Number(import.meta.env.VITE_API_MAX_RETRY_DELAY_M
 const API_RETRY_JITTER_MS = Number(import.meta.env.VITE_API_RETRY_JITTER_MS || 120);
 const RETRYABLE_STATUS_CODES = new Set([502, 503, 504]);
 const API_CACHE_TTL_MS = 30_000;
+const API_STALE_CACHE_TTL_MS = 5 * 60_000;
+const RATE_LIMIT_WARNING_THRESHOLD = 10;
 const responseCache = new Map<string, { data: unknown; ts: number }>();
+const inFlightGetRequests = new Map<string, Promise<unknown>>();
 let consecutiveFailures = 0;
 let degradedUntil = 0;
 let escalationRaised = false;
@@ -113,12 +116,54 @@ async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promi
   throw new ApiError(lastError instanceof Error ? lastError.message : 'Network request failed', 0, 'NETWORK_ERROR', lastError);
 }
 
-async function apiCall<T = any>(method: string, path: string, body?: any): Promise<T> {
+type ApiCallOptions = {
+  bypassCache?: boolean;
+};
+
+async function apiCall<T = any>(method: string, path: string, body?: any, options: ApiCallOptions = {}): Promise<T> {
+  const requestStartedAt = Date.now();
+  const pathWithQuery = (() => {
+    if (method !== 'GET' || !body) return path;
+    const params = new URLSearchParams();
+    Object.entries(body).forEach(([k, v]) => {
+      if (v !== undefined && v !== null) params.set(k, String(v));
+    });
+    const query = params.toString();
+    return query ? `${path}?${query}` : path;
+  })();
+  const getCacheKey = method === 'GET' ? pathWithQuery : '';
+  if (method === 'GET' && !options.bypassCache) {
+    const cached = responseCache.get(getCacheKey);
+    if (cached) {
+      const age = requestStartedAt - cached.ts;
+      if (age < API_CACHE_TTL_MS) {
+        return cached.data as T;
+      }
+      if (age < API_STALE_CACHE_TTL_MS) {
+        const existingInFlight = inFlightGetRequests.get(getCacheKey);
+        if (!existingInFlight) {
+          const refreshPromise = apiCall<T>(method, path, body, { bypassCache: true });
+          inFlightGetRequests.set(getCacheKey, refreshPromise);
+          void refreshPromise.finally(() => {
+            if (inFlightGetRequests.get(getCacheKey) === refreshPromise) {
+              inFlightGetRequests.delete(getCacheKey);
+            }
+          });
+        }
+        return cached.data as T;
+      }
+    }
+    const inFlight = inFlightGetRequests.get(getCacheKey);
+    if (inFlight) {
+      return inFlight as Promise<T>;
+    }
+  }
+  const runRequest = async (): Promise<T> => {
   const headers = await getAuthHeaders();
   const now = Date.now();
 
   const config: RequestInit = { method, headers };
-  const cacheKey = method === 'GET' ? `${path}|${JSON.stringify(body || {})}` : '';
+  const cacheKey = method === 'GET' ? pathWithQuery : '';
 
   if (method === 'GET' && body) {
     const params = new URLSearchParams();
@@ -136,6 +181,26 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
     if (cached && now - cached.ts < API_CACHE_TTL_MS) return cached.data as T;
   }
   const res = await fetchWithTimeoutAndRetry(`${API_BASE}/${pathWithoutLeadingSlash}`, config);
+  if (method === 'GET') {
+    const remaining = Number(res.headers.get('x-ratelimit-remaining') ?? res.headers.get('X-RateLimit-Remaining') ?? NaN);
+    const reset = Number(res.headers.get('x-ratelimit-reset') ?? res.headers.get('X-RateLimit-Reset') ?? NaN);
+    if (Number.isFinite(remaining) && remaining <= RATE_LIMIT_WARNING_THRESHOLD && remaining >= 0) {
+      window.dispatchEvent(
+        new CustomEvent('api:rate-limit-warning', {
+          detail: { remaining, reset: Number.isFinite(reset) ? reset : null, path: pathWithoutLeadingSlash },
+        }),
+      );
+      if (remaining === 0) {
+        const retryAfterHeader = Number(res.headers.get('retry-after') ?? res.headers.get('Retry-After') ?? NaN);
+        const retryAfterMs = Number.isFinite(retryAfterHeader)
+          ? Math.max(0, retryAfterHeader * 1000)
+          : Number.isFinite(reset)
+            ? Math.max(0, (reset * 1000) - Date.now())
+            : undefined;
+        throw new ApiError('Rate limit exceeded', 429, 'RATE_LIMIT', { retryAfterMs });
+      }
+    }
+  }
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
@@ -180,6 +245,16 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
   }
 
   return data;
+  };
+
+  if (method !== 'GET') {
+    return runRequest();
+  }
+  const pending = runRequest().finally(() => {
+    inFlightGetRequests.delete(getCacheKey);
+  });
+  inFlightGetRequests.set(getCacheKey, pending);
+  return pending;
 }
 
 export type CrudActionType = 'create' | 'read' | 'update' | 'delete';
