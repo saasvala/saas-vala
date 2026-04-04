@@ -5175,6 +5175,20 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   const thirdSegment = pathParts[2]
   const fourthSegment = pathParts[3]
 
+  const ensureServerManagePermission = async (serverId: string) => {
+    const { data: server, error: serverError } = await sb
+      .from('servers')
+      .select('id,created_by')
+      .eq('id', serverId)
+      .maybeSingle()
+    if (serverError) return { ok: false as const, response: fail(serverError.message, 400, 'DB_ERROR') }
+    if (!server) return { ok: false as const, response: fail('Server not found', 404, 'NOT_FOUND') }
+    if (server.created_by === userId) return { ok: true as const, response: null }
+    const adminAllowed = await isSuperAdminUser(userId)
+    if (!adminAllowed) return { ok: false as const, response: fail('Forbidden', 403, 'FORBIDDEN') }
+    return { ok: true as const, response: null }
+  }
+
   // GET /servers/list
   if (method === 'GET' && segment === 'servers' && secondSegment === 'list') {
     const { data, error } = await sb.from('servers').select('*').order('created_at', { ascending: false })
@@ -5371,6 +5385,8 @@ async function handleServers(method: string, pathParts: string[], body: any, use
 
   // POST /server/suspend/:id
   if (method === 'POST' && segment === 'server' && secondSegment === 'suspend' && thirdSegment) {
+    const guard = await ensureServerManagePermission(thirdSegment)
+    if (!guard.ok) return guard.response
     const { error } = await sb.from('servers').update({ status: 'suspended' }).eq('id', thirdSegment)
     if (error) return fail(error.message, 400, 'DB_ERROR')
     await logActivity(admin, 'server', thirdSegment, 'suspended', userId)
@@ -5379,6 +5395,8 @@ async function handleServers(method: string, pathParts: string[], body: any, use
 
   // POST /server/activate/:id
   if (method === 'POST' && segment === 'server' && secondSegment === 'activate' && thirdSegment) {
+    const guard = await ensureServerManagePermission(thirdSegment)
+    if (!guard.ok) return guard.response
     const { error } = await sb.from('servers').update({ status: 'live' }).eq('id', thirdSegment)
     if (error) return fail(error.message, 400, 'DB_ERROR')
     await logActivity(admin, 'server', thirdSegment, 'activated', userId)
@@ -5387,6 +5405,8 @@ async function handleServers(method: string, pathParts: string[], body: any, use
 
   // DELETE /server/delete/:id
   if (method === 'DELETE' && segment === 'server' && secondSegment === 'delete' && thirdSegment) {
+    const guard = await ensureServerManagePermission(thirdSegment)
+    if (!guard.ok) return guard.response
     const { error } = await sb.from('servers').delete().eq('id', thirdSegment)
     if (error) return fail(error.message, 400, 'DB_ERROR')
     await logActivity(admin, 'server', thirdSegment, 'deleted', userId)
