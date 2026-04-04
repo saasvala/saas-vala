@@ -10164,6 +10164,23 @@ Deno.serve(async (req) => {
     if (module === 'api' && req.method === 'GET' && subParts[0] === 'status') {
       return ok({ status: 'ok', timestamp: nowIso() })
     }
+    if (module === 'health' && req.method === 'GET') {
+      return ok({ status: 'ok', timestamp: nowIso(), failover_ready: true, retry_enabled: true })
+    }
+    if (module === 'api' && subParts[0] === 'license' && subParts[1] === 'verify' && req.method === 'POST') {
+      const admin = adminClient()
+      const { data, error } = await admin.functions.invoke('verify-license', {
+        body: {
+          license_key: body?.license_key || body?.key || null,
+          device_id: body?.device_id || null,
+          app_signature: body?.app_signature || null,
+          app_version_code: body?.app_version_code || null,
+          trace_id: body?.trace_id || getOrCreateTraceId(req, body),
+        },
+      })
+      if (error) return fail('License verification failed', 502, 'LICENSE_VERIFY_FAILED', { message: error.message })
+      return json(data || { status: 'error', reason: 'Empty verification response' }, 200)
+    }
 
     // External payment webhook endpoint without JWT
     if (module === 'marketplace' && req.method === 'POST' && subParts[0] === 'payment' && subParts[1] === 'webhook') {

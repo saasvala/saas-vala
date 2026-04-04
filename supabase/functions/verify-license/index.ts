@@ -14,6 +14,27 @@ Deno.serve(async (req) => {
   }
 
   try {
+    let body: any = {};
+    if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
+      try {
+        body = await req.json();
+      } catch {
+        body = {};
+      }
+    } else {
+      const url = new URL(req.url);
+      url.searchParams.forEach((value, key) => {
+        body[key] = value;
+      });
+    }
+
+    const license_key = String(body.license_key || body.key || "").trim();
+    const device_id = String(body.device_id || "").trim() || null;
+    const app_signature = String(body.app_signature || "").trim() || null;
+    const app_version_code = Number(body.app_version_code || 0) || null;
+    const reqTraceId = String(body.trace_id || crypto.randomUUID());
+    const OFFLINE_LICENSE_EXPIRY_DAYS = Math.max(1, Number(Deno.env.get("OFFLINE_LICENSE_EXPIRY_DAYS") || "3"));
+
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const policySigningKey = Deno.env.get("APK_POLICY_SIGNING_KEY");
@@ -249,6 +270,14 @@ Deno.serve(async (req) => {
       }
 
       // Bind device on first use
+      const bindingPayload = {
+        user_id: apkDownload.user_id || licenseMeta?.created_by || null,
+        device_id,
+        key_id: licenseMeta?.id || null,
+        status: "active",
+        last_active: new Date().toISOString(),
+      };
+
       if (!existingDevice) {
         await adminClient
           .from("apk_downloads")
@@ -261,6 +290,22 @@ Deno.serve(async (req) => {
             offline_expires_at: new Date(Date.now() + OFFLINE_LICENSE_EXPIRY_DAYS * 24 * 60 * 60 * 1000).toISOString(),
           })
           .eq("id", apkDownload.id);
+
+        const { error: bindError } = await adminClient
+          .from("device_bindings")
+          .upsert(bindingPayload, { onConflict: "key_id" });
+        if (bindError) {
+          await adminClient.from("license_verification_logs").insert({
+            license_key,
+            device_id: device_id || null,
+            app_signature: app_signature || null,
+            user_id: apkDownload.user_id || licenseMeta?.created_by || null,
+            result: "warning",
+            reason: `Device binding sync failed: ${bindError.message}`,
+            ip_address: ip,
+            trace_id: reqTraceId,
+          });
+        }
       } else {
         // Same device, just update attempts
         await adminClient
@@ -271,6 +316,22 @@ Deno.serve(async (req) => {
             trace_id: reqTraceId,
           })
           .eq("id", apkDownload.id);
+
+        const { error: bindError } = await adminClient
+          .from("device_bindings")
+          .upsert(bindingPayload, { onConflict: "key_id" });
+        if (bindError) {
+          await adminClient.from("license_verification_logs").insert({
+            license_key,
+            device_id: device_id || null,
+            app_signature: app_signature || null,
+            user_id: apkDownload.user_id || licenseMeta?.created_by || null,
+            result: "warning",
+            reason: `Device binding sync failed: ${bindError.message}`,
+            ip_address: ip,
+            trace_id: reqTraceId,
+          });
+        }
       }
     }
 
