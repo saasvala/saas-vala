@@ -209,13 +209,19 @@ const ADMIN_MASTER_ROUTES = new Set([
   '/admin/products',
   '/admin/keys',
   '/admin/servers',
+  '/admin/servers/hosting',
   '/admin/wallet',
   '/admin/resellers',
   '/admin/marketplace',
   '/admin/apk-pipeline',
   '/admin/audit-logs',
+  '/admin/add-product',
+  '/admin/orders',
+  '/admin/seo',
+  '/admin/ai',
+  '/admin/billing',
 ]);
-const ADMIN_DYNAMIC_PREFIXES = ['/admin/marketplace/', '/admin/apk-pipeline/'] as const;
+
 
 function isValidAdminRoute(route: string) {
   if (ADMIN_MASTER_ROUTES.has(route)) return true;
