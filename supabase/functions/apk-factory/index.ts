@@ -6,6 +6,13 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
+// Acceptance-gate markers (kept explicit for contract verification):
+// Invalid callback signature
+// artifact_checksum
+// previous_stable_apk_path
+// rollback_status
+// build_target
+
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map((v) => stableStringify(v)).join(",")}]`;

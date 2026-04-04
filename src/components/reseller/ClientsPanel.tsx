@@ -20,10 +20,35 @@ import {
   Phone,
 } from 'lucide-react';
 import { useResellerClients } from '@/hooks/useResellerClients';
+import { clientApi } from '@/lib/api';
+import { toast } from 'sonner';
 
 export function ClientsPanel() {
   const [searchQuery, setSearchQuery] = useState('');
-  const { clients, stats, loading } = useResellerClients();
+  const [adding, setAdding] = useState(false);
+  const { clients, stats, loading, fetchClients } = useResellerClients();
+
+  const addClientQuick = async () => {
+    const email = window.prompt('Enter client email');
+    if (!email) return;
+    const name = window.prompt('Enter client name (optional)') || '';
+    const phone = window.prompt('Enter client phone (optional)') || '';
+    setAdding(true);
+    try {
+      await clientApi.add({
+        client_email: email.trim().toLowerCase(),
+        client_name: name.trim() || undefined,
+        client_phone: phone.trim() || undefined,
+        status: 'active',
+      });
+      toast.success('Client added');
+      await fetchClients();
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to add client');
+    } finally {
+      setAdding(false);
+    }
+  };
 
   const filteredClients = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -96,14 +121,19 @@ export function ClientsPanel() {
                 View and track your client purchases
               </CardDescription>
             </div>
-            <div className="relative w-full sm:w-64">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Search clients..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9"
-              />
+            <div className="flex w-full sm:w-auto items-center gap-2">
+              <div className="relative w-full sm:w-64">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search clients..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+              <Button onClick={addClientQuick} disabled={adding}>
+                {adding ? 'Adding...' : 'Add Client'}
+              </Button>
             </div>
           </div>
         </CardHeader>
