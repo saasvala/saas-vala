@@ -308,8 +308,8 @@ export default function Marketplace() {
       try {
         setSearchLoading(true);
         const res = await executeButtonAction<ProductSearchResponse>({
-          config: { action: 'SEARCH_SUBMIT', route: '/search', api: '/product/search', debounceMs: 150, throttleMs: 200, idempotent: false, retries: 1, retryBackoffMs: 1000 },
-          run: async () => marketplaceApi.productSearch(searchQuery.trim(), filters),
+          config: { action: 'SEARCH_SUBMIT', route: '/search', api: '/product/search', debounceMs: 300, throttleMs: 300, idempotent: false, retries: 1, retryBackoffMs: 1000 },
+          run: async () => marketplaceApi.productSearch(searchQuery.trim(), filters, { page: 1, limit: 60 }),
         });
         if (!res) {
           setSearchResults([]);
@@ -367,15 +367,15 @@ export default function Marketplace() {
       <main className="pt-16 pb-8">
         <HeroBannerSlider />
         <section className="px-4 md:px-8 mb-4">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2">
             <Input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search products..."
-              className="h-9 bg-muted/40"
+              className="h-12 md:h-10 bg-muted/40"
             />
             <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-              <SelectTrigger className="h-9"><SelectValue placeholder="Category" /></SelectTrigger>
+              <SelectTrigger className="h-12 md:h-10"><SelectValue placeholder="Category" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Categories</SelectItem>
                 <SelectItem value="ai">AI</SelectItem>
@@ -386,7 +386,7 @@ export default function Marketplace() {
               </SelectContent>
             </Select>
             <Select value={priceFilter} onValueChange={setPriceFilter}>
-              <SelectTrigger className="h-9"><SelectValue placeholder="Price" /></SelectTrigger>
+              <SelectTrigger className="h-12 md:h-10"><SelectValue placeholder="Price" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Prices</SelectItem>
                 <SelectItem value="5">Up to $5</SelectItem>
@@ -396,7 +396,7 @@ export default function Marketplace() {
               </SelectContent>
             </Select>
             <Select value={languageFilter} onValueChange={setLanguageFilter}>
-              <SelectTrigger className="h-9"><SelectValue placeholder="Language" /></SelectTrigger>
+              <SelectTrigger className="h-12 md:h-10"><SelectValue placeholder="Language" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Languages</SelectItem>
                 <SelectItem value="english">English</SelectItem>
