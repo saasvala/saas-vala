@@ -16,6 +16,7 @@ DECLARE
   v_order public.orders%ROWTYPE;
   v_wallet public.wallets%ROWTYPE;
   v_license public.license_keys%ROWTYPE;
+  v_generated_license_key TEXT;
   v_paid_at TIMESTAMPTZ := now();
   v_locked NUMERIC := 0;
   v_order_amount NUMERIC := 0;
@@ -156,15 +157,18 @@ BEGIN
   LIMIT 1;
 
   IF v_license.id IS NULL AND v_order.product_id IS NOT NULL THEN
+    v_generated_license_key :=
+      upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 8)) || '-' ||
+      upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 8)) || '-' ||
+      upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 8));
+
     INSERT INTO public.license_keys (
       product_id, license_key, key_type, status, owner_email, owner_name, max_devices,
       activated_devices, activated_at, expires_at, created_by, notes, meta
     )
     VALUES (
       v_order.product_id,
-      upper(substr(md5(random()::text || clock_timestamp()::text), 1, 8)) || '-' ||
-      upper(substr(md5(random()::text || clock_timestamp()::text), 1, 8)) || '-' ||
-      upper(substr(md5(random()::text || clock_timestamp()::text), 1, 8)),
+      v_generated_license_key,
       'monthly',
       'active',
       NULL,

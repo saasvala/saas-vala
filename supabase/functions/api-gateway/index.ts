@@ -663,16 +663,16 @@ async function emitDomainEvent(
       .select('id,events')
       .eq('is_active', true)
     if (!Array.isArray(webhookEndpoints) || webhookEndpoints.length === 0) return
-    const filteredEndpoints = webhookEndpoints.filter((endpoint: any) => {
+    const endpointMatches = webhookEndpoints.map((endpoint: any) => {
       const events = Array.isArray(endpoint?.events) ? endpoint.events.map((v: unknown) => String(v)) : []
-      return mappedEventTypes.some((type) => events.includes(type))
-    })
-    if (!filteredEndpoints.length) return
-    const deliveryRows = filteredEndpoints.flatMap((endpoint: any) => {
-      const events = Array.isArray(endpoint?.events) ? endpoint.events.map((v: unknown) => String(v)) : []
-      const endpointEventTypes = mappedEventTypes.filter((type) => events.includes(type))
-      return endpointEventTypes.map((mappedEventType) => ({
-        endpoint_id: endpoint.id,
+      const eventSet = new Set(events)
+      const endpointEventTypes = mappedEventTypes.filter((type) => eventSet.has(type))
+      return { endpointId: endpoint.id, endpointEventTypes }
+    }).filter((entry) => entry.endpointEventTypes.length > 0)
+    if (!endpointMatches.length) return
+    const deliveryRows = endpointMatches.flatMap(({ endpointId, endpointEventTypes }) =>
+      endpointEventTypes.map((mappedEventType) => ({
+        endpoint_id: endpointId,
         event_type: mappedEventType,
         payload: {
           event: mappedEventType,
@@ -682,7 +682,7 @@ async function emitDomainEvent(
         status: 'pending',
         attempts: 0,
       }))
-    })
+    )
     if (!deliveryRows.length) return
     const { data: deliveries } = await admin
       .from('webhook_deliveries')
