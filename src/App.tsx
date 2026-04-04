@@ -478,6 +478,8 @@ function AppRoutes() {
         <Route path="/onboarding" element={<AuthGuard><Onboarding /></AuthGuard>} />
         <Route path="/dashboard" element={<AuthGuard>{setupDone ? <Dashboard /> : <Navigate to="/onboarding" replace />}</AuthGuard>} />
         <Route path="/admin/dashboard" element={<AuthGuard><RoleGuard role="super_admin"><Dashboard /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/server-manager" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/servers" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/users" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/resellers" replace /></RoleGuard></AuthGuard>} />
         <Route path="/support" element={<AuthGuard><Support /></AuthGuard>} />
         <Route path="/support/ticket" element={<AuthGuard><SupportTicket /></AuthGuard>} />
         <Route path="/feedback" element={<AuthGuard><Feedback /></AuthGuard>} />
@@ -628,7 +630,7 @@ function AppRoutes() {
         <Route path="/logout" element={<Logout />} />
         <Route path="/unauthorized" element={<Navigate to="/dashboard" replace />} />
         <Route path="/404" element={<NotFound />} />
-        <Route path="*" element={<Navigate to="/marketplace" replace />} />
+
       </Routes>
     </Suspense>
   );
