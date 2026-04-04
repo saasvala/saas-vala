@@ -32,6 +32,8 @@ import {
   Archive,
   Tags,
   ListChecks,
+  Heart,
+  History,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import saasValaLogo from '@/assets/saas-vala-logo.jpg';
@@ -54,6 +56,8 @@ const navItems: NavItem[] = [
   { title: 'Servers', icon: Server, href: '/servers', section: 'core' },
   { title: 'Wallet', icon: Wallet, href: '/wallet', section: 'core' },
   { title: 'Downloads', icon: Download, href: '/dashboard/downloads', section: 'core' },
+  { title: 'Favorites', icon: Heart, href: '/favorites', section: 'core' },
+  { title: 'Recent', icon: History, href: '/recent', section: 'core' },
   { title: 'Support', icon: Headset, href: '/support', section: 'core' },
   { title: 'Feedback', icon: MessageCircle, href: '/feedback', section: 'core' },
   { title: 'Announcements', icon: BellRing, href: '/announcements', section: 'core' },
