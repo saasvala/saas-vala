@@ -629,6 +629,7 @@ function AppRoutes() {
         <Route path="/orders" element={<AuthGuard><Navigate to="/user/orders" replace /></AuthGuard>} />
         <Route path="/logout" element={<Logout />} />
         <Route path="/unauthorized" element={<Navigate to="/dashboard" replace />} />
+        <Route path="*" element={<Navigate to="/marketplace" replace />} />
         <Route path="/404" element={<NotFound />} />
 
       </Routes>

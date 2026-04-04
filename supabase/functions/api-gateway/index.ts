@@ -9484,6 +9484,7 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       return fail('Retry limit reached', 409, 'BUILDER_RETRY_LIMIT_REACHED', {
         retry_limit: BUILDER_MAX_RETRIES,
         retry_count: currentRetries,
+        loop: 'DEBUG_AI',
       })
     }
 
