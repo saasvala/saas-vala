@@ -9032,7 +9032,7 @@ type BuilderRunBody = {
 }
 
 const BUILDER_AGENT_FLOW = ['PROMPT_AI', 'ARCHITECT_AI', 'DEV_AI', 'DEBUG_AI', 'SCAN_AI', 'TEST_AI', 'BUILD_AI', 'DEPLOY_AI', 'MONITOR_AI'] as const
-const BUILDER_ROUTE_PLAN = ['/dashboard', '/products', '/wallet', '/api/*'] as const
+const BUILDER_DEFAULT_APP_ROUTES = ['/dashboard', '/products', '/wallet', '/api/*'] as const
 const BUILDER_MAX_RETRIES = 3
 const BUILDER_STEP_AGENT_PLAN = [
   { step: 'parse_prompt', agent: 'PROMPT_AI' },
@@ -9064,14 +9064,24 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
   const seedBuilderQueues = async (projectId: string, traceId: string) => {
     const queueErrors: string[] = []
     try {
-      const { error: buildQueueError } = await admin.from('build_queue').insert({
+      let buildQueueError: any = null
+      const buildQueueBasePayload = {
         type: 'web',
         priority: 2,
         status: 'pending',
         logs: `builder trace ${traceId}`,
         max_retries: BUILDER_MAX_RETRIES,
         duplicate_fingerprint: `${projectId}:${traceId}:build`,
+      }
+      const withProjectRes = await admin.from('build_queue').insert({
+        ...buildQueueBasePayload,
+        project_id: projectId,
       })
+      buildQueueError = withProjectRes.error
+      if (buildQueueError && /column .*project_id|schema cache|does not exist/i.test(String(buildQueueError?.message || ''))) {
+        const fallbackRes = await admin.from('build_queue').insert(buildQueueBasePayload)
+        buildQueueError = fallbackRes.error
+      }
       if (buildQueueError) queueErrors.push(buildQueueError.message)
 
       const { error: debugQueueError } = await admin.from('debug_queue').insert({
@@ -9127,7 +9137,7 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
         links: ['projects->project_versions', 'projects->ai_tasks', 'projects->build_logs'],
       },
       apis: ['/builder/create', '/builder/run', '/builder/status/:project_id', '/builder/logs/:project_id', '/builder/retry'],
-      routes: BUILDER_ROUTE_PLAN,
+      routes: BUILDER_DEFAULT_APP_ROUTES,
     }
 
     const { data: project, error: projectError } = await admin
@@ -9161,8 +9171,8 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .single()
 
     const { error: seedTaskError } = await admin.from('ai_tasks').insert([
-      { project_id: project.id, agent: 'PROMPT_AI', input: prompt, output: JSON.stringify(promptInsights), status: 'success' },
-      { project_id: project.id, agent: 'ARCHITECT_AI', input: name, output: JSON.stringify(architectureSeed), status: 'success' },
+      { project_id: project.id, agent: 'PROMPT_AI', input: prompt, output: JSON.stringify(promptInsights), status: 'queued' },
+      { project_id: project.id, agent: 'ARCHITECT_AI', input: name, output: JSON.stringify(architectureSeed), status: 'queued' },
     ])
     if (seedTaskError) {
       await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', project.id)
@@ -9230,11 +9240,11 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       project_id: project.id,
       status: project.status || 'initiated',
       trace_id: traceId,
-      prompt_ai: promptInsights,
       architecture: {
-        routes: BUILDER_ROUTE_PLAN,
+        routes: BUILDER_DEFAULT_APP_ROUTES,
         apis: architectureSeed.apis,
       },
+      prompt_insights: promptInsights,
       version: version?.version || 'v1.0.0',
     }, 201)
   }
@@ -9299,7 +9309,7 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       retry_limit: BUILDER_MAX_RETRIES,
       flow: BUILDER_AGENT_FLOW,
       route_validation: {
-        required_routes: BUILDER_ROUTE_PLAN,
+        required_routes: BUILDER_DEFAULT_APP_ROUTES,
         required_apis: ['/builder/create', '/builder/run', '/builder/status/:project_id', '/builder/logs/:project_id', '/builder/retry'],
       },
       step_count: BUILDER_STEP_AGENT_PLAN.length,
@@ -9343,7 +9353,7 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
         retry_count: Number(failedDebugAttempts || 0),
       },
       route_validation: {
-        routes: BUILDER_ROUTE_PLAN,
+        routes: BUILDER_DEFAULT_APP_ROUTES,
         apis: ['/builder/create', '/builder/run', '/builder/status/:project_id', '/builder/logs/:project_id', '/builder/retry'],
       },
       output: project.status === 'live'

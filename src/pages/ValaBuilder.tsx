@@ -50,6 +50,7 @@ export default function ValaBuilder() {
   const [demoUrl, setDemoUrl] = useState('');
   const [githubUrl, setGithubUrl] = useState('');
   const [builderProjectId, setBuilderProjectId] = useState('');
+  const isValidUuid = (value: string) => /^[a-f0-9-]{36}$/i.test(value);
 
   const addOutput = (msg: string) => setOutput(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
 
@@ -453,7 +454,7 @@ export default function ValaBuilder() {
                       size="sm"
                       className="gap-2"
                       onClick={() => {
-                        if (!/^[a-f0-9-]{36}$/i.test(builderProjectId)) {
+                        if (!isValidUuid(builderProjectId)) {
                           toast.error('Invalid builder project id');
                           return;
                         }
