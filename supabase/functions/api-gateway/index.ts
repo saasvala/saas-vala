@@ -2786,7 +2786,7 @@ async function handleResellerOnboarding(method: string, pathParts: string[], bod
     if (clientsRes.error) return err(clientsRes.error.message)
     if (earningsRes.error) return err(earningsRes.error.message)
 
-    const earnings = Number((earningsRes.data || []).reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0))
+    const earnings = Number((earningsRes.data || []).reduce((sum: number, row: { amount?: number | string | null }) => sum + Number(row.amount || 0), 0))
     return json({
       data: {
         wallet_balance: Number(walletRes.data?.balance || 0),
@@ -3123,7 +3123,11 @@ async function handleClientAliases(method: string, pathParts: string[], body: an
 
 async function handleReferralAliases(method: string, pathParts: string[], _body: any, userId: string, sb: any) {
   const action = String(pathParts[0] || '').trim().toLowerCase()
+  if (method === 'POST' && action === 'create') {
+    return await handleResellers('POST', ['referrals'], _body || {}, userId, sb)
+  }
   if (method === 'GET' && action === 'link') {
+    const admin = adminClient()
     const { data: reseller } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
     if (!reseller?.id) return err('Reseller profile not found', 404)
     const { data: activeCode, error } = await sb
@@ -3135,7 +3139,20 @@ async function handleReferralAliases(method: string, pathParts: string[], _body:
       .limit(1)
       .maybeSingle()
     if (error) return err(error.message)
-    const code = activeCode?.code || crypto.randomUUID().slice(0, 8).toUpperCase()
+
+    let code = activeCode?.code || ''
+    if (!code) {
+      code = crypto.randomUUID().slice(0, 8).toUpperCase()
+      const { error: insertError } = await sb.from('referral_codes').insert({
+        reseller_id: reseller.id,
+        code,
+        status: 'active',
+        commission_earned: 0,
+        metadata: {},
+      })
+      if (insertError) return err(insertError.message)
+      await logActivity(admin, 'referral_code', code, 'created', userId, { reseller_id: reseller.id, code })
+    }
     const referral_link = `https://saasvala.com/ref/${code}`
     return json({ data: { code, referral_link } })
   }
@@ -8462,10 +8479,11 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
     const patch: Record<string, unknown> = { updated_at: nowIso() }
     if (shouldFreeze) patch.is_locked = true
     if (shouldUnfreeze) patch.is_locked = false
+    let effectiveLimit: number | null = null
     if (limit !== undefined && limit !== null) {
       const normalizedLimit = Number(limit)
       if (!Number.isFinite(normalizedLimit) || normalizedLimit < 0) return err('Invalid limit', 422, 'VALIDATION_ERROR')
-      ;(patch as any).version = Math.max(1, Number(normalizedLimit))
+      effectiveLimit = Math.max(0, Number(normalizedLimit))
     }
     if (Object.keys(patch).length === 1) return err('No valid control action provided', 422, 'VALIDATION_ERROR')
 
@@ -8473,7 +8491,7 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
       .from('wallets')
       .update(patch)
       .eq('id', targetWallet.id)
-      .select('id,user_id,balance,is_locked,version,updated_at')
+      .select('id,user_id,balance,is_locked,updated_at')
       .single()
     if (error) return err(error.message)
 
@@ -8484,7 +8502,7 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
       wallet_user_id: targetWallet.user_id,
     })
 
-    return json({ data })
+    return json({ data, limit: effectiveLimit })
   }
 
   return err('Not found', 404)

@@ -12,6 +12,12 @@ async function sha256Hex(value: string) {
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+type DownloadApkPayload = {
+  product_id?: string;
+  license_key?: string;
+  device_id?: string;
+};
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -43,10 +49,10 @@ Deno.serve(async (req) => {
     }
 
     // 2. Parse request
-    const payload = await req.json().catch(() => ({} as Record<string, unknown>));
-    const product_id = String((payload as any)?.product_id || "").trim();
-    const license_key = String((payload as any)?.license_key || "").trim();
-    const device_id = String((payload as any)?.device_id || "").trim() || null;
+    const payload = await req.json().catch(() => ({} as DownloadApkPayload));
+    const product_id = String(payload.product_id || "").trim();
+    const license_key = String(payload.license_key || "").trim();
+    const device_id = String(payload.device_id || "").trim() || null;
     const reqTraceId = req.headers.get("x-trace-id") || crypto.randomUUID();
 
     if (!product_id || !license_key) {

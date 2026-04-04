@@ -592,7 +592,7 @@ export const clientApi = {
 
 export const referralApi = {
   link: () => apiCall('GET', 'referral/link'),
-  create: (data?: { code?: string; status?: string }) => apiCall('POST', 'resellers/referrals', data || {}),
+  create: (data?: { code?: string; status?: string }) => apiCall('POST', 'referral/create', data || {}),
 };
 
 // ===================== SUBSCRIPTIONS =====================

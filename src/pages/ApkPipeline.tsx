@@ -30,6 +30,16 @@ type PipelineStatusPayload = {
   current_step?: string;
 };
 
+function getApkDownloadUrl(data: unknown): string | null {
+  const payload = data as {
+    download_url?: string;
+    url?: string;
+    data?: { download_url?: string; url?: string };
+  } | null;
+  if (!payload || typeof payload !== 'object') return null;
+  return payload.download_url || payload.url || payload.data?.download_url || payload.data?.url || null;
+}
+
 const PIPELINE_ID_FORMAT = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function resolveBuildHistoryRows(data: unknown): BuildItem[] {
@@ -177,13 +187,12 @@ export default function ApkPipeline() {
       toast.error(res.error);
       return;
     }
-    const payload = res.data as any;
-    const directUrl = payload?.download_url || payload?.url || payload?.data?.download_url || payload?.data?.url;
+    const directUrl = getApkDownloadUrl(res.data);
     if (!directUrl) {
       toast.error('Download URL not available');
       return;
     }
-    window.open(String(directUrl), '_blank', 'noopener,noreferrer');
+    window.open(directUrl, '_blank', 'noopener,noreferrer');
   };
 
   return (
