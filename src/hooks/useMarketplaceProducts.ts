@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { marketplaceApi } from '@/lib/api';
 import { supabase } from '@/integrations/supabase/client';
 import { subscribeQuickActionEvents } from '@/lib/quickActionEvents';
@@ -131,8 +131,15 @@ export function mapDbProduct(product: any, index: number): MarketplaceProduct {
 export function useMarketplaceProducts(locale?: { country?: string; lang?: string; currency?: string }) {
   const [products, setProducts] = useState<MarketplaceProduct[]>([]);
   const [loading, setLoading] = useState(true);
+  const inFlightRef = useRef(false);
+  const pendingRefetchRef = useRef(false);
 
   const fetchProducts = useCallback(async () => {
+    if (inFlightRef.current) {
+      pendingRefetchRef.current = true;
+      return;
+    }
+    inFlightRef.current = true;
     setLoading(true);
     try {
       const res = await marketplaceApi.productList({
@@ -153,6 +160,11 @@ export function useMarketplaceProducts(locale?: { country?: string; lang?: strin
       }
     }
     setLoading(false);
+    inFlightRef.current = false;
+    if (pendingRefetchRef.current) {
+      pendingRefetchRef.current = false;
+      void fetchProducts();
+    }
   }, [locale?.country, locale?.currency, locale?.lang]);
 
   useEffect(() => {
@@ -164,6 +176,9 @@ export function useMarketplaceProducts(locale?: { country?: string; lang?: strin
       .channel('marketplace-products-live')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
         fetchProducts();
+      })
+      .on('system', { event: 'error' }, (payload) => {
+        console.error('[marketplace-products-live] realtime subscription error', payload);
       })
       .subscribe();
 
