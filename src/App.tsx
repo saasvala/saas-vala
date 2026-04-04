@@ -351,6 +351,68 @@ function ProductEditRouteGuarded() {
   );
 }
 
+function ServerRouteGuarded({ children }: { children: React.ReactNode }) {
+  const { id } = useParams();
+  const { user } = useAuth();
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const [error, setError] = useState(false);
+  const [exists, setExists] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const run = async () => {
+      if (!user?.id) {
+        if (mounted) {
+          setError(true);
+          setDataLoaded(true);
+        }
+        return;
+      }
+
+      if (!id || hasInvalidRouteParam([id])) {
+        if (mounted) {
+          setExists(false);
+          setDataLoaded(true);
+        }
+        return;
+      }
+
+      try {
+        const { data, error: dbError } = await supabase
+          .from('servers')
+          .select('id')
+          .eq('id', id)
+          .maybeSingle();
+
+        if (!mounted) return;
+        if (dbError) {
+          setError(true);
+          setDataLoaded(true);
+          return;
+        }
+
+        setExists(!!data);
+        setDataLoaded(true);
+      } catch {
+        if (!mounted) return;
+        setError(true);
+        setDataLoaded(true);
+      }
+    };
+
+    void run();
+    return () => {
+      mounted = false;
+    };
+  }, [id, user?.id]);
+
+  if (!dataLoaded) return <PageLoader />;
+  if (error) return <Navigate to="/dashboard" replace />;
+  if (!exists) return <Navigate to="/server" replace />;
+  return <>{children}</>;
+}
+
 function AppRoutes() {
   const { user } = useAuth();
   const setupDone = user?.id ? localStorage.getItem(`sv_onboarding_done_${user.id}`) === '1' : true;
@@ -425,6 +487,7 @@ function AppRoutes() {
         <Route path="/checkout" element={<AuthGuard><Checkout /></AuthGuard>} />
         <Route path="/success" element={<AuthGuard><Success /></AuthGuard>} />
         <Route path="/subscription" element={<AuthGuard><Subscription /></AuthGuard>} />
+        <Route path="/safe-dashboard" element={<AuthGuard><Navigate to="/dashboard" replace /></AuthGuard>} />
         <Route path="/app/:id" element={<AppRouteGuarded />} />
         <Route path="/app/:productId" element={<AppRouteGuarded />} />
         <Route path="/products" element={<AuthGuard><Products /></AuthGuard>} />
@@ -438,15 +501,23 @@ function AppRoutes() {
         <Route path="/admin/keys" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/keys" replace /></RoleGuard></AuthGuard>} />
         <Route path="/keys/generate" element={<AuthGuard><Navigate to="/keys" replace /></AuthGuard>} />
         <Route path="/servers" element={<AuthGuard><Servers /></AuthGuard>} />
+        <Route path="/server" element={<AuthGuard><Navigate to="/servers" replace /></AuthGuard>} />
         <Route path="/admin/servers" element={<AuthGuard><RoleGuard role="super_admin"><Servers /></RoleGuard></AuthGuard>} />
         <Route path="/servers/add" element={<AuthGuard><ServerAdd /></AuthGuard>} />
-        <Route path="/servers/:id" element={<AuthGuard><ServerDetail /></AuthGuard>} />
-        <Route path="/servers/:id/logs" element={<AuthGuard><ServerLogsPage /></AuthGuard>} />
-        <Route path="/servers/:id/deploy" element={<AuthGuard><ServerDeployPage /></AuthGuard>} />
-        <Route path="/servers/:id/dns" element={<AuthGuard><ServerDnsPage /></AuthGuard>} />
-        <Route path="/servers/:id/hosting" element={<AuthGuard><ServerSettingsPage /></AuthGuard>} />
-        <Route path="/servers/:id/git" element={<AuthGuard><ServerGitPage /></AuthGuard>} />
-        <Route path="/servers/:id/settings" element={<AuthGuard><ServerSettingsPage /></AuthGuard>} />
+        <Route path="/servers/:id" element={<AuthGuard><ServerRouteGuarded><ServerDetail /></ServerRouteGuarded></AuthGuard>} />
+        <Route path="/server/:id" element={<AuthGuard><ServerRouteGuarded><ServerDetail /></ServerRouteGuarded></AuthGuard>} />
+        <Route path="/servers/:id/logs" element={<AuthGuard><ServerRouteGuarded><ServerLogsPage /></ServerRouteGuarded></AuthGuard>} />
+        <Route path="/server/:id/logs" element={<AuthGuard><ServerRouteGuarded><ServerLogsPage /></ServerRouteGuarded></AuthGuard>} />
+        <Route path="/servers/:id/deploy" element={<AuthGuard><ServerRouteGuarded><ServerDeployPage /></ServerRouteGuarded></AuthGuard>} />
+        <Route path="/server/:id/deploy" element={<AuthGuard><ServerRouteGuarded><ServerDeployPage /></ServerRouteGuarded></AuthGuard>} />
+        <Route path="/servers/:id/dns" element={<AuthGuard><ServerRouteGuarded><ServerDnsPage /></ServerRouteGuarded></AuthGuard>} />
+        <Route path="/server/:id/dns" element={<AuthGuard><ServerRouteGuarded><ServerDnsPage /></ServerRouteGuarded></AuthGuard>} />
+        <Route path="/servers/:id/hosting" element={<AuthGuard><ServerRouteGuarded><ServerSettingsPage /></ServerRouteGuarded></AuthGuard>} />
+        <Route path="/server/:id/hosting" element={<AuthGuard><ServerRouteGuarded><ServerSettingsPage /></ServerRouteGuarded></AuthGuard>} />
+        <Route path="/servers/:id/git" element={<AuthGuard><ServerRouteGuarded><ServerGitPage /></ServerRouteGuarded></AuthGuard>} />
+        <Route path="/server/:id/git" element={<AuthGuard><ServerRouteGuarded><ServerGitPage /></ServerRouteGuarded></AuthGuard>} />
+        <Route path="/servers/:id/settings" element={<AuthGuard><ServerRouteGuarded><ServerSettingsPage /></ServerRouteGuarded></AuthGuard>} />
+        <Route path="/server/:id/settings" element={<AuthGuard><ServerRouteGuarded><ServerSettingsPage /></ServerRouteGuarded></AuthGuard>} />
         <Route path="/admin/servers/hosting" element={<AuthGuard><RoleGuard role="super_admin"><ServerSettingsPage /></RoleGuard></AuthGuard>} />
 
         <Route path="/role-detail" element={<AuthGuard><RoleDetail /></AuthGuard>} />
