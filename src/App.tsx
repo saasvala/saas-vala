@@ -2,14 +2,16 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { OfflineRetryBanner } from "@/components/global/OfflineRetryBanner";
+import { ClientProtection } from "@/components/global/ClientProtection";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import { SidebarProvider } from "@/hooks/useSidebarState";
 import { CartProvider } from "@/hooks/useCart";
 import { Loader2 } from "lucide-react";
-import React, { Suspense, useEffect, useState } from "react";
+import React, { Suspense, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { APP_ROUTE_PATTERNS, registerRoutePatterns } from "@/lib/routeRegistry";
 
 // Only eagerly load the landing page (Marketplace) and Auth
 import Marketplace from "./pages/Marketplace";
@@ -90,6 +92,8 @@ const CategoryFlow = React.lazy(() => import("./pages/CategoryFlow"));
 const ProductDetail = React.lazy(() => import("./pages/ProductDetail"));
 const Checkout = React.lazy(() => import("./pages/Checkout"));
 const Success = React.lazy(() => import("./pages/Success"));
+const Offers = React.lazy(() => import("./pages/Offers"));
+const OfferDetail = React.lazy(() => import("./pages/OfferDetail"));
 const Subscription = React.lazy(() => import("./pages/Subscription"));
 const AppAccess = React.lazy(() => import("./pages/AppAccess"));
 const Logout = React.lazy(() => import("./pages/Logout"));
@@ -307,6 +311,17 @@ function ChatIdRedirect() {
   return <Navigate to={chatId ? `/ai-chat?chat=${chatId}` : '/ai-chat'} replace />;
 }
 
+function SafeFallbackRoute() {
+  const location = useLocation();
+  const loggedRef = useRef(false);
+  useEffect(() => {
+    if (!import.meta.env.DEV || loggedRef.current) return;
+    loggedRef.current = true;
+    console.warn('[route-fallback] redirecting to homepage:', `${location.pathname}${location.search}${location.hash}`);
+  }, [location.pathname, location.search, location.hash]);
+  return <Navigate to="/" replace />;
+}
+
 const SAFE_ROUTE_PARAM = /^[a-zA-Z0-9_-]+$/;
 
 function hasInvalidRouteParam(params: Array<string | undefined>) {
@@ -425,6 +440,10 @@ function AppRoutes() {
   const { user } = useAuth();
   const setupDone = user?.id ? localStorage.getItem(`sv_onboarding_done_${user.id}`) === '1' : true;
 
+  useEffect(() => {
+    registerRoutePatterns(APP_ROUTE_PATTERNS);
+  }, []);
+
   return (
     <Suspense fallback={<PageLoader />}>
       <Routes>
@@ -436,6 +455,8 @@ function AppRoutes() {
         <Route path="/" element={<Marketplace />} />
         <Route path="/marketplace" element={<Marketplace />} />
         <Route path="/search" element={<Marketplace />} />
+        <Route path="/offers" element={<Offers />} />
+        <Route path="/offer/:id" element={<OfferDetail />} />
 
         {/* Public lazy routes */}
         <Route path="/edu-pwa" element={<EduPwa />} />
@@ -629,7 +650,8 @@ function AppRoutes() {
         <Route path="/orders" element={<AuthGuard><Navigate to="/user/orders" replace /></AuthGuard>} />
         <Route path="/logout" element={<Logout />} />
         <Route path="/unauthorized" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/404" element={<NotFound />} />
+        <Route path="*" element={<Navigate to="/marketplace" replace />} />
+
 
       </Routes>
     </Suspense>
@@ -645,6 +667,7 @@ const App = () => (
         <AuthProvider>
           <CartProvider>
             <SidebarProvider>
+              <ClientProtection />
               <AppRoutes />
               <OfflineRetryBanner />
             </SidebarProvider>

@@ -36,7 +36,7 @@ export function useApkPurchase() {
 
   const purchaseApk = async (
     product: ApkProduct,
-    options?: { paymentMethod?: PaymentMethod; idempotencyKey?: string },
+    options?: { paymentMethod?: PaymentMethod; idempotencyKey?: string; amountOverride?: number; couponCode?: string | null; appliedOfferId?: string | null },
   ): Promise<PurchaseResult> => {
     if (!user) {
       return { success: false, error: 'Please sign in to download APK' };
@@ -46,6 +46,10 @@ export function useApkPurchase() {
 
     const lockKey = `${user.id}:${product.id}`;
     const paymentMethod: PaymentMethod = options?.paymentMethod || 'wallet';
+    const overrideAmount = options?.amountOverride
+    const payableAmount = typeof overrideAmount === 'number' && Number.isFinite(overrideAmount)
+      ? Math.max(0, overrideAmount)
+      : Math.max(0, Number(product.price || 0));
     if (inFlightRef.current.has(lockKey)) {
       return { success: false, error: 'Purchase already in progress. Please wait.' };
     }
@@ -67,17 +71,19 @@ export function useApkPurchase() {
       // Step 2: Initialize payment via gateway create API
       const initRes = await marketplaceApi.paymentCreate({
         product_id: product.id,
-        amount: product.price,
+        amount: payableAmount,
         currency: 'INR',
         payment_method: paymentMethod,
         gateway: paymentMethod,
         idempotency_key: options?.idempotencyKey ?? null,
         lock_wallet: paymentMethod === 'wallet',
+        coupon_code: options?.couponCode || null,
         meta: {
           product_id: product.id,
           product_title: product.title,
           flow: 'apk_purchase',
           payment_method: paymentMethod,
+          offer_id: options?.appliedOfferId || null,
         },
       });
       paymentId = String((initRes as any)?.data?.payment?.id || '');
@@ -91,7 +97,7 @@ export function useApkPurchase() {
       // Step 3: Verify payment and activate services
       const verifyRes = await marketplaceApi.paymentVerify({
         payment_id: paymentId,
-        amount: product.price,
+        amount: payableAmount,
         payment_method: paymentMethod,
       });
       if (!(verifyRes as any)?.success) {
@@ -163,6 +169,8 @@ export function useApkPurchase() {
           product_title: product.title,
           license_key: finalLicenseKey,
           amount: product.price,
+          discounted_amount: payableAmount,
+          coupon_code: options?.couponCode || null,
           transaction_id: transactionId,
           is_generated: isGeneratedProduct,
           payment_method: paymentMethod,

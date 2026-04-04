@@ -10,6 +10,7 @@ import { apkApi, keysApi, serversApi, walletApi } from '@/lib/api';
 import { toast } from 'sonner';
 import { useAuth } from '@/hooks/useAuth';
 import { cn } from '@/lib/utils';
+import { safeNavigate } from '@/lib/routeRegistry';
 
 const actions = [
   {
@@ -69,14 +70,6 @@ const actions = [
   },
 ];
 
-const VALID_ROUTES = new Set([
-  '/products',
-  '/keys',
-  '/servers',
-  '/wallet',
-  '/support/ticket',
-]);
-
 const createQuickResourceSuffix = () => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID().slice(0, 8);
@@ -111,16 +104,9 @@ export function QuickActions() {
   };
 
   const runQuickAction = async (action: typeof actions[number]) => {
-    const routeValid = VALID_ROUTES.has(action.href);
-    if (!routeValid) {
-      console.error('[quick-action] invalid route', action.href);
-      toast.error('Route is invalid');
-      return;
-    }
-
     if (action.key === 'support_ticket') {
       pushAction({ label: action.label, href: action.href });
-      navigate(action.href);
+      safeNavigate(navigate, action.href);
       return;
     }
 
@@ -266,7 +252,7 @@ export function QuickActions() {
                 variant="outline"
                 size="sm"
                 className="h-7 text-[11px]"
-                onClick={() => navigate(item.href)}
+                onClick={() => safeNavigate(navigate, item.href)}
               >
                 {item.label}
               </Button>
