@@ -27,8 +27,8 @@ async function hmacSha256Hex(secret: string, value: string): Promise<string> {
 }
 
 async function signRuntimePolicy(policy: Record<string, unknown>, signingSecret: string) {
-  const issued_at = new Date().toISOString();
-  const payload = { ...policy, issued_at };
+  const signed_at = new Date().toISOString();
+  const payload = { ...policy, signed_at };
   const canonical = stableStringify(payload);
   const signature = await hmacSha256Hex(signingSecret, canonical);
   return { ...payload, signature, signature_alg: "hmac-sha256" };

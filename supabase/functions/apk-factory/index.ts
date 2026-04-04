@@ -355,7 +355,7 @@ Deno.serve(async (req) => {
             await admin.from("apk_versions").insert({
               apk_id: pid,
               version_name: `build-${Date.now()}`,
-              version_code: Math.max(1, Math.floor(Date.now() / 1000)),
+              version_code: Math.max(1, Math.floor(Date.now() / 1000) * 1000 + Math.floor(Math.random() * 1000)),
               file_path: apk_path,
               checksum: artifact_checksum || null,
               hash_algorithm: artifact_checksum_algorithm || "sha256",
@@ -545,7 +545,7 @@ jobs:
           if [ "$TARGET" = "aab" ]; then
             ./gradlew bundleRelease --no-daemon
           else
-            ./gradlew assembleDebug --no-daemon
+            ./gradlew assembleRelease --no-daemon
           fi
           
           # Find the APK
@@ -639,7 +639,7 @@ npx cap sync
 # Build APK
 cd android
 chmod +x gradlew
-./gradlew assembleDebug --no-daemon
+./gradlew assembleRelease --no-daemon
 
 echo "APK built for $APP_SLUG"
 find . -name "*.apk" -type f
