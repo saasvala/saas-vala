@@ -76,7 +76,7 @@ export default function ValaBuilder() {
       // Step 1: AI Planning + Git scan
       updateStep('plan', 'running');
       addOutput('📋 AI Planner analyzing requirements...');
-      addOutput('🧭 handleAction({ action: "builder_create", api: "/builder/create", payload: { prompt } })');
+      addOutput('🧭 Initiating builder project creation...');
 
       const createRes = await builderApi.create({
         name: appName,
@@ -452,7 +452,13 @@ export default function ValaBuilder() {
                       variant="outline"
                       size="sm"
                       className="gap-2"
-                      onClick={() => window.open(`/builder/${builderProjectId}`, '_blank', 'noopener,noreferrer')}
+                      onClick={() => {
+                        if (!/^[a-f0-9-]{36}$/i.test(builderProjectId)) {
+                          toast.error('Invalid builder project id');
+                          return;
+                        }
+                        window.open(`/builder/${builderProjectId}`, '_blank', 'noopener,noreferrer');
+                      }}
                     >
                       <Server className="h-3 w-3" /> Builder Status
                     </Button>

@@ -9032,7 +9032,6 @@ type BuilderRunBody = {
 }
 
 const BUILDER_AGENT_FLOW = ['PROMPT_AI', 'ARCHITECT_AI', 'DEV_AI', 'DEBUG_AI', 'SCAN_AI', 'TEST_AI', 'BUILD_AI', 'DEPLOY_AI', 'MONITOR_AI'] as const
-const BUILDER_QUEUE_JOB_TYPES = ['build_queue', 'debug_queue', 'deploy_queue'] as const
 const BUILDER_ROUTE_PLAN = ['/dashboard', '/products', '/wallet', '/api/*'] as const
 const BUILDER_MAX_RETRIES = 3
 const BUILDER_STEP_AGENT_PLAN = [
@@ -9063,23 +9062,42 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
   const admin = adminClient()
 
   const seedBuilderQueues = async (projectId: string, traceId: string) => {
+    const queueErrors: string[] = []
     try {
-      const queueRows = BUILDER_QUEUE_JOB_TYPES.map((job_type, idx) => ({
-        job_type,
+      const { error: buildQueueError } = await admin.from('build_queue').insert({
+        type: 'web',
+        priority: 2,
+        status: 'pending',
+        logs: `builder trace ${traceId}`,
+        max_retries: BUILDER_MAX_RETRIES,
+        duplicate_fingerprint: `${projectId}:${traceId}:build`,
+      })
+      if (buildQueueError) queueErrors.push(buildQueueError.message)
+
+      const { error: debugQueueError } = await admin.from('debug_queue').insert({
+        project_id: projectId,
+        trace_id: traceId,
+        source_step: 'run_debug',
         status: 'queued',
-        priority: 2 + idx,
-        payload: {
-          project_id: projectId,
-          trace_id: traceId,
-          source: 'builder',
-        },
-      }))
-      const { error } = await admin.from('async_jobs').insert(queueRows)
-      if (error && !isTableMissingError(error)) {
-        console.error('builder queue seed failed:', error)
-      }
+        max_retries: BUILDER_MAX_RETRIES,
+        payload: { project_id: projectId, trace_id: traceId, queue: 'debug_queue' },
+      })
+      if (debugQueueError) queueErrors.push(debugQueueError.message)
+
+      const { error: deployQueueError } = await admin.from('deploy_queue').insert({
+        project_id: projectId,
+        trace_id: traceId,
+        source_step: 'deploy',
+        status: 'queued',
+        max_retries: BUILDER_MAX_RETRIES,
+        payload: { project_id: projectId, trace_id: traceId, queue: 'deploy_queue' },
+      })
+      if (deployQueueError) queueErrors.push(deployQueueError.message)
     } catch (error) {
-      console.error('builder queue seed exception:', error)
+      queueErrors.push(error instanceof Error ? error.message : 'unknown queue seed failure')
+    }
+    if (queueErrors.length) {
+      throw new Error(`builder queue seed failed: ${queueErrors.join(' | ')}`)
     }
   }
 
@@ -9160,7 +9178,7 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       trace_id: traceId,
       created_by: userId,
     })
-    if (architectureInsertError && !isTableMissingError(architectureInsertError)) {
+    if (architectureInsertError) {
       await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', project.id)
       return fail(architectureInsertError.message, 400, 'BUILDER_ARCHITECTURE_SEED_FAILED')
     }
@@ -9176,7 +9194,16 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       return fail(seedLogError.message, 400, 'BUILDER_LOG_SEED_FAILED')
     }
 
-    await seedBuilderQueues(project.id, traceId)
+    try {
+      await seedBuilderQueues(project.id, traceId)
+    } catch (queueSeedError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', project.id)
+      return fail(
+        queueSeedError instanceof Error ? queueSeedError.message : 'Queue seed failed',
+        400,
+        'BUILDER_QUEUE_SEED_FAILED'
+      )
+    }
     try {
       await admin.rpc('log_audit_event', {
         p_event_category: 'BUILDER',
@@ -9254,7 +9281,16 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', projectId)
       return fail(logInsertError.message, 400, 'BUILDER_LOG_INSERT_FAILED')
     }
-    await seedBuilderQueues(projectId, traceId)
+    try {
+      await seedBuilderQueues(projectId, traceId)
+    } catch (queueSeedError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', projectId)
+      return fail(
+        queueSeedError instanceof Error ? queueSeedError.message : 'Queue seed failed',
+        400,
+        'BUILDER_QUEUE_SEED_FAILED'
+      )
+    }
 
     return ok({
       project_id: projectId,
@@ -9393,7 +9429,15 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       status: 'queued',
     })
     if (retryTaskError) return fail(retryTaskError.message, 400, 'BUILDER_RETRY_TASK_FAILED')
-    await seedBuilderQueues(projectId, String((project as any)?.metadata?.trace_id || crypto.randomUUID()))
+    try {
+      await seedBuilderQueues(projectId, String((project as any)?.metadata?.trace_id || crypto.randomUUID()))
+    } catch (queueSeedError) {
+      return fail(
+        queueSeedError instanceof Error ? queueSeedError.message : 'Queue seed failed',
+        400,
+        'BUILDER_QUEUE_SEED_FAILED'
+      )
+    }
 
     return ok({
       project_id: projectId,
