@@ -334,7 +334,7 @@ export function ServerListPanel({ routeModeAdd = false }: { routeModeAdd?: boole
     try {
       setActionLoadingId(server.id);
       await serversApi.scan(server.id);
-      toast.success(`${server.name} scan completed`);
+      toast.success(`${server.name} scan started`);
     } catch (err: any) {
       toast.error(`Scan failed: ${err.message || 'Unknown error'}`);
     } finally {
@@ -347,7 +347,7 @@ export function ServerListPanel({ routeModeAdd = false }: { routeModeAdd?: boole
     try {
       setActionLoadingId(server.id);
       await serversApi.fix(server.id);
-      toast.success(`${server.name} fix executed`);
+      toast.success(`${server.name} fix started`);
     } catch (err: any) {
       toast.error(`Fix failed: ${err.message || 'Unknown error'}`);
     } finally {

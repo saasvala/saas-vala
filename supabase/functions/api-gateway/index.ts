@@ -5184,9 +5184,7 @@ async function handleServers(method: string, pathParts: string[], body: any, use
 
   // GET /server/list
   if (method === 'GET' && segment === 'server' && secondSegment === 'list') {
-    const { data, error } = await sb.from('servers').select('*').order('created_at', { ascending: false })
-    if (error) return fail(error.message, 400, 'DB_ERROR')
-    return ok(data || [])
+    return await handleServers('GET', ['servers', 'list'], body, userId, sb)
   }
 
   // POST /server/add
@@ -5342,14 +5340,14 @@ async function handleServers(method: string, pathParts: string[], body: any, use
 
   // POST /server/scan
   if (method === 'POST' && segment === 'server' && secondSegment === 'scan') {
-    const serverId = sanitizeTextInput(thirdSegment || body?.server_id || body?.serverId || '', 120)
+    const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
     if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
     return await handleServers('POST', ['git', 'scan'], { server_id: serverId }, userId, sb)
   }
 
   // POST /server/fix
   if (method === 'POST' && segment === 'server' && secondSegment === 'fix') {
-    const serverId = sanitizeTextInput(thirdSegment || body?.server_id || body?.serverId || '', 120)
+    const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
     if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
     return await handleServers('POST', ['server', 'ai-action'], { server_id: serverId, action: 'fix_issues', params: body?.params || {} }, userId, sb)
   }
