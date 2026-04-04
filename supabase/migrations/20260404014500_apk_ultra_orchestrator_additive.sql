@@ -9,8 +9,7 @@ CREATE TABLE IF NOT EXISTS public.apk_pipeline_jobs (
   repo_url TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'queued'
     CHECK (status IN ('queued', 'analyzing', 'fixing', 'scanning', 'building', 'signing', 'licensing', 'uploading', 'marketplace_sync', 'ready', 'failed')),
-  current_step TEXT NOT NULL DEFAULT 'queued'
-    CHECK (current_step IN ('queued', 'analyzing', 'fixing', 'scanning', 'building', 'signing', 'licensing', 'uploading', 'marketplace_sync', 'ready', 'failed')),
+  current_step TEXT NOT NULL DEFAULT 'queued',
   attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
   max_retry INTEGER NOT NULL DEFAULT 3 CHECK (max_retry >= 1 AND max_retry <= 10),
   last_error JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -31,6 +30,19 @@ CREATE TABLE IF NOT EXISTS public.apk_pipeline_jobs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'apk_pipeline_jobs_current_step_matches_status'
+      AND conrelid = 'public.apk_pipeline_jobs'::regclass
+  ) THEN
+    ALTER TABLE public.apk_pipeline_jobs
+      ADD CONSTRAINT apk_pipeline_jobs_current_step_matches_status
+      CHECK (current_step = status);
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_apk_pipeline_jobs_status_lease_priority
   ON public.apk_pipeline_jobs(status, lease_expires_at, priority, created_at);
@@ -173,4 +185,3 @@ BEGIN
     END IF;
   END IF;
 END $$;
-
