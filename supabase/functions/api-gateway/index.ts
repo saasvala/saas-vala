@@ -8617,6 +8617,7 @@ type BuilderRunBody = {
 }
 
 const BUILDER_AGENT_FLOW = ['PROMPT_AI', 'ARCHITECT_AI', 'DEV_AI', 'DEBUG_AI', 'SCAN_AI', 'TEST_AI', 'BUILD_AI', 'DEPLOY_AI', 'MONITOR_AI'] as const
+const BUILDER_MAX_RETRIES = 3
 const BUILDER_STEP_AGENT_PLAN = [
   { step: 'parse_prompt', agent: 'PROMPT_AI' },
   { step: 'generate_architecture', agent: 'ARCHITECT_AI' },
@@ -8655,7 +8656,7 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
         metadata: {
           stack_preference,
           target_platforms,
-          architecture_flow: BUILDER_AGENT_FLOW,
+          builder_flow: BUILDER_AGENT_FLOW,
         },
       })
       .select('*')
@@ -8672,23 +8673,30 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .select('*')
       .single()
 
-    await admin.from('ai_tasks').insert([
+    const { error: seedTaskError } = await admin.from('ai_tasks').insert([
       { project_id: project.id, agent: 'PROMPT_AI', input: prompt, output: 'Requirement parsed', status: 'success' },
       { project_id: project.id, agent: 'ARCHITECT_AI', input: name, output: 'Architecture seeded', status: 'success' },
     ])
+    if (seedTaskError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', project.id)
+      return fail(seedTaskError.message, 400, 'BUILDER_TASK_SEED_FAILED')
+    }
 
-    await admin.from('build_logs').insert({
+    const { error: seedLogError } = await admin.from('build_logs').insert({
       project_id: project.id,
       step: 'create',
       status: 'success',
       error: null,
     })
+    if (seedLogError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', project.id)
+      return fail(seedLogError.message, 400, 'BUILDER_LOG_SEED_FAILED')
+    }
 
     return ok({
       project_id: project.id,
       status: project.status || 'created',
       version: version?.version || 'v1.0.0',
-      routes: ['/builder', `/builder/${project.id}`, '/builder/logs'],
     }, 201)
   }
 
@@ -8716,7 +8724,11 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       output: `queued:${step}`,
       status: 'queued',
     }))
-    await admin.from('ai_tasks').insert(taskRows)
+    const { error: taskInsertError } = await admin.from('ai_tasks').insert(taskRows)
+    if (taskInsertError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', projectId)
+      return fail(taskInsertError.message, 400, 'BUILDER_TASK_INSERT_FAILED')
+    }
 
     const logRows = BUILDER_STEP_AGENT_PLAN.map(({ step }) => ({
       project_id: projectId,
@@ -8724,12 +8736,16 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       status: 'queued',
       error: null,
     }))
-    await admin.from('build_logs').insert(logRows)
+    const { error: logInsertError } = await admin.from('build_logs').insert(logRows)
+    if (logInsertError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', projectId)
+      return fail(logInsertError.message, 400, 'BUILDER_LOG_INSERT_FAILED')
+    }
 
     return ok({
       project_id: projectId,
       status: 'running',
-      retry_limit: 3,
+      retry_limit: BUILDER_MAX_RETRIES,
       flow: BUILDER_AGENT_FLOW,
       step_count: BUILDER_STEP_AGENT_PLAN.length,
     })
@@ -8806,25 +8822,27 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .maybeSingle()
 
     await admin.from('projects').update({ status: 'running', updated_at: nowIso() }).eq('id', projectId)
-    await admin.from('build_logs').insert({
+    const { error: retryLogError } = await admin.from('build_logs').insert({
       project_id: projectId,
       step: lastFailedStep?.step || 'retry',
       status: 'queued',
       error: null,
     })
-    await admin.from('ai_tasks').insert({
+    if (retryLogError) return fail(retryLogError.message, 400, 'BUILDER_RETRY_LOG_FAILED')
+    const { error: retryTaskError } = await admin.from('ai_tasks').insert({
       project_id: projectId,
       agent: 'DEBUG_AI',
       input: lastFailedStep?.step || 'retry',
       output: 'retry_queued',
       status: 'queued',
     })
+    if (retryTaskError) return fail(retryTaskError.message, 400, 'BUILDER_RETRY_TASK_FAILED')
 
     return ok({
       project_id: projectId,
       status: 'running',
       retry_step: lastFailedStep?.step || 'retry',
-      retry_limit: 3,
+      retry_limit: BUILDER_MAX_RETRIES,
     })
   }
 
@@ -11325,3 +11343,12 @@ Deno.serve(async (req) => {
     return fail('Internal server error', 500, 'INTERNAL_ERROR', { fallback: true, retryable: true })
   }
 })
+    const { count: retryCount } = await admin
+      .from('ai_tasks')
+      .select('id', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .eq('agent', 'DEBUG_AI')
+      .eq('output', 'retry_queued')
+    if (Number(retryCount || 0) >= BUILDER_MAX_RETRIES) {
+      return fail('Retry limit reached', 409, 'RETRY_LIMIT_REACHED', { retry_limit: BUILDER_MAX_RETRIES })
+    }
