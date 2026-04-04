@@ -129,6 +129,10 @@ const NOTIFY_MAX_TITLE_LENGTH = 120
 const MAX_IMAGE_OPTIMIZE_WIDTH = 4096
 const MAX_IMAGE_OPTIMIZE_QUALITY = 100
 const SUPPORTED_API_VERSIONS = new Set(['v1', 'v2'])
+const MODULE_ALIASES: Record<string, { module: string; prependAction?: string }> = {
+  cart: { module: 'marketplace', prependAction: 'cart' },
+  orders: { module: 'marketplace', prependAction: 'orders' },
+}
 const FINAL_RESELLER_GAP_FEATURE_KEYS = [
   'tier_based_dynamic_commission_engine',
   'per_product_commission_override',
@@ -11702,10 +11706,14 @@ Deno.serve(async (req) => {
     if (!SUPPORTED_API_VERSIONS.has(requestedVersion)) {
       return fail('Unsupported API version', 400, 'UNSUPPORTED_API_VERSION', { supported: Array.from(SUPPORTED_API_VERSIONS) })
     }
-    const normalizedPath = fullPath.replace(/^api\/v\d+\/?/, '')
+    const normalizedPath = fullPath
+      .replace(/^functions\/v1\/api-gateway\/?/, '')
+      .replace(/^api\/v\d+\/?/, '')
     const parts = normalizedPath.split('/').filter(Boolean)
-    const module = parts[0]
-    const subParts = parts.slice(1)
+    const rawModule = parts[0]
+    const alias = rawModule ? MODULE_ALIASES[rawModule] : undefined
+    const module = alias?.module || rawModule
+    const subParts = alias?.prependAction ? [alias.prependAction, ...parts.slice(1)] : parts.slice(1)
 
     // Parse body for POST/PUT/DELETE, query params for GET
     let body: any = {}

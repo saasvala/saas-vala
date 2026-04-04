@@ -3,11 +3,8 @@ import { savePostLoginRedirect, savePreLogoutState } from './sessionState';
 
 export const API_BASE_V1 = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v1`;
 export const API_BASE_V2 = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v2`;
-const SUPPORTED_API_VERSIONS = new Set(['v1', 'v2']);
-const DEFAULT_API_VERSION = 'v1';
-const configuredVersion = String(import.meta.env.VITE_API_VERSION || DEFAULT_API_VERSION).toLowerCase();
-const API_VERSION = SUPPORTED_API_VERSIONS.has(configuredVersion) ? configuredVersion : DEFAULT_API_VERSION;
-const API_BASE = API_VERSION === 'v2' ? API_BASE_V2 : API_BASE_V1;
+const API_BASE = API_BASE_V1;
+const DEBUG_API = String(import.meta.env.VITE_DEBUG_API || '').toLowerCase() === 'true';
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
   let { data: { session } } = await supabase.auth.getSession();
@@ -23,9 +20,8 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
     'Content-Type': 'application/json',
     'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
   };
-  if (session?.access_token) {
-    headers['Authorization'] = `Bearer ${session.access_token}`;
-  }
+  if (!session?.access_token) throw new ApiError('Unauthorized', 401, 'AUTH_TOKEN_MISSING');
+  headers['Authorization'] = `Bearer ${session.access_token}`;
   return headers;
 }
 
@@ -49,6 +45,7 @@ const API_MAX_RETRY_DELAY_MS = Number(import.meta.env.VITE_API_MAX_RETRY_DELAY_M
 const API_RETRY_JITTER_MS = Number(import.meta.env.VITE_API_RETRY_JITTER_MS || 120);
 const RETRYABLE_STATUS_CODES = new Set([502, 503, 504]);
 const API_CACHE_TTL_MS = 30_000;
+const API_CACHE_SLA_MS = Number(import.meta.env.VITE_API_CACHE_SLA_MS || 300);
 const responseCache = new Map<string, { data: unknown; ts: number }>();
 let consecutiveFailures = 0;
 let degradedUntil = 0;
@@ -114,6 +111,7 @@ async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promi
 }
 
 async function apiCall<T = any>(method: string, path: string, body?: any): Promise<T> {
+  const startedAt = performance.now();
   const headers = await getAuthHeaders();
   const now = Date.now();
 
@@ -131,12 +129,25 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
   }
 
   const pathWithoutLeadingSlash = path.replace(/^\/+/, '');
+  const requestUrl = `${API_BASE}/${pathWithoutLeadingSlash}`;
+  const debugLog = (label: string, data?: unknown) => {
+    if (!DEBUG_API) return;
+    console.debug(`[api:${method}:${pathWithoutLeadingSlash}] ${label}`, data ?? '');
+  };
   if (degradedUntil > now && method === 'GET') {
     const cached = responseCache.get(cacheKey);
-    if (cached && now - cached.ts < API_CACHE_TTL_MS) return cached.data as T;
+    if (cached && now - cached.ts < API_CACHE_TTL_MS) {
+      const elapsed = Math.round(performance.now() - startedAt);
+      debugLog('cache-hit', { elapsed_ms: elapsed, sla_ms: API_CACHE_SLA_MS });
+      if (elapsed > API_CACHE_SLA_MS) {
+        console.warn(`[api-cache-sla] Cache response exceeded SLA`, { path: pathWithoutLeadingSlash, elapsed_ms: elapsed, sla_ms: API_CACHE_SLA_MS });
+      }
+      return cached.data as T;
+    }
   }
-  const res = await fetchWithTimeoutAndRetry(`${API_BASE}/${pathWithoutLeadingSlash}`, config);
+  const res = await fetchWithTimeoutAndRetry(requestUrl, config);
   const data = await res.json().catch(() => ({}));
+  debugLog('response', { status: res.status, elapsed_ms: Math.round(performance.now() - startedAt) });
 
   if (!res.ok) {
     const errorPayload = data?.error;
@@ -173,6 +184,15 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
   escalationRaised = false;
   if (method === 'GET') {
     responseCache.set(cacheKey, { data, ts: Date.now() });
+    const elapsed = Math.round(performance.now() - startedAt);
+    debugLog('cache-store', { elapsed_ms: elapsed, sla_ms: API_CACHE_SLA_MS });
+    if (elapsed > API_CACHE_SLA_MS) {
+      console.warn(`[api-cache-sla] GET response exceeded cache SLA target`, {
+        path: pathWithoutLeadingSlash,
+        elapsed_ms: elapsed,
+        sla_ms: API_CACHE_SLA_MS,
+      });
+    }
   } else {
     for (const key of responseCache.keys()) {
       if (key.startsWith(`${path}`) || key.includes(path.split('?')[0])) responseCache.delete(key);

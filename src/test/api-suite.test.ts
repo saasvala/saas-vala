@@ -6,17 +6,28 @@ type ApiCase = {
   expectedStatuses: number[];
 };
 
-const BASE_URL = process.env.API_TEST_BASE_URL;
+const BASE_URL =
+  process.env.API_TEST_BASE_URL ||
+  (process.env.VITE_SUPABASE_URL ? `${process.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v1` : undefined);
 const AUTH_TOKEN = process.env.API_TEST_AUTH_TOKEN;
 
 const apiCases: ApiCase[] = [
-  { key: 'products', paths: ['/api/products', '/products'], expectedStatuses: [200, 401, 403] },
-  { key: 'cart', paths: ['/api/cart', '/cart'], expectedStatuses: [200, 401, 403] },
-  { key: 'orders', paths: ['/api/orders', '/marketplace/orders', '/orders'], expectedStatuses: [200, 401, 403] },
-  { key: 'subscription', paths: ['/api/subscription', '/subscriptions'], expectedStatuses: [200, 401, 403] },
-  { key: 'admin', paths: ['/api/admin', '/admin/metrics'], expectedStatuses: [200, 401, 403] },
-  { key: 'reseller', paths: ['/api/reseller', '/resellers'], expectedStatuses: [200, 401, 403] },
-  { key: 'session', paths: ['/api/v1/session', '/api/v1/sessions', '/session'], expectedStatuses: [200, 401, 403] },
+  { key: 'products', paths: ['/products'], expectedStatuses: [200, 401, 403] },
+  { key: 'cart', paths: ['/cart/list', '/marketplace/cart/list'], expectedStatuses: [200, 401, 403] },
+  { key: 'orders', paths: ['/orders', '/marketplace/orders'], expectedStatuses: [200, 401, 403] },
+  { key: 'subscriptions', paths: ['/subscription', '/subscriptions'], expectedStatuses: [200, 401, 403] },
+  { key: 'admin', paths: ['/admin/metrics'], expectedStatuses: [200, 401, 403] },
+  { key: 'reseller', paths: ['/reseller/activity', '/resellers'], expectedStatuses: [200, 401, 403] },
+  { key: 'session', paths: ['/session', '/sessions'], expectedStatuses: [200, 401, 403] },
+  { key: 'dashboard', paths: ['/dashboard'], expectedStatuses: [200, 401, 403] },
+  { key: 'wallet', paths: ['/wallet'], expectedStatuses: [200, 401, 403] },
+  { key: 'keys', paths: ['/keys'], expectedStatuses: [200, 401, 403] },
+  { key: 'models', paths: ['/models/list'], expectedStatuses: [200, 401, 403] },
+  { key: 'ai', paths: ['/ai/models'], expectedStatuses: [200, 401, 403] },
+  { key: 'builder', paths: ['/builder/status'], expectedStatuses: [200, 401, 403, 404] },
+  { key: 'pipeline', paths: ['/pipeline/status/sample-id'], expectedStatuses: [200, 401, 403, 404] },
+  { key: 'system-health', paths: ['/system-health', '/health'], expectedStatuses: [200, 401, 403] },
+  { key: 'seo', paths: ['/seo/leads/list'], expectedStatuses: [200, 401, 403, 404] },
 ];
 
 function makeHeaders() {
