@@ -338,6 +338,8 @@ export const keysApi = {
     apiCall('GET', 'key/search', params),
   generate: (data: any) => apiCall('POST', 'keys/generate', data),
   generateCompat: (data: any) => apiCall('POST', 'key/generate', data),
+  bulk: (data: any) => apiCall('POST', 'key/bulk', data),
+  generateBulk: (data: any) => apiCall('POST', 'key/bulk', data),
   generateReseller: (data: any) => apiCall('POST', 'reseller/key/generate', data),
   activate: (id: string) => apiCall('PUT', `keys/${id}/activate`),
   deactivate: (id: string) => apiCall('PUT', `keys/${id}/deactivate`),
@@ -538,6 +540,8 @@ export const walletApi = {
   get: () => apiCall('GET', 'wallet'),
   add: (amount: number, description?: string, paymentMethod?: string, walletId?: string) =>
     apiCall('POST', 'wallet/add', { amount, description, payment_method: paymentMethod, wallet_id: walletId }),
+  control: (data: { wallet_id?: string; action?: 'freeze' | 'unfreeze'; freeze?: boolean; limit?: number; note?: string }) =>
+    apiCall('POST', 'wallet/control', data),
   export: (params?: { format?: 'csv' | 'pdf'; type?: string; source?: string; status?: string; from?: string; to?: string; search?: string }) =>
     apiCall('GET', 'wallet/export', params),
   createRequest: (data: { amount: number; method: string; txn_id: string; proof_url?: string | null; source?: string; signature?: string; payload?: Record<string, unknown> }) =>
@@ -572,6 +576,23 @@ export const walletApi = {
   transactions: (params?: { page?: number; limit?: number }) =>
     apiCall('GET', 'wallet/transactions', params),
   all: () => apiCall('GET', 'wallet/all'),
+};
+
+export const resellerApi = {
+  profile: () => apiCall('GET', 'reseller/profile'),
+  stats: () => apiCall('GET', 'reseller/stats'),
+};
+
+export const clientApi = {
+  add: (data: { client_name?: string; client_email: string; client_phone?: string; status?: string }) =>
+    apiCall('POST', 'client/add', data),
+  assignKey: (data: { client_id: string; key_id: string }) =>
+    apiCall('POST', 'client/assign-key', data),
+};
+
+export const referralApi = {
+  link: () => apiCall('GET', 'referral/link'),
+  create: (data?: { code?: string; status?: string }) => apiCall('POST', 'resellers/referrals', data || {}),
 };
 
 // ===================== SUBSCRIPTIONS =====================

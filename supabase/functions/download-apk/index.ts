@@ -43,6 +43,11 @@ Deno.serve(async (req) => {
     }
 
     // 2. Parse request
+    const payload = await req.json().catch(() => ({} as Record<string, unknown>));
+    const product_id = String((payload as any)?.product_id || "").trim();
+    const license_key = String((payload as any)?.license_key || "").trim();
+    const device_id = String((payload as any)?.device_id || "").trim() || null;
+    const reqTraceId = req.headers.get("x-trace-id") || crypto.randomUUID();
 
     if (!product_id || !license_key) {
       return new Response(
@@ -231,6 +236,8 @@ Deno.serve(async (req) => {
         checksum_verified: Boolean(expectedChecksum),
         min_supported_version_code: minSupportedVersionCode,
         force_update_required: forceUpdateRequired,
+        download_origin: "signed_storage_url",
+        user_agent: req.headers.get("user-agent") || null,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

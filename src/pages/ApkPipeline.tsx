@@ -61,14 +61,14 @@ export default function ApkPipeline() {
   const isIdRoute = !!id;
 
   const selected = useMemo(() => builds.find((b) => b.id === id) || null, [builds, id]);
+  const pipelineLabel = (pollStatus?.status || selected?.build_status || 'unknown').toString();
 
   const fetchBuilds = useCallback(async () => {
     setLoading(true);
     try {
       const { data, error } = await apiClient.get<BuildItem[] | { data: BuildItem[] }>('apk/history');
       if (error) throw new Error(error);
-      const rows = resolveBuildHistoryRows(data);
-      setBuilds(rows);
+      setBuilds(resolveBuildHistoryRows(data));
     } catch (e: any) {
       toast.error(e.message || 'Failed to load pipeline history');
     } finally {
@@ -120,9 +120,7 @@ export default function ApkPipeline() {
 
   useEffect(() => {
     if (!id || !isIdRoute) return;
-    const timer = setInterval(() => {
-      loadStatus(id);
-    }, 4000);
+    const timer = setInterval(() => loadStatus(id), 4000);
     return () => clearInterval(timer);
   }, [id, isIdRoute, loadStatus]);
 
@@ -142,6 +140,7 @@ export default function ApkPipeline() {
       if (!pipelineId) throw new Error('Pipeline id missing');
       toast.success('Pipeline started');
       await fetchBuilds();
+      await loadStatus(pipelineId);
       navigate(`/admin/apk-pipeline/${pipelineId}`);
     } catch (e: any) {
       toast.error(e.message || 'Failed to start pipeline');
@@ -150,9 +149,15 @@ export default function ApkPipeline() {
     }
   };
 
-
-    fetchBuilds();
-    loadStatus(pipelineId);
+  const retryBuild = async (pipelineId: string) => {
+    const res = await apiClient.post(`pipeline/retry/${pipelineId}`);
+    if (res.error) {
+      toast.error(res.error);
+      return;
+    }
+    toast.success('Pipeline retry queued');
+    await fetchBuilds();
+    await loadStatus(pipelineId);
   };
 
   const cancelBuild = async (pipelineId: string) => {
@@ -162,22 +167,24 @@ export default function ApkPipeline() {
       return;
     }
     toast.success('Pipeline cancelled');
-    fetchBuilds();
-    loadStatus(pipelineId);
+    await fetchBuilds();
+    await loadStatus(pipelineId);
   };
 
-
+  const downloadApk = async (pipelineId: string) => {
+    const res = await apiClient.get(`apk/download/${pipelineId}`);
+    if (res.error) {
+      toast.error(res.error);
+      return;
     }
     const payload = res.data as any;
-    const directUrl = payload?.download_url || payload?.url;
+    const directUrl = payload?.download_url || payload?.url || payload?.data?.download_url || payload?.data?.url;
     if (!directUrl) {
       toast.error('Download URL not available');
       return;
     }
-    window.open(directUrl, '_blank', 'noopener,noreferrer');
+    window.open(String(directUrl), '_blank', 'noopener,noreferrer');
   };
-
-
 
   return (
     <DashboardLayout>

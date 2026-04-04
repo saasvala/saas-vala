@@ -5,6 +5,7 @@
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '@/hooks/useAuth';
 import { useResellerDashboardData } from '@/hooks/useResellerDashboardData';
+import { referralApi } from '@/lib/api';
 import { toast } from 'sonner';
  import {
    Share2,
@@ -40,7 +41,7 @@ export function ReferralPanel() {
      toast.success('Referral code copied!');
    };
  
-   const shareOn = (platform: string) => {
+  const shareOn = (platform: string) => {
     const text = `Join SaaS VALA and get premium software at best prices! Use my referral code: ${referralCode}`;
      let url = '';
      
@@ -57,7 +58,16 @@ export function ReferralPanel() {
      }
      
      window.open(url, '_blank');
-   };
+  };
+
+  const generateReferralCode = async () => {
+    try {
+      await referralApi.create({ status: 'active' });
+      toast.success('Referral code created');
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to create referral code');
+    }
+  };
  
    return (
      <div className="space-y-6">
@@ -148,10 +158,15 @@ export function ReferralPanel() {
              </div>
            </div>
  
-           {/* Share Buttons */}
-           <div className="pt-4 border-t border-border">
-             <p className="text-sm text-muted-foreground mb-3">Share on social media:</p>
-             <div className="flex flex-wrap gap-2">
+            {/* Share Buttons */}
+            <div className="pt-4 border-t border-border">
+              <p className="text-sm text-muted-foreground mb-3">Share on social media:</p>
+              <div className="mb-3">
+                <Button variant="outline" onClick={generateReferralCode}>
+                  Generate New Code
+                </Button>
+              </div>
+              <div className="flex flex-wrap gap-2">
                <Button variant="outline" onClick={() => shareOn('whatsapp')} className="bg-green-500/10 hover:bg-green-500/20 border-green-500/30">
                  <Send className="h-4 w-4 mr-2 text-green-500" />
                  WhatsApp

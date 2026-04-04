@@ -2752,6 +2752,51 @@ async function handleResellerOnboarding(method: string, pathParts: string[], bod
   const admin = adminClient()
   const action = pathParts[0]
 
+  // GET /reseller/profile
+  if (method === 'GET' && action === 'profile') {
+    const { data: reseller, error: resellerError } = await sb
+      .from('resellers')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle()
+    if (resellerError) return err(resellerError.message)
+    if (!reseller) return err('Reseller profile not found', 404, 'NOT_FOUND')
+    return json({ data: reseller })
+  }
+
+  // GET /reseller/stats
+  if (method === 'GET' && action === 'stats') {
+    const { data: reseller, error: resellerError } = await sb
+      .from('resellers')
+      .select('id,user_id')
+      .eq('user_id', userId)
+      .maybeSingle()
+    if (resellerError) return err(resellerError.message)
+    if (!reseller?.id) return json({ data: { wallet_balance: 0, keys_generated: 0, active_clients: 0, earnings: 0 } })
+
+    const [walletRes, keysRes, clientsRes, earningsRes] = await Promise.all([
+      sb.from('wallets').select('balance').eq('user_id', userId).maybeSingle(),
+      sb.from('license_keys').select('id', { count: 'exact', head: true }).eq('reseller_id', reseller.id),
+      sb.from('reseller_clients').select('id', { count: 'exact', head: true }).eq('reseller_id', reseller.id).eq('status', 'active'),
+      sb.from('reseller_commission_logs').select('amount').eq('reseller_id', reseller.id),
+    ])
+
+    if (walletRes.error) return err(walletRes.error.message)
+    if (keysRes.error) return err(keysRes.error.message)
+    if (clientsRes.error) return err(clientsRes.error.message)
+    if (earningsRes.error) return err(earningsRes.error.message)
+
+    const earnings = Number((earningsRes.data || []).reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0))
+    return json({
+      data: {
+        wallet_balance: Number(walletRes.data?.balance || 0),
+        keys_generated: Number(keysRes.count || 0),
+        active_clients: Number(clientsRes.count || 0),
+        earnings,
+      },
+    })
+  }
+
   if (method === 'POST' && ['allow', 'suspend', 'block'].includes(action)) {
     const isAdmin = await isSuperAdminUser(userId)
     if (!isAdmin) return err('Forbidden', 403)
@@ -3017,6 +3062,83 @@ async function handleResellerOnboarding(method: string, pathParts: string[], bod
     return json({ data: normalized })
   }
 
+  return err('Not found', 404)
+}
+
+async function handleClientAliases(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const action = String(pathParts[0] || '').trim().toLowerCase()
+
+  if (method === 'POST' && action === 'add') {
+    const payload = {
+      client_email: body?.client_email,
+      client_name: body?.client_name || body?.name || null,
+      client_phone: body?.client_phone || body?.phone || null,
+      status: body?.status || 'active',
+      metadata: body?.metadata || {},
+    }
+    return await handleResellers('POST', ['clients'], payload, userId, sb)
+  }
+
+  if (method === 'POST' && action === 'assign-key') {
+    const clientId = String(body?.client_id || '').trim()
+    const keyId = String(body?.key_id || '').trim()
+    if (!clientId || !keyId) return err('client_id and key_id are required', 422, 'VALIDATION_ERROR')
+
+    const admin = adminClient()
+    const { data: reseller } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
+    if (!reseller?.id) return err('Reseller profile not found', 404)
+
+    const { data: clientRow, error: clientError } = await sb
+      .from('reseller_clients')
+      .select('id,reseller_id')
+      .eq('id', clientId)
+      .eq('reseller_id', reseller.id)
+      .maybeSingle()
+    if (clientError) return err(clientError.message)
+    if (!clientRow) return err('Client not found', 404, 'NOT_FOUND')
+
+    const { data: keyRow, error: keyError } = await sb
+      .from('license_keys')
+      .select('id,reseller_id,created_by')
+      .eq('id', keyId)
+      .maybeSingle()
+    if (keyError) return err(keyError.message)
+    if (!keyRow) return err('Key not found', 404, 'NOT_FOUND')
+    if (keyRow.reseller_id !== reseller.id && keyRow.created_by !== userId) return err('Forbidden', 403, 'FORBIDDEN')
+
+    const { data, error } = await sb
+      .from('license_keys')
+      .update({ client_id: clientId, updated_at: nowIso() })
+      .eq('id', keyId)
+      .select('id,client_id,reseller_id,updated_at')
+      .single()
+    if (error) return err(error.message)
+
+    await logActivity(admin, 'license_key', keyId, 'assigned_client', userId, { client_id: clientId, reseller_id: reseller.id })
+    return json({ data })
+  }
+
+  return err('Not found', 404)
+}
+
+async function handleReferralAliases(method: string, pathParts: string[], _body: any, userId: string, sb: any) {
+  const action = String(pathParts[0] || '').trim().toLowerCase()
+  if (method === 'GET' && action === 'link') {
+    const { data: reseller } = await sb.from('resellers').select('id').eq('user_id', userId).maybeSingle()
+    if (!reseller?.id) return err('Reseller profile not found', 404)
+    const { data: activeCode, error } = await sb
+      .from('referral_codes')
+      .select('id,code,status')
+      .eq('reseller_id', reseller.id)
+      .in('status', ['active', 'pending'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (error) return err(error.message)
+    const code = activeCode?.code || crypto.randomUUID().slice(0, 8).toUpperCase()
+    const referral_link = `https://saasvala.com/ref/${code}`
+    return json({ data: { code, referral_link } })
+  }
   return err('Not found', 404)
 }
 
@@ -5072,6 +5194,12 @@ async function handleKeys(method: string, pathParts: string[], body: any, userId
         license_key: maskLicenseKey(licenseKey),
       },
     }, 201)
+  }
+
+  // POST /key/bulk
+  if (method === 'POST' && action === 'bulk') {
+    const quantity = Math.max(1, Number(body?.quantity || body?.count || 1))
+    return await handleKeys('POST', ['generate'], { ...body, quantity }, userId, sb)
   }
 
   // POST /keys/validate
@@ -8313,6 +8441,52 @@ async function handleWallet(method: string, pathParts: string[], body: any, user
     return json({ success: true, balance: newBalance })
   }
 
+  // POST /wallet/control
+  if (method === 'POST' && action === 'control') {
+    const controlAction = String(body?.action || '').trim().toLowerCase()
+    const freezeValue = body?.freeze
+    const shouldFreeze = controlAction === 'freeze' || freezeValue === true
+    const shouldUnfreeze = controlAction === 'unfreeze' || freezeValue === false
+    const limit = body?.limit
+    const walletId = body?.wallet_id ? String(body.wallet_id).trim() : ''
+    const note = body?.note ? String(body.note).slice(0, 400) : null
+
+    const targetWalletQuery = walletId
+      ? admin.from('wallets').select('id,user_id,is_locked').eq('id', walletId).maybeSingle()
+      : sb.from('wallets').select('id,user_id,is_locked').eq('user_id', userId).maybeSingle()
+    const { data: targetWallet, error: walletError } = await targetWalletQuery
+    if (walletError) return err(walletError.message)
+    if (!targetWallet) return err('Wallet not found', 404, 'NOT_FOUND')
+    if (walletId && !isAdmin && targetWallet.user_id !== userId) return err('Forbidden', 403, 'FORBIDDEN')
+
+    const patch: Record<string, unknown> = { updated_at: nowIso() }
+    if (shouldFreeze) patch.is_locked = true
+    if (shouldUnfreeze) patch.is_locked = false
+    if (limit !== undefined && limit !== null) {
+      const normalizedLimit = Number(limit)
+      if (!Number.isFinite(normalizedLimit) || normalizedLimit < 0) return err('Invalid limit', 422, 'VALIDATION_ERROR')
+      ;(patch as any).version = Math.max(1, Number(normalizedLimit))
+    }
+    if (Object.keys(patch).length === 1) return err('No valid control action provided', 422, 'VALIDATION_ERROR')
+
+    const { data, error } = await admin
+      .from('wallets')
+      .update(patch)
+      .eq('id', targetWallet.id)
+      .select('id,user_id,balance,is_locked,version,updated_at')
+      .single()
+    if (error) return err(error.message)
+
+    await logActivity(admin, 'wallet', targetWallet.id, 'control_updated', userId, {
+      freeze: shouldFreeze ? true : shouldUnfreeze ? false : null,
+      limit: limit ?? null,
+      note,
+      wallet_user_id: targetWallet.user_id,
+    })
+
+    return json({ data })
+  }
+
   return err('Not found', 404)
 }
 
@@ -10007,6 +10181,12 @@ Deno.serve(async (req) => {
         break
       case 'wallet':
         routeResponse = await handleWallet(req.method, subParts, body, userId, sb)
+        break
+      case 'client':
+        routeResponse = await handleClientAliases(req.method, subParts, body, userId, sb)
+        break
+      case 'referral':
+        routeResponse = await handleReferralAliases(req.method, subParts, body, userId, sb)
         break
       case 'notify':
         routeResponse = await handleNotify(req.method, subParts, body, userId, sb)

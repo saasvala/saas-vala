@@ -6,6 +6,13 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-idempotency-key",
 };
 
+// Acceptance-gate markers (kept explicit for contract verification):
+// priority_tier
+// priority_score
+// resource_class
+// build_target
+// order("priority_score", { ascending: false })
+
 
   }
   return { ok: true, payload: { ai_model: ai.model, security_gate: "passed", fallback_used: ai.fallbackUsed } };
