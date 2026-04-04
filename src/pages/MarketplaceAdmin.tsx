@@ -51,6 +51,7 @@ import {
   Menu,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { apiClient } from '@/services/apiClient';
 
 const db = supabase as any;
 const PAGE_SIZE = 25;
@@ -344,6 +345,7 @@ export default function MarketplaceAdmin() {
   const { user } = useAuth();
   const path = location.pathname.toLowerCase();
   const pathTabMappings: Array<{ suffix: string; tab: string }> = [
+    { suffix: '/apk', tab: 'apk' },
     { suffix: '/products', tab: 'products' },
     { suffix: '/offers', tab: 'offers' },
     { suffix: '/banners', tab: 'settings' },
@@ -1061,118 +1063,130 @@ export default function MarketplaceAdmin() {
       return;
     }
 
-    setUploadingApk(true);
+    const APK_CHUNK_THRESHOLD_BYTES = 50 * 1024 * 1024;
 
-    const safeFileName = apkFile.name.replace(/[^a-zA-Z0-9._-]/g, '-');
-    const path = `${apkForm.product_id}/${Date.now()}-${safeFileName}`;
-
-    const { error: uploadError } = await db.storage
-      .from('apks')
-      .upload(path, apkFile, { upsert: true, contentType: apkFile.type || 'application/vnd.android.package-archive' });
-
-    if (uploadError) {
-      setUploadingApk(false);
-      toast.error(`Upload failed: ${uploadError.message}`);
-      return;
-    }
-
-    let apkId = apkForm.replace_apk_id;
-
-    if (apkId) {
-      const { error } = await db
-        .from('apks')
-        .update({
-          product_id: apkForm.product_id,
-          version: apkForm.version,
-          file_url: path,
-          file_size: apkFile.size,
-          status: apkForm.status,
-          changelog: apkForm.changelog || null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', apkId);
-
-      if (error) {
-        setUploadingApk(false);
-        toast.error(`APK update failed: ${error.message}`);
-        return;
+    const bytesToBase64 = (bytes: Uint8Array): string => {
+      const segments: string[] = [];
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        segments.push(String.fromCharCode(...bytes.subarray(i, i + chunkSize)));
       }
-    } else {
-      const { data: inserted, error } = await db
-        .from('apks')
-        .insert({
-          product_id: apkForm.product_id,
-          version: apkForm.version,
-          file_url: path,
-          file_size: apkFile.size,
-          status: apkForm.status,
-          changelog: apkForm.changelog || null,
-          created_by: user.id,
-        })
-        .select('id')
-        .single();
+      return btoa(segments.join(''));
+    };
 
-      if (error || !inserted?.id) {
-        setUploadingApk(false);
-        toast.error(`APK create failed: ${error?.message || 'Unknown error'}`);
-        return;
-      }
+    const toBase64 = async (file: File): Promise<string> => {
+      const buffer = await file.arrayBuffer();
+      return bytesToBase64(new Uint8Array(buffer));
+    };
 
-      apkId = inserted.id;
-    }
+    const uploadInChunks = async (): Promise<{ apk_id: string; status: string; pipeline_id?: string | null }> => {
+      const CHUNK_SIZE = APK_CHUNK_THRESHOLD_BYTES;
+      const totalChunks = Math.max(1, Math.ceil(apkFile.size / CHUNK_SIZE));
 
-    const { data: versionRow, error: versionError } = await db
-      .from('apk_versions')
-      .insert({
-        apk_id: apkId,
-        version_name: apkForm.version_name,
+      const init = await apiClient.post<{ upload_id: string }>('apk/upload', {
+        upload_mode: 'chunk',
+        product_id: apkForm.product_id,
+        version: apkForm.version,
         version_code: Number(apkForm.version_code || 1),
-        file_path: path,
-        file_size: apkFile.size,
-        release_notes: apkForm.changelog || null,
-        is_stable: apkForm.status === 'published',
-        created_by: user.id,
-      })
-      .select('id')
-      .single();
+        changelog: apkForm.changelog || null,
+        file_name: apkFile.name,
+        file_type: apkFile.type || 'application/vnd.android.package-archive',
+        total_chunks: totalChunks,
+        replace_apk_id: apkForm.replace_apk_id || null,
+      });
 
-    if (versionError) {
+      const uploadId = init.data?.upload_id;
+      if (!init.success || !uploadId) {
+        throw new Error(typeof init.error === 'string' ? init.error : 'Failed to start chunk upload');
+      }
+
+      for (let idx = 0; idx < totalChunks; idx += 1) {
+        const start = idx * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, apkFile.size);
+        const chunkBytes = new Uint8Array(await apkFile.slice(start, end).arrayBuffer());
+        const chunkBase64 = bytesToBase64(chunkBytes);
+        const part = await apiClient.post('apk/upload', {
+          upload_mode: 'chunk',
+          upload_id: uploadId,
+          product_id: apkForm.product_id,
+          version: apkForm.version,
+          version_code: Number(apkForm.version_code || 1),
+          chunk_index: idx,
+          total_chunks: totalChunks,
+          chunk_base64: chunkBase64,
+        });
+        if (!part.success) {
+          throw new Error(typeof part.error === 'string' ? part.error : `Chunk ${idx + 1} failed`);
+        }
+      }
+
+      const complete = await apiClient.post<{ apk_id: string; status: string; pipeline_id?: string | null }>('apk/upload', {
+        upload_mode: 'chunk',
+        upload_id: uploadId,
+        product_id: apkForm.product_id,
+        version: apkForm.version,
+        version_code: Number(apkForm.version_code || 1),
+        complete: true,
+      });
+
+      if (!complete.success || !complete.data?.apk_id) {
+        throw new Error(typeof complete.error === 'string' ? complete.error : 'Chunk merge failed');
+      }
+
+      return complete.data;
+    };
+
+    const uploadWithRetry = async (attempt = 1): Promise<{ apk_id: string; status: string; pipeline_id?: string | null }> => {
+      const MAX_UPLOAD_ATTEMPTS = 2;
+      try {
+        const useChunkMode = apkFile.size > APK_CHUNK_THRESHOLD_BYTES;
+        const response = useChunkMode
+          ? await uploadInChunks()
+          : await (async () => {
+              const base64 = await toBase64(apkFile);
+              const single = await apiClient.post<{ apk_id: string; status: string; pipeline_id?: string | null }>('apk/upload', {
+                product_id: apkForm.product_id,
+                version: apkForm.version,
+                version_code: Number(apkForm.version_code || 1),
+                changelog: apkForm.changelog || null,
+                file_name: apkFile.name,
+                file_type: apkFile.type || 'application/vnd.android.package-archive',
+                file_base64: base64,
+                replace_apk_id: apkForm.replace_apk_id || null,
+              });
+              if (!single.success || !single.data?.apk_id) {
+                throw new Error(typeof single.error === 'string' ? single.error : 'Upload failed');
+              }
+              return single.data;
+            })();
+
+        return response;
+      } catch (error) {
+        if (attempt < MAX_UPLOAD_ATTEMPTS) return uploadWithRetry(attempt + 1);
+        throw error;
+      }
+    };
+
+    setUploadingApk(true);
+    try {
+      await uploadWithRetry();
+      setApkFile(null);
+      setApkForm({
+        product_id: '',
+        version: '1.0.0',
+        version_name: '1.0.0',
+        version_code: 1,
+        status: 'draft',
+        changelog: '',
+        replace_apk_id: '',
+      });
+      toast.success('APK uploaded and linked');
+      await Promise.all([fetchApks(), fetchProducts(), fetchProductCatalog(), fetchStats()]);
+    } catch (error) {
+      toast.error(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
       setUploadingApk(false);
-      toast.error(`Version create failed: ${versionError.message}`);
-      return;
     }
-
-    if (versionRow?.id) {
-      await db
-        .from('apks')
-        .update({ current_version_id: versionRow.id, file_url: path, updated_at: new Date().toISOString() })
-        .eq('id', apkId);
-    }
-
-    await db
-      .from('products')
-      .update({
-        apk_url: path,
-        storage_path: path,
-        apk_enabled: apkForm.status === 'published',
-        status: apkForm.status === 'published' ? 'active' : 'draft',
-      })
-      .eq('id', apkForm.product_id);
-
-    setUploadingApk(false);
-    setApkFile(null);
-    setApkForm({
-      product_id: '',
-      version: '1.0.0',
-      version_name: '1.0.0',
-      version_code: 1,
-      status: 'draft',
-      changelog: '',
-      replace_apk_id: '',
-    });
-
-    toast.success('APK uploaded and linked');
-    await Promise.all([fetchApks(), fetchProducts(), fetchProductCatalog(), fetchStats()]);
   };
 
   const toggleApkDownload = async (apk: Apk) => {
@@ -1201,9 +1215,10 @@ export default function MarketplaceAdmin() {
 
   const deleteApk = async (apkId: string) => {
     if (!confirm('Delete this APK record?')) return;
-    const { error } = await db.from('apks').delete().eq('id', apkId);
-    if (error) toast.error(error.message);
-    else {
+    const response = await apiClient.post('apk/delete', { apk_id: apkId });
+    if (!response.success) {
+      toast.error(typeof response.error === 'string' ? response.error : 'Delete failed');
+    } else {
       toast.success('APK record deleted');
       await Promise.all([fetchApks(), fetchProducts(), fetchProductCatalog()]);
     }
