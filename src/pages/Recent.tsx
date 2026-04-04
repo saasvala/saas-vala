@@ -33,11 +33,13 @@ export default function Recent() {
           </CardHeader>
           <CardContent className="space-y-3">
             {items.length === 0 && <p className="text-sm text-muted-foreground">No recent actions yet.</p>}
-            {items.map((item) => (
-              <div key={`${item.href}-${item.at}`} className="flex items-center justify-between gap-2 rounded-md border p-3">
+            {items.map((item, index) => (
+              <div key={`${item.href || 'unknown'}-${item.at || 'unknown'}-${index}`} className="flex items-center justify-between gap-2 rounded-md border p-3">
                 <div>
                   <p className="font-medium">{item.label}</p>
-                  <p className="text-xs text-muted-foreground">{new Date(item.at).toLocaleString()}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {item.at && !Number.isNaN(new Date(item.at).getTime()) ? new Date(item.at).toLocaleString() : 'Unknown date'}
+                  </p>
                 </div>
                 <Button
                   variant="outline"
