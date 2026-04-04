@@ -257,8 +257,7 @@ export function ServerListPanel({ routeModeAdd = false }: { routeModeAdd?: boole
     if (!selectedServer) return;
     setSaving(true);
     try {
-      const { error } = await supabase.from('servers').delete().eq('id', selectedServer.id);
-      if (error) throw error;
+      await serversApi.delete(selectedServer.id);
       toast.success('Server deleted');
       setShowManageModal(false);
       await fetchServers();
@@ -297,6 +296,60 @@ export function ServerListPanel({ routeModeAdd = false }: { routeModeAdd?: boole
       await fetchServers();
     } catch (err: any) {
       toast.error(`Restart failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const suspendServer = async (server: ServerItem) => {
+    if (!canTriggerAction(`suspend-${server.id}`)) return;
+    try {
+      setActionLoadingId(server.id);
+      await serversApi.suspend(server.id);
+      toast.success(`${server.name} suspended`);
+      await fetchServers();
+    } catch (err: any) {
+      toast.error(`Suspend failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const activateServer = async (server: ServerItem) => {
+    if (!canTriggerAction(`activate-${server.id}`)) return;
+    try {
+      setActionLoadingId(server.id);
+      await serversApi.activate(server.id);
+      toast.success(`${server.name} activated`);
+      await fetchServers();
+    } catch (err: any) {
+      toast.error(`Activate failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const scanServer = async (server: ServerItem) => {
+    if (!canTriggerAction(`scan-${server.id}`)) return;
+    try {
+      setActionLoadingId(server.id);
+      await serversApi.scan(server.id);
+      toast.success(`${server.name} scan completed`);
+    } catch (err: any) {
+      toast.error(`Scan failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const fixServer = async (server: ServerItem) => {
+    if (!canTriggerAction(`fix-${server.id}`)) return;
+    try {
+      setActionLoadingId(server.id);
+      await serversApi.fix(server.id);
+      toast.success(`${server.name} fix executed`);
+    } catch (err: any) {
+      toast.error(`Fix failed: ${err.message || 'Unknown error'}`);
     } finally {
       setActionLoadingId(null);
     }
@@ -469,6 +522,21 @@ export function ServerListPanel({ routeModeAdd = false }: { routeModeAdd?: boole
                       </Button>
                       <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => goToServerRoute(server.id, 'deploy')}>
                         Deploy
+                      </Button>
+                      {server.status === 'suspended' ? (
+                        <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => activateServer(server)} disabled={actionLoadingId === server.id}>
+                          Activate
+                        </Button>
+                      ) : (
+                        <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => suspendServer(server)} disabled={actionLoadingId === server.id}>
+                          Suspend
+                        </Button>
+                      )}
+                      <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => scanServer(server)} disabled={actionLoadingId === server.id}>
+                        Scan
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => fixServer(server)} disabled={actionLoadingId === server.id}>
+                        Fix
                       </Button>
                       <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => goToServerRoute(server.id, 'logs')}>
                         Logs
