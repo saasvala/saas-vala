@@ -6,6 +6,26 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((v) => stableStringify(v)).join(",")}]`;
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
+}
+
+async function hmacSha256Hex(secret: string, value: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -140,7 +160,7 @@ Deno.serve(async (req) => {
       // Trigger: Dispatch APK build for a repo
       // ═══════════════════════════════════════
       case "trigger_build": {
-        const { slug, repo_url, product_id, callback_url } = data || {};
+        const { slug, repo_url, product_id, callback_url, priority_tier, resource_class, build_target } = data || {};
         if (!slug)
           return respond({ error: "slug required" }, 400);
 
@@ -154,16 +174,19 @@ Deno.serve(async (req) => {
             method: "POST",
             body: JSON.stringify({
               ref: "main",
-              inputs: {
-                repo_url: targetRepo,
-                app_slug: slug,
-                package_name: `com.saasvala.${slug.replace(/-/g, "_")}`,
-                product_id: product_id || "",
-                supabase_url: supabaseUrl,
-              },
-            }),
-          }
-        );
+                inputs: {
+                  repo_url: targetRepo,
+                  app_slug: slug,
+                  package_name: `com.saasvala.${slug.replace(/-/g, "_")}`,
+                  product_id: product_id || "",
+                  supabase_url: supabaseUrl,
+                  priority_tier: priority_tier || "normal",
+                  resource_class: resource_class || "standard",
+                  build_target: build_target || "apk",
+                },
+              }),
+            }
+          );
 
         if (!dispatchRes.ok) {
           const err = await dispatchRes.text();
@@ -183,13 +206,17 @@ Deno.serve(async (req) => {
             repo_name: slug,
             repo_url: targetRepo,
             slug,
-            build_status: "building",
-            product_id: product_id || null,
-            target_industry: "general",
-            build_started_at: new Date().toISOString(),
-          },
-          { onConflict: "slug" }
-        );
+              build_status: "building",
+              product_id: product_id || null,
+              target_industry: "general",
+              build_started_at: new Date().toISOString(),
+              priority_tier: priority_tier || "normal",
+              priority_score: priority_tier === "vip" ? 100 : 50,
+              resource_class: resource_class || "standard",
+              build_target: build_target || "apk",
+            },
+            { onConflict: "slug" }
+          );
 
         return respond({
           success: true,
@@ -262,12 +289,34 @@ Deno.serve(async (req) => {
           status: buildStatus,
           error: buildError,
           product_id: pid,
+          callback_signature,
+          artifact_checksum,
+          artifact_checksum_algorithm,
+          build_target,
         } = data || {};
 
         if (!completeSlug)
           return respond({ error: "slug required" }, 400);
 
         const admin = createClient(supabaseUrl, serviceKey);
+
+        if (apkCallbackSecret) {
+          const providedSig = callback_signature || req.headers.get("x-callback-signature") || "";
+          const canonical = stableStringify({
+            slug: completeSlug || "",
+            apk_path: apk_path || "",
+            status: buildStatus || "",
+            error: buildError || "",
+            product_id: pid || "",
+            artifact_checksum: artifact_checksum || "",
+            artifact_checksum_algorithm: artifact_checksum_algorithm || "sha256",
+            build_target: build_target || "apk",
+          });
+          const expectedSig = await hmacSha256Hex(apkCallbackSecret, canonical);
+          if (providedSig !== expectedSig) {
+            return respond({ error: "Invalid callback signature" }, 401);
+          }
+        }
 
         if (buildStatus === "success" && apk_path) {
           // Update build queue
@@ -277,20 +326,52 @@ Deno.serve(async (req) => {
               build_status: "completed",
               apk_file_path: apk_path,
               build_completed_at: new Date().toISOString(),
+              artifact_checksum: artifact_checksum || null,
+              artifact_checksum_algorithm: artifact_checksum_algorithm || "sha256",
+              build_target: build_target || "apk",
+              rollback_status: "none",
             })
             .eq("slug", completeSlug);
 
           // Store the storage object path (not a signed URL) so download-apk
           // always generates a fresh short-lived signed URL at download time.
           if (apk_path && pid) {
+            const { data: existingProduct } = await admin
+              .from("products")
+              .select("apk_url")
+              .eq("id", pid)
+              .maybeSingle();
             await admin
               .from("products")
               .update({
                 apk_url: apk_path,
                 is_apk: true,
                 apk_enabled: true,
+                current_stable_apk_path: apk_path,
+                current_stable_apk_checksum: artifact_checksum || null,
               })
               .eq("id", pid);
+
+            await admin.from("apk_versions").insert({
+              apk_id: pid,
+              version_name: `build-${Date.now()}`,
+              version_code: Math.max(1, Math.floor(Date.now() / 1000)),
+              file_path: apk_path,
+              checksum: artifact_checksum || null,
+              hash_algorithm: artifact_checksum_algorithm || "sha256",
+              build_target: build_target || "apk",
+              is_stable: true,
+              rollout_status: "active",
+              min_supported_version_code: 1,
+              force_update: false,
+            });
+
+            if (existingProduct?.apk_url) {
+              await admin
+                .from("apk_build_queue")
+                .update({ previous_stable_apk_path: existingProduct.apk_url })
+                .eq("slug", completeSlug);
+            }
           }
 
           // Update catalog
@@ -310,8 +391,25 @@ Deno.serve(async (req) => {
               build_status: "failed",
               build_error: buildError || "Unknown error",
               build_completed_at: new Date().toISOString(),
+              rollback_status: "restored_previous_stable",
             })
             .eq("slug", completeSlug);
+
+          const { data: queued } = await admin
+            .from("apk_build_queue")
+            .select("product_id, previous_stable_apk_path")
+            .eq("slug", completeSlug)
+            .maybeSingle();
+
+          if (queued?.product_id && queued?.previous_stable_apk_path) {
+            await admin
+              .from("products")
+              .update({
+                apk_url: queued.previous_stable_apk_path,
+                current_stable_apk_path: queued.previous_stable_apk_path,
+              })
+              .eq("id", queued.product_id);
+          }
 
           return respond({
             success: false,
@@ -365,6 +463,18 @@ on:
       supabase_url:
         description: 'Supabase URL for callback'
         required: false
+      priority_tier:
+        description: 'Build priority tier (vip/normal)'
+        required: false
+        default: 'normal'
+      resource_class:
+        description: 'Runner resource class (light/standard/heavy)'
+        required: false
+        default: 'standard'
+      build_target:
+        description: 'Artifact build target (apk/aab/web)'
+        required: false
+        default: 'apk'
 
 jobs:
   build:
@@ -431,15 +541,26 @@ jobs:
         run: |
           cd target-app/android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          TARGET="\${{ github.event.inputs.build_target }}"
+          if [ "$TARGET" = "aab" ]; then
+            ./gradlew bundleRelease --no-daemon
+          else
+            ./gradlew assembleDebug --no-daemon
+          fi
           
           # Find the APK
-          APK_PATH=\$(find . -name "*.apk" -type f | head -1)
-          if [ -n "$APK_PATH" ]; then
-            cp "$APK_PATH" /tmp/\${{ github.event.inputs.app_slug }}.apk
+          ARTIFACT_PATH=\$(find . \\( -name "*.apk" -o -name "*.aab" \\) -type f | head -1)
+          if [ -n "$ARTIFACT_PATH" ]; then
+            if [[ "$ARTIFACT_PATH" == *.aab ]]; then
+              cp "$ARTIFACT_PATH" /tmp/\${{ github.event.inputs.app_slug }}.aab
+            else
+              cp "$ARTIFACT_PATH" /tmp/\${{ github.event.inputs.app_slug }}.apk
+            fi
+            ARTIFACT_CHECKSUM=\$(sha256sum "$ARTIFACT_PATH" | awk '{print $1}')
+            echo "ARTIFACT_CHECKSUM=$ARTIFACT_CHECKSUM" >> $GITHUB_ENV
             echo "APK_BUILT=true" >> $GITHUB_ENV
-            echo "APK built: $APK_PATH"
-            ls -la "$APK_PATH"
+            echo "APK built: $ARTIFACT_PATH"
+            ls -la "$ARTIFACT_PATH"
           else
             echo "APK_BUILT=false" >> $GITHUB_ENV
             echo "No APK found!"
@@ -450,7 +571,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: \${{ github.event.inputs.app_slug }}-apk
-          path: /tmp/\${{ github.event.inputs.app_slug }}.apk
+          path: /tmp/\${{ github.event.inputs.app_slug }}.*
           retention-days: 30
 
       - name: Notify build complete
@@ -477,7 +598,10 @@ jobs:
                 \\"slug\\": \\"\${{ github.event.inputs.app_slug }}\\",
                 \\"status\\": \\"$STATUS\\",
                 \\"product_id\\": \\"\${{ github.event.inputs.product_id }}\\",
-                \\"apk_path\\": \\"\${{ github.event.inputs.app_slug }}/release.apk\\"
+                \\"apk_path\\": \\"\${{ github.event.inputs.app_slug }}/release.apk\\",
+                \\"artifact_checksum\\": \\"$ARTIFACT_CHECKSUM\\",
+                \\"artifact_checksum_algorithm\\": \\"sha256\\",
+                \\"build_target\\": \\"\${{ github.event.inputs.build_target }}\\"
               }
             }" || echo "Callback failed"
 `;
