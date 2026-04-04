@@ -137,35 +137,36 @@ export function useMarketplaceProducts(locale?: { country?: string; lang?: strin
   const fetchProducts = useCallback(async () => {
     if (inFlightRef.current) {
       pendingRefetchRef.current = true;
+      setLoading(true);
       return;
     }
     inFlightRef.current = true;
     setLoading(true);
     try {
-      const res = await marketplaceApi.productList({
-        country: locale?.country,
-        lang: locale?.lang,
-        currency: locale?.currency,
-      });
-      const mapped = (res.data || []).map((p: any, i: number) => mapDbProduct(p, i));
-      setProducts(prioritizeProducts(mapped));
-    } catch (e) {
-      console.error('Failed to fetch marketplace products:', e);
-      try {
-        const fallback = await marketplaceApi.products();
-        const mapped = (fallback.data || []).map((p: any, i: number) => mapDbProduct(p, i));
-        setProducts(prioritizeProducts(mapped));
-      } catch {
-        setProducts([]);
-      }
-    }
-    setLoading(false);
-    inFlightRef.current = false;
-    if (pendingRefetchRef.current) {
-      pendingRefetchRef.current = false;
-      void fetchProducts().catch((error) => {
-        console.error('[marketplace-products-live] queued refetch failed', error);
-      });
+      do {
+        pendingRefetchRef.current = false;
+        try {
+          const res = await marketplaceApi.productList({
+            country: locale?.country,
+            lang: locale?.lang,
+            currency: locale?.currency,
+          });
+          const mapped = (res.data || []).map((p: any, i: number) => mapDbProduct(p, i));
+          setProducts(prioritizeProducts(mapped));
+        } catch (e) {
+          console.error('Failed to fetch marketplace products:', e);
+          try {
+            const fallback = await marketplaceApi.products();
+            const mapped = (fallback.data || []).map((p: any, i: number) => mapDbProduct(p, i));
+            setProducts(prioritizeProducts(mapped));
+          } catch {
+            setProducts([]);
+          }
+        }
+      } while (pendingRefetchRef.current);
+    } finally {
+      inFlightRef.current = false;
+      setLoading(false);
     }
   }, [locale?.country, locale?.currency, locale?.lang]);
 
