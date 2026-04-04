@@ -694,12 +694,7 @@ export const builderApi = {
     target_platforms?: string[];
   }) => crudWithFallback('builder', 'create', data, () => apiCall('POST', 'builder/create', data)),
   run: (data: { project_id: string; version?: string }) => apiCall('POST', 'builder/run', data),
-  status: (projectId: string) =>
-    crudWithFallback('builder', 'read', { project_id: projectId }, () => apiCall('GET', 'builder/status', { project_id: projectId })),
-  logs: (projectId: string) => apiCall('GET', `builder/logs/${projectId}`),
-  // Retry is modeled as update in the global CRUD contract for this project-wide mapping.
-  retry: (projectId: string) =>
-    crudWithFallback('builder', 'update', { project_id: projectId }, () => apiCall('POST', 'builder/retry', { project_id: projectId })),
+
 };
 
 // ===================== WALLET =====================
