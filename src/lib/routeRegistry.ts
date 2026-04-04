@@ -34,6 +34,10 @@ export const APP_ROUTE_PATTERNS = [
   '/cart',
   '/checkout',
   '/success',
+  '/support',
+  '/subscription',
+  '/favorites',
+  '/recent',
   '/keys',
   '/app/:id',
 ];

@@ -12097,6 +12097,25 @@ Deno.serve(async (req) => {
       case 'marketplace':
         routeResponse = await handleMarketplace(req.method, subParts, body, userId, sb)
         break
+      case 'favorite':
+        routeResponse = await handleMarketplace(req.method, ['favorite', ...subParts], body, userId, sb)
+        break
+      case 'favorites':
+        if (subParts.length === 0 && req.method === 'GET') {
+          routeResponse = await handleMarketplace('GET', ['favorite', 'list'], body, userId, sb)
+          break
+        }
+        if (subParts[0] === 'toggle') {
+          routeResponse = await handleMarketplace(req.method, ['favorite', 'toggle'], body, userId, sb)
+          break
+        }
+        routeResponse = fail('Route not found', 404, 'ROUTE_NOT_FOUND', {
+          module,
+          endpoint: `${module}/${subParts[0] || ''}`,
+          version: requestedVersion,
+          is_graceful_not_found: true,
+        })
+        break
       case 'cart':
         if (subParts.length === 0) {
           if (req.method === 'GET') {

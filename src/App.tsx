@@ -49,6 +49,8 @@ const SupportTicket = React.lazy(() => import("./pages/SupportTicket"));
 const Feedback = React.lazy(() => import("./pages/Feedback"));
 const Announcements = React.lazy(() => import("./pages/Announcements"));
 const Downloads = React.lazy(() => import("./pages/Downloads"));
+const Favorites = React.lazy(() => import("./pages/Favorites"));
+const Recent = React.lazy(() => import("./pages/Recent"));
 const EmailLogs = React.lazy(() => import("./pages/EmailLogs"));
 const RetryActions = React.lazy(() => import("./pages/RetryActions"));
 const ArchiveManager = React.lazy(() => import("./pages/ArchiveManager"));
@@ -503,6 +505,8 @@ function AppRoutes() {
         <Route path="/admin/users" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/resellers" replace /></RoleGuard></AuthGuard>} />
         <Route path="/support" element={<AuthGuard><Support /></AuthGuard>} />
         <Route path="/support/ticket" element={<AuthGuard><SupportTicket /></AuthGuard>} />
+        <Route path="/favorites" element={<AuthGuard><Favorites /></AuthGuard>} />
+        <Route path="/recent" element={<AuthGuard><Recent /></AuthGuard>} />
         <Route path="/feedback" element={<AuthGuard><Feedback /></AuthGuard>} />
         <Route path="/announcements" element={<AuthGuard><Announcements /></AuthGuard>} />
         <Route path="/dashboard/downloads" element={<AuthGuard><Downloads /></AuthGuard>} />
