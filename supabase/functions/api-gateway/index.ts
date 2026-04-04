@@ -1943,7 +1943,7 @@ async function handleAudit(method: string, pathParts: string[], body: any, userI
     })
   }
 
-  if (method === 'POST' && action === 'create') {
+  if (method === 'POST' && (action === 'create' || action === 'log')) {
     const actionNameRaw = String(body.action || 'create').toLowerCase()
     const actionName = (['create', 'read', 'update', 'delete', 'login', 'logout', 'suspend', 'activate'].includes(actionNameRaw)
       ? actionNameRaw
@@ -5173,12 +5173,32 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   const id = pathParts[1]
   const secondSegment = pathParts[1]
   const thirdSegment = pathParts[2]
+  const fourthSegment = pathParts[3]
+
+  const ensureServerManagePermission = async (serverId: string) => {
+    const { data: server, error: serverError } = await sb
+      .from('servers')
+      .select('id,created_by')
+      .eq('id', serverId)
+      .maybeSingle()
+    if (serverError) return { ok: false as const, response: fail(serverError.message, 400, 'DB_ERROR') }
+    if (!server) return { ok: false as const, response: fail('Server not found', 404, 'NOT_FOUND') }
+    if (server.created_by === userId) return { ok: true as const, response: null }
+    const adminAllowed = await isSuperAdminUser(userId)
+    if (!adminAllowed) return { ok: false as const, response: fail('Forbidden', 403, 'FORBIDDEN') }
+    return { ok: true as const, response: null }
+  }
 
   // GET /servers/list
   if (method === 'GET' && segment === 'servers' && secondSegment === 'list') {
     const { data, error } = await sb.from('servers').select('*').order('created_at', { ascending: false })
     if (error) return fail(error.message, 400, 'DB_ERROR')
     return ok(data || [])
+  }
+
+  // GET /server/list
+  if (method === 'GET' && segment === 'server' && secondSegment === 'list') {
+    return await handleServers('GET', ['servers', 'list'], body, userId, sb)
   }
 
   // POST /server/add
@@ -5254,6 +5274,11 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     return ok(data)
   }
 
+  // POST /agent/register
+  if (method === 'POST' && segment === 'agent' && secondSegment === 'register') {
+    return await handleServers(method, ['agent', 'connect'], body, userId, sb)
+  }
+
   // POST /agent/status
   if (method === 'POST' && segment === 'agent' && secondSegment === 'status') {
     const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
@@ -5325,6 +5350,67 @@ async function handleServers(method: string, pathParts: string[], body: any, use
       executed: true,
       result: data,
     })
+  }
+
+  // POST /server/scan
+  if (method === 'POST' && segment === 'server' && secondSegment === 'scan') {
+    const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
+    if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
+    return await handleServers('POST', ['git', 'scan'], { server_id: serverId }, userId, sb)
+  }
+
+  // POST /server/fix
+  if (method === 'POST' && segment === 'server' && secondSegment === 'fix') {
+    const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
+    if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
+    return await handleServers('POST', ['server', 'ai-action'], { server_id: serverId, action: 'fix_issues', params: body?.params || {} }, userId, sb)
+  }
+
+  // POST /server/deploy/git
+  if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'git') {
+    const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
+    if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
+    return await handleServers('POST', ['git', 'deploy'], { server_id: serverId }, userId, sb)
+  }
+
+  // POST /server/deploy/apk
+  if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'apk') {
+    return await handleApk('POST', ['build'], body, userId, sb)
+  }
+
+  // GET /server/deploy/status/:id
+  if (method === 'GET' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'status' && fourthSegment) {
+    return await handleServers('GET', ['deploy', 'status', fourthSegment], body, userId, sb)
+  }
+
+  // POST /server/suspend/:id
+  if (method === 'POST' && segment === 'server' && secondSegment === 'suspend' && thirdSegment) {
+    const guard = await ensureServerManagePermission(thirdSegment)
+    if (!guard.ok) return guard.response
+    const { error } = await sb.from('servers').update({ status: 'suspended' }).eq('id', thirdSegment)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'server', thirdSegment, 'suspended', userId)
+    return ok({ server_id: thirdSegment, status: 'suspended' })
+  }
+
+  // POST /server/activate/:id
+  if (method === 'POST' && segment === 'server' && secondSegment === 'activate' && thirdSegment) {
+    const guard = await ensureServerManagePermission(thirdSegment)
+    if (!guard.ok) return guard.response
+    const { error } = await sb.from('servers').update({ status: 'live' }).eq('id', thirdSegment)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'server', thirdSegment, 'activated', userId)
+    return ok({ server_id: thirdSegment, status: 'live' })
+  }
+
+  // DELETE /server/delete/:id
+  if (method === 'DELETE' && segment === 'server' && secondSegment === 'delete' && thirdSegment) {
+    const guard = await ensureServerManagePermission(thirdSegment)
+    if (!guard.ok) return guard.response
+    const { error } = await sb.from('servers').delete().eq('id', thirdSegment)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'server', thirdSegment, 'deleted', userId)
+    return ok({ server_id: thirdSegment, deleted: true })
   }
 
   // POST /server/git-scan
@@ -5786,6 +5872,16 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     return ok(data, 201)
   }
 
+  // POST /domain/dns/configure
+  if (method === 'POST' && segment === 'domain' && secondSegment === 'dns' && thirdSegment === 'configure') {
+    return await handleServers('POST', ['dns', 'create'], body, userId, sb)
+  }
+
+  // POST /domain/ssl/generate
+  if (method === 'POST' && segment === 'domain' && secondSegment === 'ssl' && thirdSegment === 'generate') {
+    return await handleServers('POST', ['ssl', 'generate'], body, userId, sb)
+  }
+
   // GET /server/settings
   if (method === 'GET' && segment === 'server' && secondSegment === 'settings') {
     if (!body.server_id) return fail('server_id required', 422, 'VALIDATION_ERROR')
@@ -5833,6 +5929,11 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     dashboardStatsCache.expiresAt = Date.now() + DASHBOARD_STATS_CACHE_TTL_MS
     await redisSetJson(redisKey, payload, Math.floor(DASHBOARD_STATS_CACHE_TTL_MS / 1000))
     return ok(payload)
+  }
+
+  // GET /server/metrics
+  if (method === 'GET' && segment === 'server' && id === 'metrics') {
+    return await handleServers('GET', ['server', 'health'], body, userId, sb)
   }
 
   return fail('Not found', 404, 'NOT_FOUND')
@@ -9874,6 +9975,7 @@ Deno.serve(async (req) => {
       case 'domain':
       case 'ssl':
       case 'git':
+      case 'agent':
       case 'server':
         routeResponse = await handleServers(req.method, [module, ...subParts], body, userId, sb)
         break
