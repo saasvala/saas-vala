@@ -10,6 +10,14 @@ export default function Recent() {
   const navigate = useNavigate();
 
   const items = useMemo(() => actions.slice(0, 30), [actions]);
+  const openRoute = (href?: string) => {
+    if (!href) {
+      console.warn('Recent action missing href; redirecting to dashboard');
+      navigate('/dashboard');
+      return;
+    }
+    navigate(href);
+  };
 
   return (
     <DashboardLayout>
@@ -33,7 +41,7 @@ export default function Recent() {
                 </div>
                 <Button
                   variant="outline"
-                  onClick={() => navigate(item.href || '/dashboard')}
+                  onClick={() => openRoute(item.href)}
                 >
                   Open
                 </Button>

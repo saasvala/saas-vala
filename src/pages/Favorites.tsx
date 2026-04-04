@@ -54,7 +54,9 @@ export default function Favorites() {
               <div key={item.id} className="flex items-center justify-between gap-2 rounded-md border p-3">
                 <div className="space-y-1">
                   <p className="font-medium">{item.product_name || 'Untitled Product'}</p>
-                  <Badge variant="outline">{new Date(item.created_at || Date.now()).toLocaleString()}</Badge>
+                  <Badge variant="outline">
+                    {item.created_at ? new Date(item.created_at).toLocaleString() : 'Unknown date'}
+                  </Badge>
                 </div>
                 <Button onClick={() => navigate(`/product/${item.product_id}`)}>View</Button>
               </div>
