@@ -7389,6 +7389,27 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
     let apkPath = normalizeApkStoragePath(productDirect?.apk_url)
     let resolvedBuildStatus = normalizeSyncedBuildStatus(productDirect?.build_status)
 
+    // Pipeline output compatibility: allow /apk/download/:pipelineBuildId
+    if (!product) {
+      const { data: queueBuild } = await admin
+        .from('apk_build_queue')
+        .select('id, product_id, apk_file_path, build_status')
+        .eq('id', identifier)
+        .maybeSingle()
+      if (queueBuild?.product_id) {
+        const { data: linkedProduct } = await admin
+          .from('products')
+          .select('id, name, apk_url, price, build_id, build_status')
+          .eq('id', queueBuild.product_id)
+          .maybeSingle()
+        if (linkedProduct) {
+          product = linkedProduct
+          apkPath = normalizeApkStoragePath(queueBuild.apk_file_path) || normalizeApkStoragePath(linkedProduct.apk_url)
+          resolvedBuildStatus = normalizeSyncedBuildStatus(queueBuild.build_status || linkedProduct.build_status)
+        }
+      }
+    }
+
     if (product?.id && (!apkPath || resolvedBuildStatus !== 'success')) {
       const { data: latestSuccessBuild } = await findLatestSuccessfulApkBuild(admin, product.id)
       const latestPath = normalizeApkStoragePath(latestSuccessBuild?.apk_url)
@@ -7553,6 +7574,170 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
   }
 
   return err('Not found', 404)
+}
+
+async function handlePipeline(method: string, pathParts: string[], body: any, userId: string, sb: any) {
+  const admin = adminClient()
+
+  // POST /pipeline/start
+  if (method === 'POST' && pathParts[0] === 'start') {
+    const repoName = String(body?.repo_name || body?.repoName || '').trim()
+    const repoUrl = String(body?.repo_url || body?.repoUrl || '').trim()
+    const explicitSlug = String(body?.slug || '').trim()
+    const slug = explicitSlug || repoName.toLowerCase().replace(/[^a-z0-9]/g, '-')
+    if (!repoName || !repoUrl || !slug) return err('repo_name and repo_url are required', 422, 'VALIDATION_ERROR')
+
+    const { data: created, error: createError } = await sb
+      .from('apk_build_queue')
+      .insert({
+        repo_name: repoName,
+        repo_url: repoUrl,
+        slug,
+        target_industry: body?.target_industry || body?.targetIndustry || null,
+        product_id: body?.product_id || null,
+        build_status: 'queued',
+        build_error: null,
+        build_started_at: nowIso(),
+      })
+      .select('*')
+      .single()
+
+    if (createError || !created) return fail(createError?.message || 'Failed to start pipeline', 400, 'PIPELINE_START_FAILED')
+
+    await logActivity(admin, 'pipeline', created.id, 'pipeline_started', userId, {
+      slug,
+      repo_url: repoUrl,
+      status: 'queued',
+    })
+
+    return ok({
+      pipeline_id: created.id,
+      id: created.id,
+      status: normalizeApkPipelineStatus(created.build_status),
+      raw_status: created.build_status,
+      step: 'queued',
+    }, 201)
+  }
+
+  // GET /pipeline/status/:id
+  if (method === 'GET' && pathParts[0] === 'status' && pathParts[1]) {
+    const pipelineId = String(pathParts[1] || '').trim()
+    const { data, error } = await sb.from('apk_build_queue').select('*').eq('id', pipelineId).maybeSingle()
+    if (error || !data) return fail('Pipeline not found', 404, 'NOT_FOUND', { id: pipelineId, redirect: '/admin/apk-pipeline' })
+    const normalized = normalizeApkPipelineStatus(data.build_status)
+    return ok({
+      id: data.id,
+      pipeline_id: data.id,
+      status: normalized,
+      raw_status: data.build_status,
+      current_step: normalized,
+      can_retry: normalized === 'failed',
+      can_cancel: ['queued', 'scanning', 'debugging', 'developing', 'building', 'verifying'].includes(normalized),
+      timestamps: {
+        started_at: data.build_started_at || null,
+        completed_at: data.build_completed_at || null,
+        updated_at: data.updated_at || null,
+      },
+    })
+  }
+
+  // GET /pipeline/logs/:id
+  if (method === 'GET' && pathParts[0] === 'logs' && pathParts[1]) {
+    const pipelineId = String(pathParts[1] || '').trim()
+    const { data, error } = await sb.from('apk_build_queue').select('*').eq('id', pipelineId).maybeSingle()
+    if (error || !data) return fail('Pipeline not found', 404, 'NOT_FOUND', { id: pipelineId, redirect: '/admin/apk-pipeline' })
+    const status = normalizeApkPipelineStatus(data.build_status)
+    const logs = [
+      `[${data.created_at}] created`,
+      data.build_started_at ? `[${data.build_started_at}] started` : null,
+      `[${data.updated_at || data.created_at}] status=${status}`,
+      data.build_error ? `[${data.updated_at || data.created_at}] error=${data.build_error}` : null,
+    ].filter(Boolean)
+    return ok({
+      id: data.id,
+      pipeline_id: data.id,
+      status,
+      logs,
+    })
+  }
+
+  // GET /pipeline/errors/:id
+  if (method === 'GET' && pathParts[0] === 'errors' && pathParts[1]) {
+    const pipelineId = String(pathParts[1] || '').trim()
+    const { data, error } = await sb.from('apk_build_queue').select('*').eq('id', pipelineId).maybeSingle()
+    if (error || !data) return fail('Pipeline not found', 404, 'NOT_FOUND', { id: pipelineId, redirect: '/admin/apk-pipeline' })
+    const status = normalizeApkPipelineStatus(data.build_status)
+    const hasError = status === 'failed' || !!data.build_error
+    return ok({
+      id: data.id,
+      pipeline_id: data.id,
+      status,
+      has_error: hasError,
+      error: data.build_error || null,
+      auto_debug_available: hasError,
+      debug_action: hasError ? 'retry' : null,
+    })
+  }
+
+  // POST /pipeline/retry/:id
+  if (method === 'POST' && pathParts[0] === 'retry' && pathParts[1]) {
+    const pipelineId = String(pathParts[1] || '').trim()
+    const { data: existing, error: existingError } = await sb.from('apk_build_queue').select('*').eq('id', pipelineId).maybeSingle()
+    if (existingError || !existing) return fail('Pipeline not found', 404, 'NOT_FOUND', { id: pipelineId, redirect: '/admin/apk-pipeline' })
+
+    const attempts = Number(existing.build_attempts || 0) + 1
+    const { error: updateError } = await sb.from('apk_build_queue').update({
+      build_status: 'queued',
+      build_error: null,
+      build_started_at: nowIso(),
+      build_completed_at: null,
+      build_attempts: attempts,
+      updated_at: nowIso(),
+    }).eq('id', pipelineId)
+
+    if (updateError) return fail(updateError.message, 400, 'PIPELINE_RETRY_FAILED')
+    await logActivity(admin, 'pipeline', pipelineId, 'pipeline_retried', userId, { attempt: attempts })
+    return ok({
+      id: pipelineId,
+      pipeline_id: pipelineId,
+      status: 'queued',
+      attempt: attempts,
+      flow: ['retry', 'ai_debug', 'rebuild'],
+    })
+  }
+
+  // POST /pipeline/cancel/:id
+  if (method === 'POST' && pathParts[0] === 'cancel' && pathParts[1]) {
+    const pipelineId = String(pathParts[1] || '').trim()
+    const { data: existing, error: existingError } = await sb.from('apk_build_queue').select('*').eq('id', pipelineId).maybeSingle()
+    if (existingError || !existing) return fail('Pipeline not found', 404, 'NOT_FOUND', { id: pipelineId, redirect: '/admin/apk-pipeline' })
+
+    const current = normalizeApkPipelineStatus(existing.build_status)
+    if (['ready', 'failed', 'cancelled'].includes(current)) {
+      return ok({
+        id: pipelineId,
+        pipeline_id: pipelineId,
+        status: current,
+        cancelled: current === 'cancelled',
+      })
+    }
+
+    const { error: updateError } = await sb.from('apk_build_queue').update({
+      build_status: 'cancelled',
+      build_completed_at: nowIso(),
+      updated_at: nowIso(),
+    }).eq('id', pipelineId)
+    if (updateError) return fail(updateError.message, 400, 'PIPELINE_CANCEL_FAILED')
+    await logActivity(admin, 'pipeline', pipelineId, 'pipeline_cancelled', userId)
+    return ok({
+      id: pipelineId,
+      pipeline_id: pipelineId,
+      status: 'cancelled',
+      cancelled: true,
+    })
+  }
+
+  return fail('Route not found', 404, 'ROUTE_NOT_FOUND', { module: 'pipeline' })
 }
 
 async function creditWalletRequestIdempotent(admin: any, reqRow: any, actorUserId: string, creditSource: string) {
@@ -9691,6 +9876,7 @@ Deno.serve(async (req) => {
       case 'auto': routeResponse = await handleAuto(req.method, subParts, body, userId, sb); break
       case 'auto-pilot': routeResponse = await handleAutoPilot(req.method, subParts, body, userId, sb); break
       case 'apk': routeResponse = await handleApk(req.method, subParts, body, userId, sb); break
+      case 'pipeline': routeResponse = await handlePipeline(req.method, subParts, body, userId, sb); break
       case 'geo': routeResponse = await handleGeo(req.method, subParts, body, req); break
       case 'translate': routeResponse = await handleTranslate(req.method, subParts, body, req); break
       case 'currency': routeResponse = await handleCurrency(req.method, subParts, body); break
