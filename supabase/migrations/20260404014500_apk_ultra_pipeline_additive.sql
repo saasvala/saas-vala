@@ -3,24 +3,52 @@
 
 ALTER TABLE public.apk_build_queue
   ADD COLUMN IF NOT EXISTS trace_id TEXT,
-  ADD COLUMN IF NOT EXISTS pipeline_stage TEXT NOT NULL DEFAULT 'queued',
-  ADD COLUMN IF NOT EXISTS stage_artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS pipeline_stage TEXT DEFAULT 'queued',
+  ADD COLUMN IF NOT EXISTS stage_artifacts JSONB DEFAULT '{}'::jsonb,
   ADD COLUMN IF NOT EXISTS failure_type TEXT,
-  ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 3,
+  ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS max_retries INTEGER DEFAULT 3,
   ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS locked_by TEXT,
   ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS ai_provider TEXT,
-  ADD COLUMN IF NOT EXISTS ai_fallback_used BOOLEAN NOT NULL DEFAULT false,
-  ADD COLUMN IF NOT EXISTS security_status TEXT NOT NULL DEFAULT 'pending',
-  ADD COLUMN IF NOT EXISTS scan_report JSONB NOT NULL DEFAULT '{}'::jsonb,
-  ADD COLUMN IF NOT EXISTS apk_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-  ADD COLUMN IF NOT EXISTS license_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-  ADD COLUMN IF NOT EXISTS upload_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-  ADD COLUMN IF NOT EXISTS marketplace_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-  ADD COLUMN IF NOT EXISTS build_manifest JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS ai_fallback_used BOOLEAN DEFAULT false,
+  ADD COLUMN IF NOT EXISTS security_status TEXT DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS scan_report JSONB DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS apk_metadata JSONB DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS license_metadata JSONB DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS upload_metadata JSONB DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS marketplace_metadata JSONB DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS build_manifest JSONB DEFAULT '{}'::jsonb,
   ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ;
+
+UPDATE public.apk_build_queue
+SET
+  pipeline_stage = COALESCE(pipeline_stage, 'queued'),
+  stage_artifacts = COALESCE(stage_artifacts, '{}'::jsonb),
+  retry_count = COALESCE(retry_count, 0),
+  max_retries = COALESCE(max_retries, 3),
+  ai_fallback_used = COALESCE(ai_fallback_used, false),
+  security_status = COALESCE(security_status, 'pending'),
+  scan_report = COALESCE(scan_report, '{}'::jsonb),
+  apk_metadata = COALESCE(apk_metadata, '{}'::jsonb),
+  license_metadata = COALESCE(license_metadata, '{}'::jsonb),
+  upload_metadata = COALESCE(upload_metadata, '{}'::jsonb),
+  marketplace_metadata = COALESCE(marketplace_metadata, '{}'::jsonb),
+  build_manifest = COALESCE(build_manifest, '{}'::jsonb)
+WHERE
+  pipeline_stage IS NULL
+  OR stage_artifacts IS NULL
+  OR retry_count IS NULL
+  OR max_retries IS NULL
+  OR ai_fallback_used IS NULL
+  OR security_status IS NULL
+  OR scan_report IS NULL
+  OR apk_metadata IS NULL
+  OR license_metadata IS NULL
+  OR upload_metadata IS NULL
+  OR marketplace_metadata IS NULL
+  OR build_manifest IS NULL;
 
 DO $$
 BEGIN

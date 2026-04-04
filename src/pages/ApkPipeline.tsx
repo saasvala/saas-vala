@@ -115,7 +115,13 @@ export default function ApkPipeline() {
   const retryBuild = async (id: string) => {
     await supabase.from('apk_build_queue').update({
       build_status: 'pending',
+      pipeline_stage: 'queued',
       build_error: null,
+      retry_count: 0,
+      next_retry_at: null,
+      locked_by: null,
+      locked_at: null,
+      failure_type: null,
       updated_at: new Date().toISOString(),
     }).eq('id', id);
     toast.success('Build re-queued');
@@ -148,9 +154,14 @@ export default function ApkPipeline() {
   };
 
   const statusIcon = (s: string) => {
+    if (['analyzing', 'fixing', 'scanning', 'signing', 'licensing', 'uploading', 'marketplace_sync'].includes(s)) {
+      return <Loader2 className="h-4 w-4 text-yellow-500 animate-spin" />;
+    }
     switch (s) {
       case 'completed': return <CheckCircle2 className="h-4 w-4 text-green-500" />;
+      case 'ready': return <CheckCircle2 className="h-4 w-4 text-green-500" />;
       case 'failed': return <XCircle className="h-4 w-4 text-destructive" />;
+      case 'retrying': return <Loader2 className="h-4 w-4 text-yellow-500 animate-spin" />;
       case 'building': return <Loader2 className="h-4 w-4 text-yellow-500 animate-spin" />;
       default: return <Clock className="h-4 w-4 text-muted-foreground" />;
     }
@@ -159,8 +170,17 @@ export default function ApkPipeline() {
   const statusBadge = (s: string) => {
     const variants: Record<string, string> = {
       completed: 'bg-green-500/10 text-green-500 border-green-500/20',
+      ready: 'bg-green-500/10 text-green-500 border-green-500/20',
       failed: 'bg-destructive/10 text-destructive border-destructive/20',
       building: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20',
+      retrying: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20',
+      analyzing: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20',
+      fixing: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20',
+      scanning: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20',
+      signing: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20',
+      licensing: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20',
+      uploading: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20',
+      marketplace_sync: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20',
       pending: 'bg-muted text-muted-foreground border-border',
     };
     return <Badge variant="outline" className={variants[s] || variants.pending}>{s.toUpperCase()}</Badge>;

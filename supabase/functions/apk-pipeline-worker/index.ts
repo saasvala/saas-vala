@@ -44,6 +44,12 @@ function aiProviderSelection() {
   return { primary, fallback, timeoutMs };
 }
 
+function lockIsStale(lockedAt?: string | null) {
+  if (!lockedAt) return false;
+  const lockAgeMs = Date.now() - new Date(lockedAt).getTime();
+  return Number.isFinite(lockAgeMs) && lockAgeMs > 30 * 60 * 1000;
+}
+
 async function emitEvent(admin: any, queueId: string, slug: string, tId: string, stage: string, status: string, message: string, metadata: Record<string, unknown> = {}) {
   await admin.from("apk_pipeline_events").insert({
     build_queue_id: queueId,
@@ -115,19 +121,49 @@ async function processJob(admin: any, row: any, workerName: string) {
   const tId = row.trace_id || traceId();
   const ai = aiProviderSelection();
 
-  await admin
-    .from("apk_build_queue")
-    .update({
-      build_status: "building",
-      pipeline_stage: "ingesting",
-      trace_id: tId,
-      locked_by: workerName,
-      locked_at: nowIso(),
-      build_started_at: row.build_started_at || nowIso(),
-      updated_at: nowIso(),
-      ai_provider: ai.primary,
-    })
-    .eq("id", row.id);
+  const stale = lockIsStale(row.locked_at);
+  if (row.locked_by && row.locked_by !== workerName && !stale) {
+    return { ok: false, trace_id: tId, failed: false, skipped: true, reason: "locked_by_other_worker" };
+  }
+
+  const claimFilters = stale
+    ? admin
+      .from("apk_build_queue")
+      .update({
+        build_status: "building",
+        pipeline_stage: "ingesting",
+        trace_id: tId,
+        locked_by: workerName,
+        locked_at: nowIso(),
+        build_started_at: row.build_started_at || nowIso(),
+        updated_at: nowIso(),
+        ai_provider: ai.primary,
+      })
+      .eq("id", row.id)
+      .eq("locked_by", row.locked_by || "")
+      .select("id")
+      .maybeSingle()
+    : admin
+      .from("apk_build_queue")
+      .update({
+        build_status: "building",
+        pipeline_stage: "ingesting",
+        trace_id: tId,
+        locked_by: workerName,
+        locked_at: nowIso(),
+        build_started_at: row.build_started_at || nowIso(),
+        updated_at: nowIso(),
+        ai_provider: ai.primary,
+      })
+      .eq("id", row.id)
+      .is("locked_by", null)
+      .select("id")
+      .maybeSingle();
+
+  const { data: claimedRow } = await claimFilters;
+  if (!claimedRow?.id) {
+    return { ok: false, trace_id: tId, failed: false, skipped: true, reason: "claim_race_lost" };
+  }
 
   await emitEvent(admin, row.id, row.slug, tId, "queued", "started", "Worker claimed APK job", { worker: workerName });
 
@@ -169,7 +205,7 @@ async function processJob(admin: any, row: any, workerName: string) {
       const scan = await runSecurityGate(admin, row, tId);
       if (scan.failed) {
         const nextRetry = row.retry_count + 1;
-        const exhausted = nextRetry >= Math.max(1, Number(row.max_retries || 3));
+        const exhausted = Number(nextRetry) > Math.max(1, Number(row.max_retries || 3));
         const retryAt = new Date(Date.now() + retryBackoffSeconds(nextRetry) * 1000).toISOString();
 
         await admin
@@ -274,7 +310,7 @@ Deno.serve(async (req) => {
 
     const processed: any[] = [];
     for (const row of jobs || []) {
-      if (row.locked_at && row.locked_by && row.locked_by !== workerName) {
+      if (row.locked_at && row.locked_by && row.locked_by !== workerName && !lockIsStale(row.locked_at)) {
         continue;
       }
       const result = await processJob(admin, row, workerName);

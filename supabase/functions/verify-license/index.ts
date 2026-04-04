@@ -6,6 +6,8 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
+const OFFLINE_LICENSE_EXPIRY_DAYS = Number(Deno.env.get("OFFLINE_LICENSE_EXPIRY_DAYS") || "30");
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -173,7 +175,7 @@ Deno.serve(async (req) => {
             device_id,
             trace_id: reqTraceId,
             offline_cache_token: crypto.randomUUID(),
-            offline_expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+            offline_expires_at: new Date(Date.now() + OFFLINE_LICENSE_EXPIRY_DAYS * 24 * 60 * 60 * 1000).toISOString(),
           })
           .eq("id", apkDownload.id);
       } else {

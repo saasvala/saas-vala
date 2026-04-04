@@ -114,8 +114,20 @@ Deno.serve(async (req) => {
     }
 
     if (apkDownload?.offline_expires_at && new Date(apkDownload.offline_expires_at) < new Date()) {
+      if (apkDownload?.id) {
+        await adminClient
+          .from("apk_downloads")
+          .update({
+            offline_cache_token: null,
+            trace_id: reqTraceId,
+          })
+          .eq("id", apkDownload.id);
+      }
       return new Response(
-        JSON.stringify({ error: "Offline license token expired. Re-verify license before download." }),
+        JSON.stringify({
+          error: "Offline license token expired. Re-verify license using verify-license endpoint and retry download.",
+          trace_id: reqTraceId,
+        }),
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
