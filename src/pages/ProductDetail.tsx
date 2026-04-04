@@ -12,7 +12,8 @@ import { apkApi, type ApkDownloadResponse } from '@/lib/api';
 import { formatLocalizedPrice } from '@/lib/locale';
 import { isExpiredSignedUrl } from '@/lib/edgeGuards';
 import { toast } from 'sonner';
-import { createPressHandlers, executeButtonAction, getButtonInteractionClassName, resolveSafeRoute } from '@/lib/buttonEngine';
+import { createPressHandlers, executeButtonAction, getButtonInteractionClassName } from '@/lib/buttonEngine';
+import { resolveSafeRoute } from '@/lib/routeRegistry';
 
 
 function hasScreenshots(value: unknown): value is { screenshots?: unknown[] } {

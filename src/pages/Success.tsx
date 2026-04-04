@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { CheckCircle2, Copy } from 'lucide-react';
 import { toast } from 'sonner';
+import { safeNavigate } from '@/lib/routeRegistry';
 
 export default function Success() {
   const navigate = useNavigate();
@@ -44,8 +45,8 @@ export default function Success() {
         )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-          <Button variant="outline" onClick={() => navigate('/keys')}>View Keys</Button>
-          <Button onClick={() => navigate(productId ? `/app/${productId}` : '/dashboard')}>Access App</Button>
+          <Button variant="outline" onClick={() => safeNavigate(navigate, '/keys')}>View Keys</Button>
+          <Button onClick={() => safeNavigate(navigate, productId ? `/app/${productId}` : '/dashboard')}>Access App</Button>
         </div>
       </div>
     </div>

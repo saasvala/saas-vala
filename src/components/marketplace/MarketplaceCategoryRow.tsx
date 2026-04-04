@@ -4,7 +4,8 @@ import { MarketplaceProductCard, ComingSoonCard } from './MarketplaceProductCard
 import { useProductsByCategory } from '@/hooks/useMarketplaceProducts';
 import type { MarketplaceCategory } from '@/data/marketplaceCategories';
 import { useNavigate } from 'react-router-dom';
-import { executeButtonAction, resolveSafeRoute } from '@/lib/buttonEngine';
+import { executeButtonAction } from '@/lib/buttonEngine';
+import { resolveSafeRoute } from '@/lib/routeRegistry';
 
 interface Props {
   category: MarketplaceCategory;
