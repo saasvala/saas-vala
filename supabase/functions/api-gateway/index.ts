@@ -100,10 +100,13 @@ const serverStatusCache: { data: unknown | null; expiresAt: number } = { data: n
 const dashboardStatsCache: { data: unknown | null; expiresAt: number } = { data: null, expiresAt: 0 }
 const seoAnalyticsCache: { data: unknown | null; expiresAt: number } = { data: null, expiresAt: 0 }
 const PRODUCT_LIST_CACHE_TTL_MS = 60 * 1000
+const CATEGORY_LIST_CACHE_TTL_MS = 60 * 1000
 const SERVER_STATUS_CACHE_TTL_MS = 30 * 1000
 const DASHBOARD_STATS_CACHE_TTL_MS = 30 * 1000
 const SEO_ANALYTICS_CACHE_TTL_MS = 60 * 1000
 const PRODUCT_LIST_TRANSLATION_LIMIT = 60
+const RELIGION_FESTIVAL_DURATION_DAYS = 3
+const DEFAULT_FESTIVAL_DURATION_DAYS = 7
 const MAX_PAYMENT_RETRY_ATTEMPTS = 3
 const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SECONDS') || '60')
 const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
@@ -129,6 +132,11 @@ const NOTIFY_MAX_TITLE_LENGTH = 120
 const MAX_IMAGE_OPTIMIZE_WIDTH = 4096
 const MAX_IMAGE_OPTIMIZE_QUALITY = 100
 const SUPPORTED_API_VERSIONS = new Set(['v1', 'v2'])
+// Legacy module aliases mapped to canonical module/action routes to reduce avoidable 404s.
+const MODULE_ALIASES: Record<string, { module: string; prependAction?: string }> = {
+  cart: { module: 'marketplace', prependAction: 'cart' },
+  orders: { module: 'marketplace', prependAction: 'orders' },
+}
 const FINAL_RESELLER_GAP_FEATURE_KEYS = [
   'tier_based_dynamic_commission_engine',
   'per_product_commission_override',
@@ -170,13 +178,17 @@ const RESELLER_FEATURE_KEY_SET = new Set<string>([
 type DomainEventType =
   | 'product_created'
   | 'lead_generated'
+  | 'build_complete'
   | 'build_completed'
+  | 'builder_complete'
   | 'payment_success'
+  | 'error_detected'
   | 'payment_init'
   | 'order_completed'
   | 'subscription_renewed'
   | 'subscription_activated'
   | 'license_key_assigned'
+  | 'user_signup'
   | 'banner_created'
   | 'banner_updated'
   | 'banner_deleted'
@@ -647,34 +659,39 @@ async function emitDomainEvent(
       status: 'queued',
       tenant_id: tenantId || null,
     })
-    const eventTypeMap: Record<string, string> = {
-      build_completed: 'apk_ready',
-      payment_success: 'payment_success',
-      lead_generated: 'lead_generated',
+
     }
-    const mappedEventType = eventTypeMap[eventType] || null
-    if (!mappedEventType) return
+    const mappedEventTypes = eventTypeMap[eventType] || []
+    if (!mappedEventTypes.length) return
     const { data: webhookEndpoints } = await admin
       .from('webhook_endpoints')
-      .select('id')
+      .select('id,events')
       .eq('is_active', true)
-      .contains('events', [mappedEventType])
     if (!Array.isArray(webhookEndpoints) || webhookEndpoints.length === 0) return
+    const endpointMatches = webhookEndpoints.map((endpoint: any) => {
+      const events = Array.isArray(endpoint?.events) ? endpoint.events.map((v: unknown) => String(v)) : []
+      const eventSet = new Set(events)
+      const endpointEventTypes = mappedEventTypes.filter((type) => eventSet.has(type))
+      return { endpointId: endpoint.id, endpointEventTypes }
+    }).filter((entry) => entry.endpointEventTypes.length > 0)
+    if (!endpointMatches.length) return
+    const deliveryRows = endpointMatches.flatMap(({ endpointId, endpointEventTypes }) =>
+      endpointEventTypes.map((mappedEventType) => ({
+        endpoint_id: endpointId,
+        event_type: mappedEventType,
+        payload: {
+          event: mappedEventType,
+          data: payload,
+          tenant_id: tenantId || null,
+        },
+        status: 'pending',
+        attempts: 0,
+      }))
+    )
+    if (!deliveryRows.length) return
     const { data: deliveries } = await admin
       .from('webhook_deliveries')
-      .insert(
-        webhookEndpoints.map((endpoint: any) => ({
-          endpoint_id: endpoint.id,
-          event_type: mappedEventType,
-          payload: {
-            event: mappedEventType,
-            data: payload,
-            tenant_id: tenantId || null,
-          },
-          status: 'pending',
-          attempts: 0,
-        }))
-      )
+      .insert(deliveryRows)
       .select('id,endpoint_id,event_type')
     if (!Array.isArray(deliveries) || deliveries.length === 0) return
     await admin.from('async_jobs').insert(
@@ -2727,6 +2744,164 @@ async function handleGeo(method: string, pathParts: string[], _body: any, req: R
   return json({ country_code: country, currency, language })
 }
 
+function parseDateToUtc(value: unknown) {
+  const raw = String(value || '').trim()
+  if (!raw) return null
+  const datePart = raw.length >= 10 ? raw.slice(0, 10) : raw
+  const parsed = new Date(`${datePart}T00:00:00.000Z`)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function expiresInDaysLabel(endDateValue: unknown) {
+  const endDate = parseDateToUtc(endDateValue)
+  if (!endDate) return '0 days'
+  const today = new Date()
+  const todayUtc = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()))
+  const diffMs = endDate.getTime() - todayUtc.getTime()
+  const days = Math.max(0, Math.ceil(diffMs / (24 * 60 * 60 * 1000)))
+  return `${days} day${days === 1 ? '' : 's'}`
+}
+
+async function handleOffersPublic(method: string, pathParts: string[], body: any, req: Request) {
+  const admin = adminClient()
+  const action = String(pathParts[0] || 'active').trim().toLowerCase()
+  const requestedCountry = String(body?.country || body?.country_code || '').trim().toUpperCase()
+  const resolvedCountry = requestedCountry || resolveCountryFromRequest(req) || 'ALL'
+  const country = /^[A-Z]{2,3}$/.test(resolvedCountry) || resolvedCountry === 'ALL' || resolvedCountry === 'GLOBAL'
+    ? resolvedCountry
+    : 'ALL'
+  const today = new Date()
+  const todayStr = today.toISOString().slice(0, 10)
+
+  if (method === 'GET' && (action === '' || action === 'active')) {
+    const { data: festivals, error: festivalsError } = await admin
+      .from('festivals')
+      .select('*')
+      .or(`country.eq.${country},country.eq.ALL,country.eq.global`)
+      .lte('start_date', todayStr)
+      .gte('end_date', todayStr)
+    if (!festivalsError && festivals && festivals.length > 0) {
+      for (const festival of festivals) {
+        const normalizedCountry = String(festival.country || country || 'ALL').toUpperCase()
+        const { data: existingOffer } = await admin
+          .from('offers')
+          .select('id,status')
+          .eq('festival_id', festival.id)
+          .eq('country', normalizedCountry)
+          .gte('end_date', todayStr)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        if (existingOffer?.id) continue
+        const durationDays = String(festival.type || '').toLowerCase() === 'religion'
+          ? RELIGION_FESTIVAL_DURATION_DAYS
+          : DEFAULT_FESTIVAL_DURATION_DAYS
+        const endDate = new Date(today)
+        endDate.setUTCDate(endDate.getUTCDate() + durationDays)
+        const finalEndDate = endDate.toISOString().slice(0, 10)
+        await admin.from('offers').insert({
+          festival_id: festival.id,
+          discount: Number(festival.default_discount || 50),
+          start_date: todayStr,
+          end_date: finalEndDate,
+          country: normalizedCountry,
+          status: 'active',
+        })
+      }
+    }
+
+    await admin.from('offers').update({ status: 'inactive', updated_at: nowIso() }).eq('status', 'active').lt('end_date', todayStr)
+
+    const { data, error } = await admin
+      .from('offers')
+      .select('id, festival_id, discount, start_date, end_date, country, status, festivals(name)')
+      .eq('status', 'active')
+      .or(`country.eq.${country},country.eq.ALL,country.eq.global`)
+      .lte('start_date', todayStr)
+      .gte('end_date', todayStr)
+      .order('created_at', { ascending: false })
+    let rows: any[] = []
+    if (!error) {
+      rows = (data || []).map((row: any) => ({
+        id: row.id,
+        festival_id: row.festival_id,
+        festival: row.festivals?.name || 'Festival Offer',
+        discount: Number(row.discount || 0),
+        start_date: row.start_date,
+        end_date: row.end_date,
+        country: row.country,
+        status: row.status,
+        expires_in: expiresInDaysLabel(row.end_date),
+      }))
+    } else {
+      const { data: legacyData, error: legacyError } = await admin
+        .from('festival_offers')
+        .select('id, festival_name, discount_percent, start_date, end_date, country_code, is_active')
+        .eq('is_active', true)
+        .or(`country_code.eq.${country},country_code.eq.ALL,country_code.eq.global`)
+        .lte('start_date', todayStr)
+        .gte('end_date', todayStr)
+        .order('created_at', { ascending: false })
+      if (legacyError) return err(legacyError.message)
+      rows = (legacyData || []).map((row: any) => ({
+        id: row.id,
+        festival_id: null,
+        festival: row.festival_name || 'Festival Offer',
+        discount: Number(row.discount_percent || 0),
+        start_date: row.start_date,
+        end_date: row.end_date,
+        country: row.country_code || 'ALL',
+        status: row.is_active ? 'active' : 'inactive',
+        expires_in: expiresInDaysLabel(row.end_date),
+      }))
+    }
+    const top = rows[0] || null
+    return json(top ? { ...top, data: rows } : { data: rows })
+  }
+
+  if (method === 'GET' && action) {
+    const offerId = action
+    const { data, error } = await admin
+      .from('offers')
+      .select('id, festival_id, discount, start_date, end_date, country, status, festivals(name)')
+      .eq('id', offerId)
+      .maybeSingle()
+    if (!error && data) {
+      return json({
+        id: data.id,
+        festival_id: data.festival_id,
+        festival: (data as any).festivals?.name || 'Festival Offer',
+        discount: Number(data.discount || 0),
+        start_date: data.start_date,
+        end_date: data.end_date,
+        country: data.country,
+        status: data.status,
+        expires_in: expiresInDaysLabel(data.end_date),
+      })
+    }
+    const { data: legacyData, error: legacyError } = await admin
+      .from('festival_offers')
+      .select('id, festival_name, discount_percent, start_date, end_date, country_code, is_active')
+      .eq('id', offerId)
+      .maybeSingle()
+    if (legacyError) return err(legacyError.message)
+    if (!legacyData) return err('Offer not found', 404, 'NOT_FOUND')
+    return json({
+      id: legacyData.id,
+      festival_id: null,
+      festival: legacyData.festival_name || 'Festival Offer',
+      discount: Number(legacyData.discount_percent || 0),
+      start_date: legacyData.start_date,
+      end_date: legacyData.end_date,
+      country: legacyData.country_code || 'ALL',
+      status: legacyData.is_active ? 'active' : 'inactive',
+      expires_in: expiresInDaysLabel(legacyData.end_date),
+    })
+  }
+
+  return err('Not found', 404)
+}
+
 async function handleTranslate(method: string, _pathParts: string[], body: any, req?: Request) {
   if (method !== 'POST') return err('Not found', 404)
   const text = sanitizeTextInput(body?.text, 12000)
@@ -2771,15 +2946,27 @@ async function handleProducts(method: string, pathParts: string[], body: any, us
 
   // GET /products
   if (method === 'GET' && !id) {
-    const { data, error } = await sb.from('products').select('*').order('created_at', { ascending: false })
+    const page = clampInt(body?.page, 1, 100000, 1)
+    const limit = clampInt(body?.limit, 1, 100, 50)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+    const { data, error } = await sb
+      .from('products')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .range(from, to)
     if (error) return err(error.message)
     return json({ data })
   }
 
   // GET /products/categories
   if (method === 'GET' && id === 'categories') {
+    const redisKey = 'cache:products:categories'
+    const redisCached = await redisGetJson<any[]>(redisKey)
+    if (redisCached) return json({ data: redisCached, cached: true, cache: 'redis' })
     const { data, error } = await sb.from('categories').select('*').eq('is_active', true).order('sort_order')
     if (error) return err(error.message)
+    await redisSetJson(redisKey, data || [], Math.floor(CATEGORY_LIST_CACHE_TTL_MS / 1000))
     return json({ data })
   }
 
@@ -4470,6 +4657,7 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
 
   const isPaymentCreate =
     method === 'POST' && (
+      action === 'intent' ||
       (action === 'payment' && pathParts[1] === 'init') ||
       (action === 'create' && !pathParts[1])
     )
@@ -4827,6 +5015,11 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
       ref_code: refCode,
       referrer_id: referrerReseller.user_id,
     })
+    await emitDomainEvent(admin, 'user_signup', {
+      user_id: userId,
+      ref_code: refCode,
+      referrer_id: referrerReseller.user_id,
+    }, null)
 
     return json({ data: insertedReferral }, 201)
   }
@@ -5080,12 +5273,16 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
     const geoDefaults = GEO_FALLBACK_BY_COUNTRY[countryCode] || { language: requestedLanguage || 'en', currency: 'USD' }
     const language = requestedLanguage || geoDefaults.language || 'en'
     const currency = requestedCurrency || geoDefaults.currency || 'USD'
+    const page = clampInt(req ? new URL(req.url).searchParams.get('page') : body?.page, 1, 100000, 1)
+    const limit = clampInt(req ? new URL(req.url).searchParams.get('limit') : body?.limit, 1, 100, 60)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
 
     const { data, error } = await sb
       .from('products')
       .select('id, name, slug, description, short_description, price, status, business_type, features, apk_url, build_id, build_status, discount_percent, rating, created_at, marketplace_visible')
       .order('created_at', { ascending: false })
-      .limit(500)
+      .range(from, to)
     if (error) return err(error.message)
     const rows = data || []
     const ratesPayload = await resolveCurrencyRates(admin)
@@ -5177,12 +5374,16 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
   if (method === 'GET' && action === 'search') {
     const q = sanitizeSearchTerm(String(body.q || '').trim())
     const filters = parseQueryFilters(body.filter)
+    const page = clampInt(body?.page, 1, 100000, 1)
+    const limit = clampInt(body?.limit, 1, 100, 60)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
     let query = sb
       .from('products')
       .select('id, name, slug, description, short_description, price, status, business_type, features, apk_url, discount_percent, rating, tags, created_at, marketplace_visible')
       .eq('marketplace_visible', true)
       .order('created_at', { ascending: false })
-      .limit(500)
+      .range(from, to)
 
     if (q) {
       query = query.or(`name.ilike.%${q}%,slug.ilike.%${q}%,description.ilike.%${q}%,business_type.ilike.%${q}%`)
@@ -6163,16 +6364,40 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     return await handleServers('POST', ['server', 'ai-action'], { server_id: serverId, action: 'fix_issues', params: body?.params || {} }, userId, sb)
   }
 
-  // POST /server/deploy/git
-  if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'git') {
+  const routeServerDeploy = async (preferApk: boolean) => {
+    if (preferApk) {
+      return await handleApk('POST', ['build'], body, userId, sb)
+    }
     const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
     if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
     return await handleServers('POST', ['git', 'deploy'], { server_id: serverId }, userId, sb)
   }
 
+  // POST /server/deploy/git
+  if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'git') {
+    return await routeServerDeploy(false)
+  }
+
+  // POST /server/deploy
+  if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && !thirdSegment) {
+    const deployParameterValues = [body?.deploy_kind, body?.deploy_type, body?.type]
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter(Boolean)
+    const uniqueDeployTypes = Array.from(new Set(deployParameterValues))
+    if (uniqueDeployTypes.length > 1) {
+      return fail('Conflicting deploy type aliases', 422, 'VALIDATION_ERROR', {
+        deploy_kind: body?.deploy_kind || null,
+        deploy_type: body?.deploy_type || null,
+        type: body?.type || null,
+      })
+    }
+    const deployKind = uniqueDeployTypes[0] || ''
+    return await routeServerDeploy(deployKind === 'apk')
+  }
+
   // POST /server/deploy/apk
   if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'apk') {
-    return await handleApk('POST', ['build'], body, userId, sb)
+    return await routeServerDeploy(true)
   }
 
   // GET /server/deploy/status/:id
@@ -8561,6 +8786,11 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
     }
   }
 
+  // POST /apk/scan
+  if (method === 'POST' && pathParts[0] === 'scan') {
+    return await handleApk('POST', ['git-scan'], body, userId, sb)
+  }
+
   // POST /apk/build
   if (method === 'POST' && pathParts[0] === 'build' && !pathParts[1]) {
     const { data, error } = await sb.from('apk_build_queue').insert({
@@ -9032,25 +9262,85 @@ type BuilderRunBody = {
 }
 
 const BUILDER_AGENT_FLOW = ['PROMPT_AI', 'ARCHITECT_AI', 'DEV_AI', 'DEBUG_AI', 'SCAN_AI', 'TEST_AI', 'BUILD_AI', 'DEPLOY_AI', 'MONITOR_AI'] as const
+const BUILDER_DEFAULT_APP_ROUTES = ['/dashboard', '/products', '/wallet', '/api/*'] as const
 const BUILDER_MAX_RETRIES = 3
-const BUILDER_RETRY_AGENT = 'DEBUG_AI'
-const BUILDER_RETRY_OUTPUT = 'retry_queued'
+
 const BUILDER_STEP_AGENT_PLAN = [
   { step: 'parse_prompt', agent: 'PROMPT_AI' },
   { step: 'generate_architecture', agent: 'ARCHITECT_AI' },
   { step: 'generate_frontend', agent: 'DEV_AI' },
   { step: 'generate_backend', agent: 'DEV_AI' },
+  { step: 'generate_db_queries', agent: 'DEV_AI' },
+  { step: 'routing_engine', agent: 'DEV_AI' },
   { step: 'connect_db', agent: 'DEV_AI' },
   { step: 'run_debug', agent: 'DEBUG_AI' },
   { step: 'run_scan', agent: 'SCAN_AI' },
   { step: 'run_test', agent: 'TEST_AI' },
+  { step: 'build_web', agent: 'BUILD_AI' },
   { step: 'build_apk', agent: 'BUILD_AI' },
   { step: 'deploy', agent: 'DEPLOY_AI' },
   { step: 'monitor', agent: 'MONITOR_AI' },
+  { step: 'marketplace_link', agent: 'DEV_AI' },
+  { step: 'wallet_payment_link', agent: 'DEV_AI' },
+  { step: 'license_attach', agent: 'DEV_AI' },
+  { step: 'ui_micro_flow', agent: 'TEST_AI' },
+  { step: 'error_safe', agent: 'DEBUG_AI' },
+  { step: 'cache_system', agent: 'DEV_AI' },
+  { step: 'finalize_live', agent: 'MONITOR_AI' },
 ] as const
 
 async function handleBuilder(method: string, pathParts: string[], body: BuilderCreateBody | BuilderRunBody, userId: string, sb: ReturnType<typeof adminClient>) {
   const admin = adminClient()
+
+  const seedBuilderQueues = async (projectId: string, traceId: string) => {
+    const queueErrors: string[] = []
+    try {
+      let buildQueueError: any = null
+      const buildQueueBasePayload = {
+        type: 'web',
+        priority: 2,
+        status: 'pending',
+        logs: `builder trace ${traceId}`,
+        max_retries: BUILDER_MAX_RETRIES,
+        duplicate_fingerprint: `${projectId}:${traceId}:build`,
+      }
+      const withProjectRes = await admin.from('build_queue').insert({
+        ...buildQueueBasePayload,
+        project_id: projectId,
+      })
+      buildQueueError = withProjectRes.error
+      if (buildQueueError && /column .*project_id|schema cache|does not exist/i.test(String(buildQueueError?.message || ''))) {
+        const fallbackRes = await admin.from('build_queue').insert(buildQueueBasePayload)
+        buildQueueError = fallbackRes.error
+      }
+      if (buildQueueError) queueErrors.push(buildQueueError.message)
+
+      const { error: debugQueueError } = await admin.from('debug_queue').insert({
+        project_id: projectId,
+        trace_id: traceId,
+        source_step: 'run_debug',
+        status: 'queued',
+        max_retries: BUILDER_MAX_RETRIES,
+        payload: { project_id: projectId, trace_id: traceId, queue: 'debug_queue' },
+      })
+      if (debugQueueError) queueErrors.push(debugQueueError.message)
+
+      const { error: deployQueueError } = await admin.from('deploy_queue').insert({
+        project_id: projectId,
+        trace_id: traceId,
+        source_step: 'deploy',
+        status: 'queued',
+        max_retries: BUILDER_MAX_RETRIES,
+        payload: { project_id: projectId, trace_id: traceId, queue: 'deploy_queue' },
+      })
+      if (deployQueueError) queueErrors.push(deployQueueError.message)
+    } catch (error) {
+      queueErrors.push(error instanceof Error ? error.message : 'unknown queue seed failure')
+    }
+    if (queueErrors.length) {
+      throw new Error(`builder queue seed failed: ${queueErrors.join(' | ')}`)
+    }
+  }
 
   // POST /builder/create
   if (method === 'POST' && pathParts[0] === 'create') {
@@ -9062,18 +9352,39 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
     const target_platforms = Array.isArray((body as BuilderCreateBody)?.target_platforms)
       ? ((body as BuilderCreateBody).target_platforms || []).map((v) => String(v || '').trim()).filter(Boolean)
       : ['web', 'apk', 'api']
+    const traceId = crypto.randomUUID()
+    const promptInsights = {
+      modules: ['dashboard', 'products', 'wallet'],
+      roles: ['admin', 'operator'],
+      features: ['routing', 'db', 'api', 'build', 'deploy', 'monitor'],
+      tech_stack_hint: stack_preference,
+    }
+    const architectureSeed = {
+      db: {
+        tables: ['projects', 'project_versions', 'ai_tasks', 'build_logs'],
+      },
+      erd: {
+        nodes: ['projects', 'project_versions', 'ai_tasks', 'build_logs'],
+        links: ['projects->project_versions', 'projects->ai_tasks', 'projects->build_logs'],
+      },
+      apis: ['/builder/create', '/builder/run', '/builder/status/:project_id', '/builder/logs/:project_id', '/builder/retry'],
+      routes: BUILDER_DEFAULT_APP_ROUTES,
+    }
 
     const { data: project, error: projectError } = await admin
       .from('projects')
       .insert({
         name,
-        status: 'created',
+        status: 'initiated',
         prompt,
         created_by: userId,
         metadata: {
+          trace_id: traceId,
           stack_preference,
           target_platforms,
           builder_flow: BUILDER_AGENT_FLOW,
+          entry_action: 'builder_create',
+          entry_api: '/builder/create',
         },
       })
       .select('*')
@@ -9091,12 +9402,26 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .single()
 
     const { error: seedTaskError } = await admin.from('ai_tasks').insert([
-      { project_id: project.id, agent: 'PROMPT_AI', input: prompt, output: 'Requirement parsed', status: 'success' },
-      { project_id: project.id, agent: 'ARCHITECT_AI', input: name, output: 'Architecture seeded', status: 'success' },
+      { project_id: project.id, agent: 'PROMPT_AI', input: prompt, output: JSON.stringify(promptInsights), status: 'queued' },
+      { project_id: project.id, agent: 'ARCHITECT_AI', input: name, output: JSON.stringify(architectureSeed), status: 'queued' },
     ])
     if (seedTaskError) {
       await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', project.id)
       return fail(seedTaskError.message, 400, 'BUILDER_TASK_SEED_FAILED')
+    }
+
+    const { error: architectureInsertError } = await admin.from('project_architecture').insert({
+      project_id: project.id,
+      db: architectureSeed.db,
+      erd: architectureSeed.erd,
+      apis: architectureSeed.apis,
+      routes: architectureSeed.routes,
+      trace_id: traceId,
+      created_by: userId,
+    })
+    if (architectureInsertError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', project.id)
+      return fail(architectureInsertError.message, 400, 'BUILDER_ARCHITECTURE_SEED_FAILED')
     }
 
     const { error: seedLogError } = await admin.from('build_logs').insert({
@@ -9110,9 +9435,55 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       return fail(seedLogError.message, 400, 'BUILDER_LOG_SEED_FAILED')
     }
 
+    try {
+      await seedBuilderQueues(project.id, traceId)
+    } catch (queueSeedError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', project.id)
+      return fail(
+        queueSeedError instanceof Error ? queueSeedError.message : 'Queue seed failed',
+        400,
+        'BUILDER_QUEUE_SEED_FAILED'
+      )
+    }
+    try {
+      await admin.rpc('log_audit_event', {
+        p_event_category: 'BUILDER',
+        p_event_type: 'project_created',
+        p_action: 'create',
+        p_actor_id: userId,
+        p_target_table: 'projects',
+        p_target_id: project.id,
+        p_metadata: {
+          trace_id: traceId,
+          builder_status: 'initiated',
+          target_platforms,
+          flow: BUILDER_AGENT_FLOW,
+        },
+        p_ingest_source: 'api-gateway',
+        p_is_system: false,
+        p_occurred_at: nowIso(),
+      })
+    } catch (auditError) {
+      console.error('builder create audit failed:', auditError)
+    }
+
+    await emitDomainEvent(admin, 'builder_complete', {
+      project_id: project.id,
+      trace_id: traceId,
+      user_id: userId,
+      status: 'initiated',
+      source: 'builder_create',
+    }, null)
+
     return ok({
       project_id: project.id,
-      status: project.status || 'created',
+      status: project.status || 'initiated',
+      trace_id: traceId,
+      architecture: {
+        routes: BUILDER_DEFAULT_APP_ROUTES,
+        apis: architectureSeed.apis,
+      },
+      prompt_insights: promptInsights,
       version: version?.version || 'v1.0.0',
     }, 201)
   }
@@ -9133,6 +9504,7 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       status: 'running',
       updated_at: nowIso(),
     }).eq('id', projectId)
+    const traceId = String((project as any)?.metadata?.trace_id || crypto.randomUUID())
 
     const taskRows = BUILDER_STEP_AGENT_PLAN.map(({ step, agent }) => ({
       project_id: projectId,
@@ -9158,18 +9530,32 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', projectId)
       return fail(logInsertError.message, 400, 'BUILDER_LOG_INSERT_FAILED')
     }
+    try {
+      await seedBuilderQueues(projectId, traceId)
+    } catch (queueSeedError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', projectId)
+      return fail(
+        queueSeedError instanceof Error ? queueSeedError.message : 'Queue seed failed',
+        400,
+        'BUILDER_QUEUE_SEED_FAILED'
+      )
+    }
 
     return ok({
       project_id: projectId,
       status: 'running',
+      trace_id: traceId,
       retry_limit: BUILDER_MAX_RETRIES,
       flow: BUILDER_AGENT_FLOW,
+      route_validation: {
+        required_routes: BUILDER_DEFAULT_APP_ROUTES,
+        required_apis: ['/builder/create', '/builder/run', '/builder/status/:project_id', '/builder/logs/:project_id', '/builder/retry'],
+      },
       step_count: BUILDER_STEP_AGENT_PLAN.length,
     })
   }
 
-  // GET /builder/status/:project_id and GET /builder/status
-  if (method === 'GET' && pathParts[0] === 'status') {
+
     const projectId = String(pathParts[1] || '').trim()
     const projectQuery = admin.from('projects').select('*')
     if (projectId) projectQuery.eq('id', projectId)
@@ -9185,13 +9571,27 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle()
+    const { count: failedDebugAttempts } = await admin
+      .from('build_logs')
+      .select('*', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .eq('step', 'run_debug')
+      .eq('status', 'failed')
+
+    const { count: retryCount } = await admin
+      .from('ai_tasks')
+      .select('id', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .eq('agent', 'DEBUG_AI')
+      .eq('output', 'retry_queued')
 
     return ok({
       project_id: project.id,
       status: project.status || 'unknown',
+      trace_id: project?.metadata?.trace_id || null,
       current_step: latestLog?.step || null,
       step_status: latestLog?.status || null,
-      self_healing: true,
+
     })
   }
 
@@ -9229,6 +9629,16 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .maybeSingle()
     if (projectError || !project) return fail('Project not found', 404, 'NOT_FOUND')
 
+    const { count: retryCount } = await admin
+      .from('ai_tasks')
+      .select('id', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .eq('agent', 'DEBUG_AI')
+      .eq('output', 'retry_queued')
+    if (Number(retryCount || 0) >= BUILDER_MAX_RETRIES) {
+      return fail('Retry limit reached', 409, 'RETRY_LIMIT_REACHED', { retry_limit: BUILDER_MAX_RETRIES })
+    }
+
     const { data: lastFailedStep } = await admin
       .from('build_logs')
       .select('*')
@@ -9237,6 +9647,21 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle()
+    const { count: retryCount } = await admin
+      .from('ai_tasks')
+      .select('*', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .eq('agent', 'DEBUG_AI')
+      .eq('output', 'retry_queued')
+    const currentRetries = Number(retryCount || 0)
+    if (currentRetries >= BUILDER_MAX_RETRIES) {
+      return fail('Retry limit reached', 409, 'BUILDER_RETRY_LIMIT_REACHED', {
+        retry_limit: BUILDER_MAX_RETRIES,
+        retry_count: currentRetries,
+
+        loop: 'DEBUG_AI',
+      })
+    }
 
     const { count: existingRetries } = await admin
       .from('ai_tasks')
@@ -9265,13 +9690,28 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       status: 'queued',
     })
     if (retryTaskError) return fail(retryTaskError.message, 400, 'BUILDER_RETRY_TASK_FAILED')
+    try {
+      await seedBuilderQueues(projectId, String((project as any)?.metadata?.trace_id || crypto.randomUUID()))
+    } catch (queueSeedError) {
+      return fail(
+        queueSeedError instanceof Error ? queueSeedError.message : 'Queue seed failed',
+        400,
+        'BUILDER_QUEUE_SEED_FAILED'
+      )
+    }
 
     return ok({
       project_id: projectId,
       status: 'running',
       retry_step: lastFailedStep?.step || 'retry',
       retry_limit: BUILDER_MAX_RETRIES,
+      retry_count: currentRetries + 1,
     })
+  }
+
+  // POST /builder/debug (DEBUG_AI alias: routes to retry/self-heal loop endpoint)
+  if (method === 'POST' && pathParts[0] === 'debug') {
+    return await handleBuilder('POST', ['retry'], body, userId, sb)
   }
 
   return fail('Route not found', 404, 'ROUTE_NOT_FOUND', { module: 'builder' })
@@ -10654,6 +11094,28 @@ async function handleSubscriptions(method: string, pathParts: string[], body: an
     if (!isServiceMode) return err('Forbidden', 403, 'FORBIDDEN')
 
     const now = new Date()
+    const todayStr = now.toISOString().slice(0, 10)
+    let offersExpired = 0
+    let couponsExpired = 0
+
+    const { data: expiredOffers } = await sb.from('offers').select('id').eq('status', 'active').lt('end_date', todayStr).limit(2000)
+    if (expiredOffers && expiredOffers.length > 0) {
+      const ids = expiredOffers.map((row: any) => row.id).filter(Boolean)
+      if (ids.length > 0) {
+        const { error: offerExpireError } = await sb.from('offers').update({ status: 'inactive', updated_at: nowIso() }).in('id', ids)
+        if (!offerExpireError) offersExpired = ids.length
+      }
+    }
+
+    const { data: expiredCoupons } = await sb.from('marketplace_coupons').select('id').eq('is_active', true).lt('end_date', todayStr).limit(2000)
+    if (expiredCoupons && expiredCoupons.length > 0) {
+      const couponIds = expiredCoupons.map((row: any) => row.id).filter(Boolean)
+      if (couponIds.length > 0) {
+        const { error: couponExpireError } = await sb.from('marketplace_coupons').update({ is_active: false, updated_at: nowIso() }).in('id', couponIds)
+        if (!couponExpireError) couponsExpired = couponIds.length
+      }
+    }
+
     const { data: subs, error } = await sb.from('subscriptions').select('*')
       .eq('auto_renew', true)
       .in('status', ['active', 'expired'])
@@ -10760,7 +11222,7 @@ async function handleSubscriptions(method: string, pathParts: string[], body: an
       }
     }
 
-    return json({ success: true, processed, charged, failed })
+    return json({ success: true, processed, charged, failed, offers_expired: offersExpired, coupons_expired: couponsExpired })
   }
 
   return err('Not found', 404)
@@ -11454,10 +11916,13 @@ Deno.serve(async (req) => {
     if (!SUPPORTED_API_VERSIONS.has(requestedVersion)) {
       return fail('Unsupported API version', 400, 'UNSUPPORTED_API_VERSION', { supported: Array.from(SUPPORTED_API_VERSIONS) })
     }
-    const normalizedPath = fullPath.replace(/^api\/v\d+\/?/, '')
+    const normalizedPath = fullPath
+
     const parts = normalizedPath.split('/').filter(Boolean)
-    const module = parts[0]
-    const subParts = parts.slice(1)
+    const rawModule = parts[0]
+    const alias = rawModule ? MODULE_ALIASES[rawModule] : undefined
+    const module = alias?.module || rawModule
+    const subParts = alias?.prependAction ? [alias.prependAction, ...parts.slice(1)] : parts.slice(1)
 
     // Parse body for POST/PUT/DELETE, query params for GET
     let body: any = {}
@@ -11485,6 +11950,9 @@ Deno.serve(async (req) => {
     }
     if (module === 'currency') {
       return await handleCurrency(req.method, subParts, body)
+    }
+    if (module === 'offers' && req.method === 'GET') {
+      return await handleOffersPublic(req.method, subParts, body, req)
     }
     if (module === 'api' && req.method === 'GET' && subParts[0] === 'status') {
       return ok({ status: 'ok', timestamp: nowIso() })
@@ -11597,6 +12065,44 @@ Deno.serve(async (req) => {
       case 'marketplace':
         routeResponse = await handleMarketplace(req.method, subParts, body, userId, sb)
         break
+      case 'favorite':
+        routeResponse = await handleMarketplace(req.method, ['favorite', ...subParts], body, userId, sb)
+        break
+      case 'favorites':
+        if (subParts.length === 0 && req.method === 'GET') {
+          routeResponse = await handleMarketplace('GET', ['favorite', 'list'], body, userId, sb)
+          break
+        }
+        if (subParts[0] === 'toggle') {
+          routeResponse = await handleMarketplace(req.method, ['favorite', 'toggle'], body, userId, sb)
+          break
+        }
+        routeResponse = fail('Route not found', 404, 'ROUTE_NOT_FOUND', {
+          module,
+          endpoint: `${module}/${subParts[0] || ''}`,
+          version: requestedVersion,
+          is_graceful_not_found: true,
+        })
+        break
+      case 'cart':
+        if (subParts.length === 0) {
+          if (req.method === 'GET') {
+            routeResponse = await handleMarketplace(req.method, ['cart', 'list'], body, userId, sb)
+          } else {
+            routeResponse = fail('Route not found', 404, 'ROUTE_NOT_FOUND', {
+              module,
+              endpoint: `${module}/${subParts[0] || ''}`,
+              version: requestedVersion,
+              is_graceful_not_found: true,
+            })
+          }
+          break
+        }
+        routeResponse = await handleMarketplace(req.method, ['cart', ...subParts], body, userId, sb)
+        break
+      case 'orders':
+        routeResponse = await handleMarketplace(req.method, ['orders', ...subParts], body, userId, sb)
+        break
       case 'payment':
         routeResponse = await handleMarketplace(req.method, subParts, body, userId, sb)
         break
@@ -11608,6 +12114,9 @@ Deno.serve(async (req) => {
         break
       case 'offer':
         routeResponse = await handleOfferAliases(req.method, subParts, body, userId, sb)
+        break
+      case 'offers':
+        routeResponse = await handleOffersPublic(req.method, subParts, body, req)
         break
       case 'product':
         routeResponse = await handleProductAliases(req.method, subParts, body, userId, sb, req)
@@ -11771,12 +12280,3 @@ Deno.serve(async (req) => {
     return fail('Internal server error', 500, 'INTERNAL_ERROR', { fallback: true, retryable: true })
   }
 })
-    const { count: retryCount } = await admin
-      .from('ai_tasks')
-      .select('id', { count: 'exact', head: true })
-      .eq('project_id', projectId)
-      .eq('agent', 'DEBUG_AI')
-      .eq('output', 'retry_queued')
-    if (Number(retryCount || 0) >= BUILDER_MAX_RETRIES) {
-      return fail('Retry limit reached', 409, 'RETRY_LIMIT_REACHED', { retry_limit: BUILDER_MAX_RETRIES })
-    }

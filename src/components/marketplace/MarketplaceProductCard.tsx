@@ -15,7 +15,8 @@ import { useMarketplaceActions } from '@/hooks/useMarketplaceActions';
 import { useButtonEngine } from '@/hooks/useButtonEngine';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { formatLocalizedPrice, getCurrencySymbol } from '@/lib/locale';
-import { createPressHandlers, executeButtonAction, getButtonInteractionClassName, resolveSafeRoute } from '@/lib/buttonEngine';
+import { createPressHandlers, executeButtonAction, getButtonInteractionClassName } from '@/lib/buttonEngine';
+import { resolveSafeRoute } from '@/lib/routeRegistry';
 
 interface MarketplaceProductCardProps {
   product: MarketplaceProduct;

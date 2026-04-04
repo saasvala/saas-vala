@@ -40,6 +40,8 @@ const pageTitles: Record<string, string> = {
   '/feedback': 'Feedback',
   '/announcements': 'Announcements',
   '/dashboard/downloads': 'Download History',
+  '/favorites': 'Favorites',
+  '/recent': 'Recent Activity',
   '/onboarding': 'Onboarding',
   '/email-logs': 'Email Logs',
   '/retry-actions': 'Retry Actions',

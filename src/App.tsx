@@ -1,15 +1,20 @@
 import { Toaster } from "@/components/ui/toaster";
-import { Toaster as Sonner } from "@/components/ui/sonner";
+import { Toaster as Sonner, toast } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { OfflineRetryBanner } from "@/components/global/OfflineRetryBanner";
+import { ClientProtection } from "@/components/global/ClientProtection";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import { SidebarProvider } from "@/hooks/useSidebarState";
 import { CartProvider } from "@/hooks/useCart";
 import { Loader2 } from "lucide-react";
-import React, { Suspense, useEffect, useState } from "react";
+import React, { Suspense, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { APP_ROUTE_PATTERNS, registerRoutePatterns } from "@/lib/routeRegistry";
+import { dashboardApi, systemHealthApi } from "@/lib/api";
 
 // Only eagerly load the landing page (Marketplace) and Auth
 import Marketplace from "./pages/Marketplace";
@@ -47,6 +52,8 @@ const SupportTicket = React.lazy(() => import("./pages/SupportTicket"));
 const Feedback = React.lazy(() => import("./pages/Feedback"));
 const Announcements = React.lazy(() => import("./pages/Announcements"));
 const Downloads = React.lazy(() => import("./pages/Downloads"));
+const Favorites = React.lazy(() => import("./pages/Favorites"));
+const Recent = React.lazy(() => import("./pages/Recent"));
 const EmailLogs = React.lazy(() => import("./pages/EmailLogs"));
 const RetryActions = React.lazy(() => import("./pages/RetryActions"));
 const ArchiveManager = React.lazy(() => import("./pages/ArchiveManager"));
@@ -90,6 +97,8 @@ const CategoryFlow = React.lazy(() => import("./pages/CategoryFlow"));
 const ProductDetail = React.lazy(() => import("./pages/ProductDetail"));
 const Checkout = React.lazy(() => import("./pages/Checkout"));
 const Success = React.lazy(() => import("./pages/Success"));
+const Offers = React.lazy(() => import("./pages/Offers"));
+const OfferDetail = React.lazy(() => import("./pages/OfferDetail"));
 const Subscription = React.lazy(() => import("./pages/Subscription"));
 const AppAccess = React.lazy(() => import("./pages/AppAccess"));
 const Logout = React.lazy(() => import("./pages/Logout"));
@@ -98,9 +107,23 @@ const ApkPipeline = React.lazy(() => import("./pages/ApkPipeline"));
 const queryClient = new QueryClient();
 
 function PageLoader() {
+  const handleRetry = () => {
+    if (typeof window !== "undefined") window.location.reload();
+  };
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
-      <Loader2 className="h-8 w-8 animate-spin text-primary" />
+    <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-background px-4">
+      <div className="w-full max-w-sm space-y-2">
+        <Skeleton className="h-4 w-2/3" />
+        <Skeleton className="h-20 w-full" />
+        <Skeleton className="h-4 w-1/2" />
+      </div>
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin text-primary" />
+        <span>Loading...</span>
+      </div>
+      <Button variant="outline" size="sm" onClick={handleRetry} action="LOADER_RETRY" fallbackRoute="/">
+        Retry
+      </Button>
     </div>
   );
 }
@@ -207,10 +230,13 @@ function RoleGuard({ children, role }: { children: React.ReactNode; role: 'super
 const ADMIN_MASTER_ROUTES = new Set([
   '/admin/dashboard',
   '/admin/products',
+  '/admin/users',
   '/admin/keys',
   '/admin/servers',
+  '/admin/server-manager',
   '/admin/servers/hosting',
   '/admin/wallet',
+  '/admin/users',
   '/admin/resellers',
   '/admin/marketplace',
   '/admin/apk-pipeline',
@@ -221,6 +247,11 @@ const ADMIN_MASTER_ROUTES = new Set([
   '/admin/ai',
   '/admin/billing',
 ]);
+
+const ADMIN_DYNAMIC_PREFIXES = [
+  '/admin/apk-pipeline/',
+  '/admin/marketplace/',
+];
 
 
 function isValidAdminRoute(route: string) {
@@ -297,6 +328,17 @@ function ChatIdRedirect() {
   const { id } = useParams();
   const chatId = id ? encodeURIComponent(id) : '';
   return <Navigate to={chatId ? `/ai-chat?chat=${chatId}` : '/ai-chat'} replace />;
+}
+
+function SafeFallbackRoute() {
+  const location = useLocation();
+  const loggedRef = useRef(false);
+  useEffect(() => {
+    if (!import.meta.env.DEV || loggedRef.current) return;
+    loggedRef.current = true;
+    console.warn('[route-fallback] redirecting to homepage:', `${location.pathname}${location.search}${location.hash}`);
+  }, [location.pathname, location.search, location.hash]);
+  return <Navigate to="/" replace />;
 }
 
 const SAFE_ROUTE_PARAM = /^[a-zA-Z0-9_-]+$/;
@@ -417,6 +459,41 @@ function AppRoutes() {
   const { user } = useAuth();
   const setupDone = user?.id ? localStorage.getItem(`sv_onboarding_done_${user.id}`) === '1' : true;
 
+  useEffect(() => {
+    registerRoutePatterns(APP_ROUTE_PATTERNS);
+  }, []);
+
+  useEffect(() => {
+    const onRateLimitWarning = (event: Event) => {
+      const detail = (event as CustomEvent<{ remaining?: number; reset?: number | null }>).detail;
+      if (typeof detail?.remaining === 'number') {
+        if (detail.remaining === 0) {
+          toast.error('API rate limit reached. Please retry shortly.');
+        } else {
+          toast.warning(`API limit nearing (${detail.remaining} requests left).`);
+        }
+      }
+    };
+    window.addEventListener('api:rate-limit-warning', onRateLimitWarning as EventListener);
+    return () => {
+      window.removeEventListener('api:rate-limit-warning', onRateLimitWarning as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    void queryClient.prefetchQuery({
+      queryKey: ['preload', 'dashboard', user.id],
+      queryFn: () => dashboardApi.get(),
+      staleTime: 30_000,
+    });
+    void queryClient.prefetchQuery({
+      queryKey: ['preload', 'system-health', user.id],
+      queryFn: () => systemHealthApi.get(),
+      staleTime: 30_000,
+    });
+  }, [user?.id]);
+
   return (
     <Suspense fallback={<PageLoader />}>
       <Routes>
@@ -428,11 +505,14 @@ function AppRoutes() {
         <Route path="/" element={<Marketplace />} />
         <Route path="/marketplace" element={<Marketplace />} />
         <Route path="/search" element={<Marketplace />} />
+        <Route path="/offers" element={<Offers />} />
+        <Route path="/offer/:id" element={<OfferDetail />} />
 
         {/* Public lazy routes */}
         <Route path="/edu-pwa" element={<EduPwa />} />
         <Route path="/install" element={<Install />} />
         <Route path="/health-pwa" element={<HealthPwa />} />
+        <Route path="/health" element={<Navigate to="/system-health" replace />} />
         <Route path="/realestate-pwa" element={<RealEstatePwa />} />
         <Route path="/ecom-pwa" element={<EcomPwa />} />
         <Route path="/retail-pwa" element={<RetailPwa />} />
@@ -470,8 +550,12 @@ function AppRoutes() {
         <Route path="/onboarding" element={<AuthGuard><Onboarding /></AuthGuard>} />
         <Route path="/dashboard" element={<AuthGuard>{setupDone ? <Dashboard /> : <Navigate to="/onboarding" replace />}</AuthGuard>} />
         <Route path="/admin/dashboard" element={<AuthGuard><RoleGuard role="super_admin"><Dashboard /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/server-manager" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/servers" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/users" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/resellers" replace /></RoleGuard></AuthGuard>} />
         <Route path="/support" element={<AuthGuard><Support /></AuthGuard>} />
         <Route path="/support/ticket" element={<AuthGuard><SupportTicket /></AuthGuard>} />
+        <Route path="/favorites" element={<AuthGuard><Favorites /></AuthGuard>} />
+        <Route path="/recent" element={<AuthGuard><Recent /></AuthGuard>} />
         <Route path="/feedback" element={<AuthGuard><Feedback /></AuthGuard>} />
         <Route path="/announcements" element={<AuthGuard><Announcements /></AuthGuard>} />
         <Route path="/dashboard/downloads" element={<AuthGuard><Downloads /></AuthGuard>} />
@@ -482,6 +566,7 @@ function AppRoutes() {
         <Route path="/tags" element={<AuthGuard><RoleGuard role="super_admin"><Tags /></RoleGuard></AuthGuard>} />
         <Route path="/dashboard/*" element={<AuthGuard><Navigate to="/dashboard" replace /></AuthGuard>} />
         <Route path="/dashboard/apps" element={<AuthGuard><Navigate to="/products" replace /></AuthGuard>} />
+        <Route path="/dashboard/orders" element={<AuthGuard><Navigate to="/user/orders" replace /></AuthGuard>} />
 
         <Route path="/dashboard/subscription" element={<AuthGuard><Navigate to="/subscription" replace /></AuthGuard>} />
         <Route path="/checkout" element={<AuthGuard><Checkout /></AuthGuard>} />
@@ -559,6 +644,7 @@ function AppRoutes() {
         <Route path="/reseller-dashboard" element={<AuthGuard><RoleGuard role="reseller"><ResellerDashboard /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/dashboard" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard" replace /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/wallet" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/wallet" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/reseller/clients" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard?tab=users" replace /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/products" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/marketplace" replace /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/leads" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/seo-leads" replace /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/api-keys" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/keys" replace /></RoleGuard></AuthGuard>} />
@@ -582,11 +668,12 @@ function AppRoutes() {
         <Route path="/admin/apk-pipeline/:id/logs" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
         <Route path="/admin/apk-pipeline/:id/errors" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
         <Route path="/admin/apk-pipeline/:id/output" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
-        <Route path="/admin/*" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/dashboard" replace /></RoleGuard></AuthGuard>} />
-        <Route path="/admin/products" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/marketplace/products" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/server-manager" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/servers" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/users" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/resellers" replace /></RoleGuard></AuthGuard>} />
+
         <Route path="/admin/wallet" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/wallet" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/audit-logs" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/audit-logs" replace /></RoleGuard></AuthGuard>} />
-        <Route path="/admin/orders" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/dashboard/orders" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/orders" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/user/orders" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/seo" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/seo-leads" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/ai" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/saas-ai-dashboard" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/resellers" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/resellers" replace /></RoleGuard></AuthGuard>} />
@@ -595,7 +682,6 @@ function AppRoutes() {
         <Route path="/settings" element={<AuthGuard><Settings /></AuthGuard>} />
         <Route path="/audit-logs" element={<AuthGuard><RoleGuard role="super_admin"><AuditLogs /></RoleGuard></AuthGuard>} />
         <Route path="/system-health" element={<AuthGuard><RoleGuard role="super_admin"><SystemHealth /></RoleGuard></AuthGuard>} />
-        <Route path="/auto-pilot" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
         <Route path="/auto-pilot/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
         <Route path="/auto-pilot/system-monitor" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
         <Route path="/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot/apk-pipeline" replace /></RoleGuard></AuthGuard>} />
@@ -612,11 +698,14 @@ function AppRoutes() {
         <Route path="/admin/marketplace/languages" element={<AuthGuard><RoleGuard role="super_admin"><MarketplaceAdmin /></RoleGuard></AuthGuard>} />
         <Route path="/admin/marketplace/pricing" element={<AuthGuard><RoleGuard role="super_admin"><MarketplaceAdmin /></RoleGuard></AuthGuard>} />
         <Route path="/admin/marketplace/analytics" element={<AuthGuard><RoleGuard role="super_admin"><MarketplaceAdmin /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/*" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/dashboard" replace /></RoleGuard></AuthGuard>} />
         <Route path="/marketplace/product/:id" element={<ProductRouteGuarded />} />
+        <Route path="/orders" element={<AuthGuard><Navigate to="/user/orders" replace /></AuthGuard>} />
         <Route path="/logout" element={<Logout />} />
         <Route path="/unauthorized" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/404" element={<NotFound />} />
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="*" element={<Navigate to="/marketplace" replace />} />
+
+
       </Routes>
     </Suspense>
   );
@@ -631,6 +720,7 @@ const App = () => (
         <AuthProvider>
           <CartProvider>
             <SidebarProvider>
+              <ClientProtection />
               <AppRoutes />
               <OfflineRetryBanner />
             </SidebarProvider>

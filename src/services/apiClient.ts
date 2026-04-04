@@ -28,9 +28,10 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
     'Content-Type': 'application/json',
     apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
   };
-  if (session?.access_token) {
-    headers.Authorization = `Bearer ${session.access_token}`;
+  if (!session?.access_token) {
+    throw new Error('AUTH_TOKEN_MISSING');
   }
+  headers.Authorization = `Bearer ${session.access_token}`;
   return headers;
 }
 

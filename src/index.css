@@ -127,6 +127,15 @@
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 
+  body.sv-protected {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  body.sv-protected img {
+    pointer-events: none;
+  }
+
   h1, h2, h3, h4, h5, h6 {
     font-family: 'Space Grotesk', sans-serif;
   }
@@ -416,6 +425,24 @@
     box-shadow: 
       0 4px 20px -4px hsl(var(--primary) / 0.15),
       0 12px 36px -8px hsl(var(--primary) / 0.1);
+  }
+
+  .btn-premium {
+    background: linear-gradient(135deg, #0f172a, #1e293b);
+    color: #fff;
+    border-radius: 12px;
+    box-shadow:
+      0 4px 20px rgba(0, 0, 0, 0.5),
+      inset 0 1px 1px rgba(255, 255, 255, 0.1);
+    transition: all 0.2s ease;
+  }
+
+  .btn-premium:hover {
+    transform: scale(1.03);
+  }
+
+  .btn-premium:active {
+    transform: scale(0.97);
   }
 
   /* Focus ring */

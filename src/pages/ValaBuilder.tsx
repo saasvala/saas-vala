@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
-import { ultraBuilderApi } from '@/lib/api';
+import { builderApi, ultraBuilderApi } from '@/lib/api';
 import {
   Rocket, GitBranch, Globe, Code, Database, Bug, Wrench, Package,
   Store, Loader2, CheckCircle2, Circle, ArrowDown,
@@ -49,6 +49,8 @@ export default function ValaBuilder() {
   const [output, setOutput] = useState<string[]>([]);
   const [demoUrl, setDemoUrl] = useState('');
   const [githubUrl, setGithubUrl] = useState('');
+  const [builderProjectId, setBuilderProjectId] = useState('');
+  const isValidUuid = (value: string) => /^[a-f0-9-]{36}$/i.test(value);
 
   const addOutput = (msg: string) => setOutput(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
 
@@ -75,6 +77,22 @@ export default function ValaBuilder() {
       // Step 1: AI Planning + Git scan
       updateStep('plan', 'running');
       addOutput('📋 AI Planner analyzing requirements...');
+      addOutput('🧭 Initiating builder project creation...');
+
+      const createRes = await builderApi.create({
+        name: appName,
+        prompt,
+        stack_preference: 'auto',
+        target_platforms: ['web', 'apk', 'api'],
+      });
+      const projectId = createRes?.data?.project_id || createRes?.project_id;
+      if (!projectId) throw new Error('Builder project creation failed');
+      setBuilderProjectId(projectId);
+      addOutput(`✅ Builder project created: ${projectId}`);
+
+      const runRes = await builderApi.run({ project_id: projectId });
+      if (!runRes?.success) throw new Error('Builder run failed');
+      addOutput('✅ Builder orchestration queued');
 
       const scanRes = await ultraBuilderApi.scanFull({
         repo_url: `https://github.com/${DEFAULT_GITHUB_ORG}/${slug}`,
@@ -333,7 +351,7 @@ export default function ValaBuilder() {
             <div className="flex gap-2 flex-wrap">
               <Button onClick={runFullPipeline} disabled={isRunning} className="gap-2">
                 {isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
-                {isRunning ? 'Building...' : 'Create App (Full Pipeline)'}
+                {isRunning ? 'Generating...' : 'Generate Software'}
               </Button>
               <Button variant="outline" size="sm" onClick={() => runSingleAction('generate')} disabled={isRunning}>
                 <Code className="h-3 w-3 mr-1" /> Generate Code
@@ -430,6 +448,22 @@ export default function ValaBuilder() {
                   <Button variant="outline" size="sm" className="gap-2" onClick={() => toast.info('Navigate to Marketplace to see listing')}>
                     <Store className="h-3 w-3" /> View in Marketplace
                   </Button>
+                  {builderProjectId && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-2"
+                      onClick={() => {
+                        if (!isValidUuid(builderProjectId)) {
+                          toast.error('Invalid builder project id');
+                          return;
+                        }
+                        window.open(`/builder/${builderProjectId}`, '_blank', 'noopener,noreferrer');
+                      }}
+                    >
+                      <Server className="h-3 w-3" /> Builder Status
+                    </Button>
+                  )}
                 </div>
               )}
             </CardContent>

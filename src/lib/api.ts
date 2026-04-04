@@ -3,11 +3,8 @@ import { savePostLoginRedirect, savePreLogoutState } from './sessionState';
 
 export const API_BASE_V1 = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v1`;
 export const API_BASE_V2 = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v2`;
-const SUPPORTED_API_VERSIONS = new Set(['v1', 'v2']);
-const DEFAULT_API_VERSION = 'v1';
-const configuredVersion = String(import.meta.env.VITE_API_VERSION || DEFAULT_API_VERSION).toLowerCase();
-const API_VERSION = SUPPORTED_API_VERSIONS.has(configuredVersion) ? configuredVersion : DEFAULT_API_VERSION;
-const API_BASE = API_VERSION === 'v2' ? API_BASE_V2 : API_BASE_V1;
+const API_BASE = API_BASE_V1;
+const DEBUG_API = String(import.meta.env.VITE_DEBUG_API || '').toLowerCase() === 'true';
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
   let { data: { session } } = await supabase.auth.getSession();
@@ -23,9 +20,8 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
     'Content-Type': 'application/json',
     'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
   };
-  if (session?.access_token) {
-    headers['Authorization'] = `Bearer ${session.access_token}`;
-  }
+  if (!session?.access_token) throw new ApiError('Bearer token required', 401, 'AUTH_TOKEN_MISSING');
+  headers['Authorization'] = `Bearer ${session.access_token}`;
   return headers;
 }
 
@@ -49,7 +45,9 @@ const API_MAX_RETRY_DELAY_MS = Number(import.meta.env.VITE_API_MAX_RETRY_DELAY_M
 const API_RETRY_JITTER_MS = Number(import.meta.env.VITE_API_RETRY_JITTER_MS || 120);
 const RETRYABLE_STATUS_CODES = new Set([502, 503, 504]);
 const API_CACHE_TTL_MS = 30_000;
+
 const responseCache = new Map<string, { data: unknown; ts: number }>();
+const inFlightGetRequests = new Map<string, Promise<unknown>>();
 let consecutiveFailures = 0;
 let degradedUntil = 0;
 let escalationRaised = false;
@@ -113,12 +111,12 @@ async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promi
   throw new ApiError(lastError instanceof Error ? lastError.message : 'Network request failed', 0, 'NETWORK_ERROR', lastError);
 }
 
-async function apiCall<T = any>(method: string, path: string, body?: any): Promise<T> {
+
   const headers = await getAuthHeaders();
   const now = Date.now();
 
   const config: RequestInit = { method, headers };
-  const cacheKey = method === 'GET' ? `${path}|${JSON.stringify(body || {})}` : '';
+  const cacheKey = method === 'GET' ? pathWithQuery : '';
 
   if (method === 'GET' && body) {
     const params = new URLSearchParams();
@@ -131,12 +129,23 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
   }
 
   const pathWithoutLeadingSlash = path.replace(/^\/+/, '');
+  const requestUrl = `${API_BASE}/${pathWithoutLeadingSlash}`;
+  const debugLog = (label: string, data?: unknown) => {
+    if (!DEBUG_API) return;
+    console.debug(`[api:${method}:${pathWithoutLeadingSlash}] ${label}`, data ?? '');
+  };
   if (degradedUntil > now && method === 'GET') {
     const cached = responseCache.get(cacheKey);
-    if (cached && now - cached.ts < API_CACHE_TTL_MS) return cached.data as T;
+    if (cached && now - cached.ts < API_CACHE_TTL_MS) {
+      const elapsed = Math.round(performance.now() - startedAt);
+      debugLog('cache-hit', { elapsed_ms: elapsed, sla_ms: API_CACHE_SLA_MS });
+      warnIfCacheSlaExceeded(pathWithoutLeadingSlash, elapsed);
+      return cached.data as T;
+    }
   }
-  const res = await fetchWithTimeoutAndRetry(`${API_BASE}/${pathWithoutLeadingSlash}`, config);
+
   const data = await res.json().catch(() => ({}));
+  debugLog('response', { status: res.status, elapsed_ms: Math.round(performance.now() - startedAt) });
 
   if (!res.ok) {
     const errorPayload = data?.error;
@@ -173,6 +182,9 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
   escalationRaised = false;
   if (method === 'GET') {
     responseCache.set(cacheKey, { data, ts: Date.now() });
+    const elapsed = Math.round(performance.now() - startedAt);
+    debugLog('cache-store', { elapsed_ms: elapsed, sla_ms: API_CACHE_SLA_MS });
+    warnIfCacheSlaExceeded(pathWithoutLeadingSlash, elapsed);
   } else {
     for (const key of responseCache.keys()) {
       if (key.startsWith(`${path}`) || key.includes(path.split('?')[0])) responseCache.delete(key);
@@ -180,6 +192,106 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
   }
 
   return data;
+  };
+
+  if (method !== 'GET') {
+    return runRequest();
+  }
+  const pending = runRequest().finally(() => {
+    inFlightGetRequests.delete(getCacheKey);
+  });
+  inFlightGetRequests.set(getCacheKey, pending);
+  return pending;
+}
+
+export type CrudActionType = 'create' | 'read' | 'update' | 'delete';
+export type CrudModule =
+  | 'users'
+  | 'products'
+  | 'orders'
+  | 'wallet'
+  | 'apk'
+  | 'builder'
+  | 'server';
+
+type CrudRouteMap = Record<CrudModule, Partial<Record<CrudActionType, string>>>;
+
+export const CRUD_ROUTE_MAP: CrudRouteMap = {
+  users: {
+    create: 'admin/user/create',
+    read: 'admin/user/list',
+    update: 'admin/user/update',
+    delete: 'admin/user/delete',
+  },
+  products: {
+    create: 'admin/product/create',
+    read: 'products',
+    update: 'admin/product/update',
+    delete: 'admin/product/delete',
+  },
+  orders: {
+    read: 'admin/orders',
+    update: 'admin/order/status',
+  },
+  wallet: {
+    read: 'wallet',
+    create: 'wallet/add',
+    update: 'wallet/edit',
+  },
+  apk: {
+    create: 'apk/upload',
+    read: 'apk/list',
+    update: 'apk/update',
+    delete: 'apk/delete',
+  },
+  builder: {
+    create: 'builder/create',
+    read: 'builder/status',
+    update: 'builder/retry',
+  },
+  server: {
+    create: 'server/add',
+    read: 'server/list',
+    update: 'server/update',
+    delete: 'server/remove',
+  },
+};
+
+export type CrudConfig = {
+  type: CrudActionType;
+  api?: string;
+  payload?: Record<string, unknown> | undefined;
+  module?: CrudModule;
+};
+
+export async function CRUD<T = any>(config: CrudConfig): Promise<T> {
+  const resolvedApi = config.api || (config.module ? CRUD_ROUTE_MAP[config.module]?.[config.type] : undefined);
+  if (!resolvedApi) {
+    throw new ApiError(`CRUD route not found for ${config.module || 'custom'}:${config.type}`, 400, 'CRUD_ROUTE_NOT_FOUND');
+  }
+  if (config.type === 'create') {
+    return apiCall<T>('POST', resolvedApi, config.payload);
+  }
+  if (config.type === 'read') {
+    return apiCall<T>('GET', resolvedApi, config.payload);
+  }
+  if (config.type === 'update') {
+    return apiCall<T>('PUT', resolvedApi, config.payload);
+  }
+  return apiCall<T>('DELETE', resolvedApi, config.payload);
+}
+
+async function crudWithFallback<T = any>(
+  module: CrudModule,
+  type: CrudActionType,
+  payload: Record<string, unknown> | undefined,
+  fallback: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await CRUD<T>({ module, type, payload });
+  } catch {
+    return fallback();
+  }
 }
 
 // ===================== AUTH =====================
@@ -187,13 +299,24 @@ export const authApi = {
   me: () => apiCall('GET', 'auth/me'),
 };
 
+export const usersApi = {
+  create: (data: any) => CRUD({ type: 'create', module: 'users', payload: data }),
+  list: (params?: Record<string, unknown>) => CRUD({ type: 'read', module: 'users', payload: params }),
+  update: (data: any) => CRUD({ type: 'update', module: 'users', payload: data }),
+  delete: (data: { id: string }) => CRUD({ type: 'delete', module: 'users', payload: data }),
+};
+
 // ===================== PRODUCTS =====================
 export const productsApi = {
-  list: () => apiCall('GET', 'products'),
+  list: (params?: Record<string, unknown>) =>
+    crudWithFallback('products', 'read', params, () => apiCall('GET', 'products', params)),
   get: (id: string) => apiCall('GET', `products/${id}`),
-  create: (data: any) => apiCall('POST', 'products', data),
-  update: (id: string, data: any) => apiCall('PUT', `products/${id}`, data),
-  delete: (id: string) => apiCall('DELETE', `products/${id}`),
+  create: (data: any) =>
+    crudWithFallback('products', 'create', data, () => apiCall('POST', 'products', data)),
+  update: (id: string, data: any) =>
+    crudWithFallback('products', 'update', { id, ...data }, () => apiCall('PUT', `products/${id}`, data)),
+  delete: (id: string) =>
+    crudWithFallback('products', 'delete', { id }, () => apiCall('DELETE', `products/${id}`)),
   categories: () => apiCall('GET', 'products/categories'),
   versions: (id: string) => apiCall('GET', `products/${id}/versions`),
 };
@@ -269,10 +392,15 @@ export const resellerFeaturesApi = {
 // ===================== MARKETPLACE =====================
 export const marketplaceApi = {
   products: () => apiCall('GET', 'marketplace/products'),
-  productSearch: (q?: string, filter?: string | Record<string, unknown>) =>
-    apiCall('GET', 'product/search', { q, filter: typeof filter === 'string' ? filter : filter ? JSON.stringify(filter) : undefined }),
-  productList: (params?: { country?: string; lang?: string; currency?: string }) =>
-    apiCall('GET', 'product/list', params),
+  productSearch: (q?: string, filter?: string | Record<string, unknown>, pagination?: { page?: number; limit?: number }) =>
+    apiCall('GET', 'product/search', {
+      q,
+      filter: typeof filter === 'string' ? filter : filter ? JSON.stringify(filter) : undefined,
+      page: pagination?.page,
+      limit: pagination?.limit,
+    }),
+  productList: (params?: { country?: string; lang?: string; currency?: string; page?: number; limit?: number }) =>
+    apiCall('GET', 'product/list', { page: 1, limit: 60, ...params }),
   approve: (productId: string) => apiCall('PUT', 'marketplace/approve', { product_id: productId }),
   orders: () => apiCall('GET', 'marketplace/orders'),
   orderHistory: () => apiCall('GET', 'marketplace/order-history'),
@@ -306,6 +434,13 @@ export const marketplaceApi = {
   promoResolve: (code: string) => apiCall('GET', 'marketplace/promo/resolve', { code }),
 };
 
+export const ordersApi = {
+  read: (params?: Record<string, unknown>) =>
+    crudWithFallback('orders', 'read', params, () => marketplaceApi.orders()),
+  updateStatus: (data: Record<string, unknown>) =>
+    crudWithFallback('orders', 'update', data, () => apiCall('PUT', 'admin/order/status', data)),
+};
+
 export const bannerApi = {
   create: (data: any) => apiCall('POST', 'banner/create', data),
   list: () => apiCall('GET', 'banner/list'),
@@ -316,6 +451,8 @@ export const bannerApi = {
 export const offerApi = {
   create: (data: any) => apiCall('POST', 'offer/create', data),
   list: () => apiCall('GET', 'offer/list'),
+  active: (country?: string) => apiCall('GET', 'offers/active', country ? { country } : undefined),
+  getById: (id: string, country?: string) => apiCall('GET', `offers/${id}`, country ? { country } : undefined),
 };
 
 export const productAliasApi = {
@@ -350,17 +487,22 @@ export const keysApi = {
 
 // ===================== SERVERS =====================
 export const serversApi = {
-  list: () => apiCall('GET', 'servers/list'),
+  list: () =>
+    crudWithFallback('server', 'read', undefined, () => apiCall('GET', 'servers/list')),
   listCompat: () => apiCall('GET', 'server/list'),
   get: (id: string) => apiCall('GET', `servers/${id}`),
   status: (params?: { page?: number; limit?: number }) => apiCall('GET', 'servers/status', params),
-  create: (data: any) => apiCall('POST', 'server/add', data),
+  create: (data: any) =>
+    crudWithFallback('server', 'create', data, () => apiCall('POST', 'server/add', data)),
   start: (server_id: string) => apiCall('POST', 'servers/start', { server_id }),
   stop: (server_id: string) => apiCall('POST', 'servers/stop', { server_id }),
   restart: (server_id: string) => apiCall('POST', 'servers/restart', { server_id }),
   suspend: (id: string) => apiCall('POST', `server/suspend/${id}`),
   activate: (id: string) => apiCall('POST', `server/activate/${id}`),
-  delete: (id: string) => apiCall('DELETE', `server/delete/${id}`),
+  update: (data: any) =>
+    crudWithFallback('server', 'update', data, () => apiCall('PUT', 'server/update', data)),
+  delete: (id: string) =>
+    crudWithFallback('server', 'delete', { id }, () => apiCall('DELETE', `server/delete/${id}`)),
   deployTargets: () => apiCall('GET', 'deploy-targets'),
   triggerDeploy: (serverId: string) => apiCall('POST', 'deploy/trigger', { server_id: serverId }),
   deployStart: (server_id: string) => apiCall('POST', 'deploy/start', { server_id }),
@@ -516,6 +658,15 @@ export interface ApkDownloadResponse {
 }
 
 export const apkApi = {
+  create: (data: any) =>
+    crudWithFallback('apk', 'create', data, () => apiCall('POST', 'apk/upload', data)),
+  list: (params?: Record<string, unknown>) =>
+    crudWithFallback('apk', 'read', params, () => apiCall('GET', 'apk/list', params)),
+  update: (data: any) =>
+    crudWithFallback('apk', 'update', data, () => apiCall('PUT', 'apk/update', data)),
+  delete: (data: { id: string }) =>
+    crudWithFallback('apk', 'delete', data, () => apiCall('DELETE', 'apk/delete', data)),
+  // Legacy compatibility endpoints.
   build: (data: any) => apiCall('POST', 'apk/build', data),
   history: () => apiCall('GET', 'apk/history'),
   status: (id: string) => apiCall('GET', `apk/status/${id}`),
@@ -541,18 +692,22 @@ export const builderApi = {
     prompt: string;
     stack_preference?: string;
     target_platforms?: string[];
-  }) => apiCall('POST', 'builder/create', data),
+  }) => crudWithFallback('builder', 'create', data, () => apiCall('POST', 'builder/create', data)),
   run: (data: { project_id: string; version?: string }) => apiCall('POST', 'builder/run', data),
-  status: (projectId?: string) => apiCall('GET', projectId ? `builder/status/${projectId}` : 'builder/status'),
-  logs: (projectId?: string) => apiCall('GET', projectId ? `builder/logs/${projectId}` : 'builder/logs'),
-  retry: (projectId: string) => apiCall('POST', 'builder/retry', { project_id: projectId }),
+
 };
 
 // ===================== WALLET =====================
 export const walletApi = {
-  get: () => apiCall('GET', 'wallet'),
+  get: () =>
+    crudWithFallback('wallet', 'read', undefined, () => apiCall('GET', 'wallet')),
   add: (amount: number, description?: string, paymentMethod?: string, walletId?: string) =>
-    apiCall('POST', 'wallet/add', { amount, description, payment_method: paymentMethod, wallet_id: walletId }),
+    crudWithFallback(
+      'wallet',
+      'create',
+      { amount, description, payment_method: paymentMethod, wallet_id: walletId },
+      () => apiCall('POST', 'wallet/add', { amount, description, payment_method: paymentMethod, wallet_id: walletId }),
+    ),
   control: (data: { wallet_id?: string; action?: 'freeze' | 'unfreeze'; freeze?: boolean; limit?: number; note?: string }) =>
     apiCall('POST', 'wallet/control', data),
   export: (params?: { format?: 'csv' | 'pdf'; type?: string; source?: string; status?: string; from?: string; to?: string; search?: string }) =>
@@ -570,7 +725,7 @@ export const walletApi = {
   adminAdd: (data: { wallet_id: string; amount: number; note?: string; source?: string }) =>
     apiCall('POST', 'wallet/admin/add', data),
   adminEdit: (data: { wallet_id: string; balance: number; note?: string }) =>
-    apiCall('POST', 'wallet/admin/edit', data),
+    crudWithFallback('wallet', 'update', data as Record<string, unknown>, () => apiCall('POST', 'wallet/admin/edit', data)),
   adminDelete: (data: { wallet_id: string; note?: string }) =>
     apiCall('POST', 'wallet/admin/delete', data),
   adminFreeze: (data: { wallet_id: string; freeze: boolean; note?: string }) =>
