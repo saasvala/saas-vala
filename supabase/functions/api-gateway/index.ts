@@ -9034,6 +9034,7 @@ type BuilderRunBody = {
 const BUILDER_AGENT_FLOW = ['PROMPT_AI', 'ARCHITECT_AI', 'DEV_AI', 'DEBUG_AI', 'SCAN_AI', 'TEST_AI', 'BUILD_AI', 'DEPLOY_AI', 'MONITOR_AI'] as const
 const BUILDER_DEFAULT_APP_ROUTES = ['/dashboard', '/products', '/wallet', '/api/*'] as const
 const BUILDER_MAX_RETRIES = 3
+const BUILDER_STATUS_LOG_MULTIPLIER_PER_PROJECT = 10
 const BUILDER_STEP_AGENT_PLAN = [
   { step: 'parse_prompt', agent: 'PROMPT_AI' },
   { step: 'generate_architecture', agent: 'ARCHITECT_AI' },
@@ -9316,8 +9317,71 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
     })
   }
 
-  // GET /builder/status/:project_id
-  if (method === 'GET' && pathParts[0] === 'status' && pathParts[1]) {
+  // GET /builder/status and GET /builder/status/:project_id
+  if (method === 'GET' && pathParts.length === 1 && pathParts[0] === 'status') {
+    const statusLimit = 100
+    const { data: projects, error: projectsError } = await admin
+      .from('projects')
+      .select('id,name,status,created_at,updated_at')
+      .eq('created_by', userId)
+      .order('created_at', { ascending: false })
+      .limit(statusLimit)
+    if (projectsError) return fail(projectsError.message, 400, 'BUILDER_STATUS_FAILED')
+
+    const projectIds = (projects || []).map((p: any) => p.id).filter(Boolean)
+    const { data: logs } = projectIds.length
+      ? await admin
+          .from('build_logs')
+          .select('project_id,step,status,created_at')
+          .in('project_id', projectIds)
+          .order('created_at', { ascending: false })
+          .limit(statusLimit * BUILDER_STATUS_LOG_MULTIPLIER_PER_PROJECT)
+      : { data: [] as any[] }
+
+    const { data: retries } = projectIds.length
+      ? await admin
+          .from('ai_tasks')
+          .select('project_id')
+          .in('project_id', projectIds)
+          .eq('agent', 'DEBUG_AI')
+          .eq('output', 'retry_queued')
+      : { data: [] as any[] }
+
+    const latestByProject = new Map<string, any>()
+    for (const row of (logs || [])) {
+      const pid = row?.project_id
+      if (!pid || latestByProject.has(pid)) continue
+      latestByProject.set(pid, row)
+    }
+    const retryCountByProject = new Map<string, number>()
+    for (const row of (retries || [])) {
+      const pid = row?.project_id
+      if (!pid) continue
+      retryCountByProject.set(pid, Number(retryCountByProject.get(pid) || 0) + 1)
+    }
+
+    return ok({
+      projects: (projects || []).map((p: any) => {
+        const latestLog = latestByProject.get(p.id)
+        return {
+          project_id: p.id,
+          name: p.name || null,
+          status: p.status || 'unknown',
+          current_step: latestLog?.step || null,
+          step_status: latestLog?.status || null,
+          retry_count: retryCountByProject.get(p.id) || 0,
+          retry_limit: BUILDER_MAX_RETRIES,
+          self_healing: true,
+          created_at: p.created_at || null,
+          updated_at: p.updated_at || null,
+        }
+      }),
+      limit: statusLimit,
+      truncated: (projects || []).length >= statusLimit,
+    })
+  }
+
+  if (method === 'GET' && pathParts[0] === 'status' && pathParts.length === 2 && pathParts[1]) {
     const projectId = String(pathParts[1] || '').trim()
     const { data: project, error: projectError } = await admin
       .from('projects')
@@ -9340,30 +9404,20 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .eq('step', 'run_debug')
       .eq('status', 'failed')
 
+    const { count: retryCount } = await admin
+      .from('ai_tasks')
+      .select('id', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .eq('agent', 'DEBUG_AI')
+      .eq('output', 'retry_queued')
+
     return ok({
       project_id: projectId,
       status: project.status || 'unknown',
       trace_id: project?.metadata?.trace_id || null,
       current_step: latestLog?.step || null,
       step_status: latestLog?.status || null,
-      self_healing: {
-        active: true,
-        loop: 'DEBUG_AI',
-        max_retries: BUILDER_MAX_RETRIES,
-        retry_count: Number(failedDebugAttempts || 0),
-      },
-      route_validation: {
-        routes: BUILDER_DEFAULT_APP_ROUTES,
-        apis: ['/builder/create', '/builder/run', '/builder/status/:project_id', '/builder/logs/:project_id', '/builder/retry'],
-      },
-      output: project.status === 'live'
-        ? {
-          web: 'working',
-          apk: 'working',
-          admin_panel: 'working',
-          marketplace_entry: 'enabled',
-        }
-        : null,
+
     })
   }
 
@@ -9400,6 +9454,16 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .eq('id', projectId)
       .maybeSingle()
     if (projectError || !project) return fail('Project not found', 404, 'NOT_FOUND')
+
+    const { count: retryCount } = await admin
+      .from('ai_tasks')
+      .select('id', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .eq('agent', 'DEBUG_AI')
+      .eq('output', 'retry_queued')
+    if (Number(retryCount || 0) >= BUILDER_MAX_RETRIES) {
+      return fail('Retry limit reached', 409, 'RETRY_LIMIT_REACHED', { retry_limit: BUILDER_MAX_RETRIES })
+    }
 
     const { data: lastFailedStep } = await admin
       .from('build_logs')
@@ -11955,12 +12019,3 @@ Deno.serve(async (req) => {
     return fail('Internal server error', 500, 'INTERNAL_ERROR', { fallback: true, retryable: true })
   }
 })
-    const { count: retryCount } = await admin
-      .from('ai_tasks')
-      .select('id', { count: 'exact', head: true })
-      .eq('project_id', projectId)
-      .eq('agent', 'DEBUG_AI')
-      .eq('output', 'retry_queued')
-    if (Number(retryCount || 0) >= BUILDER_MAX_RETRIES) {
-      return fail('Retry limit reached', 409, 'RETRY_LIMIT_REACHED', { retry_limit: BUILDER_MAX_RETRIES })
-    }
