@@ -1,0 +1,205 @@
+{
+  "info": {
+    "_postman_id": "c8f4d0f5-2f66-4d19-b7f0-2a9e6fc9f6d8",
+    "name": "SAAS Vala API v1",
+    "description": "Postman collection for SAAS Vala API Gateway v1 routes.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{bearerToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": { "raw": "{{baseUrl}}/health", "host": ["{{baseUrl}}"], "path": ["health"] }
+          }
+        },
+        {
+          "name": "GET /api/status",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/status", "host": ["{{baseUrl}}"], "path": ["api", "status"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "GET /auth/me",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": { "raw": "{{baseUrl}}/auth/me", "host": ["{{baseUrl}}"], "path": ["auth", "me"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Marketplace",
+      "item": [
+        {
+          "name": "GET /products",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": { "raw": "{{baseUrl}}/products", "host": ["{{baseUrl}}"], "path": ["products"] }
+          }
+        },
+        {
+          "name": "GET /cart/list",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": { "raw": "{{baseUrl}}/cart/list", "host": ["{{baseUrl}}"], "path": ["cart", "list"] }
+          }
+        },
+        {
+          "name": "GET /orders",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": { "raw": "{{baseUrl}}/orders", "host": ["{{baseUrl}}"], "path": ["orders"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Core Modules",
+      "item": [
+        {
+          "name": "GET /dashboard",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": { "raw": "{{baseUrl}}/dashboard", "host": ["{{baseUrl}}"], "path": ["dashboard"] }
+          }
+        },
+        {
+          "name": "GET /wallet",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": { "raw": "{{baseUrl}}/wallet", "host": ["{{baseUrl}}"], "path": ["wallet"] }
+          }
+        },
+        {
+          "name": "GET /keys",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": { "raw": "{{baseUrl}}/keys", "host": ["{{baseUrl}}"], "path": ["keys"] }
+          }
+        },
+        {
+          "name": "GET /models/list",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": { "raw": "{{baseUrl}}/models/list", "host": ["{{baseUrl}}"], "path": ["models", "list"] }
+          }
+        },
+        {
+          "name": "GET /ai/models",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": { "raw": "{{baseUrl}}/ai/models", "host": ["{{baseUrl}}"], "path": ["ai", "models"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Builder + Pipeline",
+      "item": [
+        {
+          "name": "GET /builder/status",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": { "raw": "{{baseUrl}}/builder/status", "host": ["{{baseUrl}}"], "path": ["builder", "status"] }
+          }
+        },
+        {
+          "name": "GET /pipeline/status/:id",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": { "raw": "{{baseUrl}}/pipeline/status/{{pipelineId}}", "host": ["{{baseUrl}}"], "path": ["pipeline", "status", "{{pipelineId}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "SEO + System",
+      "item": [
+        {
+          "name": "GET /seo/leads/list",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": { "raw": "{{baseUrl}}/seo/leads/list", "host": ["{{baseUrl}}"], "path": ["seo", "leads", "list"] }
+          }
+        },
+        {
+          "name": "GET /system-health",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": { "raw": "{{baseUrl}}/system-health", "host": ["{{baseUrl}}"], "path": ["system-health"] }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "https://your-domain.com/api/v1", "type": "string" },
+    { "key": "bearerToken", "value": "", "type": "string" },
+    { "key": "pipelineId", "value": "sample-id", "type": "string" }
+  ]
+}

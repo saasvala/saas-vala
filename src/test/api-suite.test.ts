@@ -24,10 +24,10 @@ const apiCases: ApiCase[] = [
   { key: 'keys', paths: ['/keys'], expectedStatuses: [200, 401, 403] },
   { key: 'models', paths: ['/models/list'], expectedStatuses: [200, 401, 403] },
   { key: 'ai', paths: ['/ai/models'], expectedStatuses: [200, 401, 403] },
-  { key: 'builder', paths: ['/builder/status'], expectedStatuses: [200, 401, 403, 404] },
+  { key: 'builder', paths: ['/builder/status'], expectedStatuses: [200, 401, 403] },
   { key: 'pipeline', paths: ['/pipeline/status/sample-id'], expectedStatuses: [200, 401, 403, 404] },
   { key: 'system-health', paths: ['/system-health', '/health'], expectedStatuses: [200, 401, 403] },
-  { key: 'seo', paths: ['/seo/leads/list'], expectedStatuses: [200, 401, 403, 404] },
+  { key: 'seo', paths: ['/seo/leads/list'], expectedStatuses: [200, 401, 403] },
 ];
 
 function makeHeaders() {
