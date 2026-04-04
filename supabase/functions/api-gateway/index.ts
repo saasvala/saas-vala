@@ -170,8 +170,10 @@ const RESELLER_FEATURE_KEY_SET = new Set<string>([
 type DomainEventType =
   | 'product_created'
   | 'lead_generated'
+  | 'build_complete'
   | 'build_completed'
   | 'payment_success'
+  | 'error_detected'
   | 'payment_init'
   | 'order_completed'
   | 'subscription_renewed'
@@ -648,8 +650,10 @@ async function emitDomainEvent(
       tenant_id: tenantId || null,
     })
     const eventTypeMap: Record<string, string> = {
+      build_complete: 'apk_ready',
       build_completed: 'apk_ready',
       payment_success: 'payment_success',
+      error_detected: 'system_alert',
       lead_generated: 'lead_generated',
     }
     const mappedEventType = eventTypeMap[eventType] || null
@@ -4470,6 +4474,7 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
 
   const isPaymentCreate =
     method === 'POST' && (
+      action === 'intent' ||
       (action === 'payment' && pathParts[1] === 'init') ||
       (action === 'create' && !pathParts[1])
     )
@@ -6165,6 +6170,17 @@ async function handleServers(method: string, pathParts: string[], body: any, use
 
   // POST /server/deploy/git
   if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'git') {
+    const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
+    if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
+    return await handleServers('POST', ['git', 'deploy'], { server_id: serverId }, userId, sb)
+  }
+
+  // POST /server/deploy
+  if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && !thirdSegment) {
+    const deployKind = String(body?.deploy_kind || body?.deploy_type || body?.type || '').trim().toLowerCase()
+    if (deployKind === 'apk') {
+      return await handleApk('POST', ['build'], body, userId, sb)
+    }
     const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
     if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
     return await handleServers('POST', ['git', 'deploy'], { server_id: serverId }, userId, sb)
@@ -8561,6 +8577,11 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
     }
   }
 
+  // POST /apk/scan
+  if (method === 'POST' && pathParts[0] === 'scan') {
+    return await handleApk('POST', ['git-scan'], body, userId, sb)
+  }
+
   // POST /apk/build
   if (method === 'POST' && pathParts[0] === 'build' && !pathParts[1]) {
     const { data, error } = await sb.from('apk_build_queue').insert({
@@ -9484,6 +9505,7 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       return fail('Retry limit reached', 409, 'BUILDER_RETRY_LIMIT_REACHED', {
         retry_limit: BUILDER_MAX_RETRIES,
         retry_count: currentRetries,
+        loop: 'DEBUG_AI',
       })
     }
 
@@ -9520,6 +9542,11 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       retry_limit: BUILDER_MAX_RETRIES,
       retry_count: currentRetries + 1,
     })
+  }
+
+  // POST /builder/debug
+  if (method === 'POST' && pathParts[0] === 'debug') {
+    return await handleBuilder('POST', ['retry'], body, userId, sb)
   }
 
   return fail('Route not found', 404, 'ROUTE_NOT_FOUND', { module: 'builder' })
