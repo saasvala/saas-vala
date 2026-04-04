@@ -10,6 +10,7 @@ import { CartProvider } from "@/hooks/useCart";
 import { Loader2 } from "lucide-react";
 import React, { Suspense, useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { registerRoutePatterns } from "@/lib/routeRegistry";
 
 // Only eagerly load the landing page (Marketplace) and Auth
 import Marketplace from "./pages/Marketplace";
@@ -96,6 +97,28 @@ const Logout = React.lazy(() => import("./pages/Logout"));
 const ApkPipeline = React.lazy(() => import("./pages/ApkPipeline"));
 
 const queryClient = new QueryClient();
+
+const APP_ROUTE_PATTERNS = [
+  "/",
+  "/auth",
+  "/login",
+  "/signup",
+  "/dashboard",
+  "/admin/dashboard",
+  "/reseller/dashboard",
+  "/reseller-dashboard",
+  "/product/:id",
+  "/product/:productId",
+  "/category/:macro",
+  "/category/:macro/:sub",
+  "/category/:macro/:sub/:micro",
+  "/cart",
+  "/checkout",
+  "/success",
+  "/keys",
+  "/app/:id",
+  "/app/:productId",
+];
 
 function PageLoader() {
   return (
@@ -425,6 +448,10 @@ function AppRoutes() {
   const { user } = useAuth();
   const setupDone = user?.id ? localStorage.getItem(`sv_onboarding_done_${user.id}`) === '1' : true;
 
+  useEffect(() => {
+    registerRoutePatterns(APP_ROUTE_PATTERNS);
+  }, []);
+
   return (
     <Suspense fallback={<PageLoader />}>
       <Routes>
@@ -630,6 +657,7 @@ function AppRoutes() {
         <Route path="/logout" element={<Logout />} />
         <Route path="/unauthorized" element={<Navigate to="/dashboard" replace />} />
         <Route path="/404" element={<NotFound />} />
+        <Route path="*" element={<Navigate to="/marketplace" replace />} />
 
       </Routes>
     </Suspense>

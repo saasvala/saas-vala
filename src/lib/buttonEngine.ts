@@ -1,4 +1,5 @@
 type Primitive = string | number | boolean | null | undefined;
+import { registerRoutePatterns, resolveSafeRoute } from '@/lib/routeRegistry';
 
 export type ButtonActionConfig = {
   action: string;
@@ -21,7 +22,6 @@ type ExecuteButtonActionOptions<T> = {
 const lastTriggeredAt = new Map<string, number>();
 const inFlightActions = new Set<string>();
 const lastTouchByAction = new Map<string, number>();
-const routeSet = new Set<string>();
 
 let soundPlaying = false;
 
@@ -34,30 +34,8 @@ function isLikelyNetworkError(error: unknown): boolean {
   return message.includes('network') || message.includes('fetch') || message.includes('timeout') || message.includes('abort');
 }
 
-function normalizePath(path: string): string {
-  const trimmed = String(path || '').trim();
-  if (!trimmed) return '/';
-  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-}
-
 export function registerKnownRoutes(routes: string[]) {
-  routes.forEach((route) => routeSet.add(normalizePath(route)));
-}
-
-export function resolveSafeRoute(route: string | undefined, fallback = '/'): string {
-  const normalizedFallback = normalizePath(fallback);
-  if (!route) return normalizedFallback;
-  const normalizedRoute = normalizePath(route);
-  if (routeSet.size === 0) return normalizedRoute;
-  if (routeSet.has(normalizedRoute)) return normalizedRoute;
-  const dynamicCandidate = normalizedRoute.split('/').filter(Boolean);
-  const hasPrefixMatch = Array.from(routeSet).some((known) => {
-    const knownParts = known.split('/').filter(Boolean);
-    if (knownParts.length === 0) return normalizedRoute === '/';
-    if (knownParts.length > dynamicCandidate.length) return false;
-    return knownParts.every((part, idx) => part.startsWith(':') || part === dynamicCandidate[idx]);
-  });
-  return hasPrefixMatch ? normalizedRoute : normalizedFallback;
+  registerRoutePatterns(routes);
 }
 
 export function getButtonInteractionClassName(extra = ''): string {
