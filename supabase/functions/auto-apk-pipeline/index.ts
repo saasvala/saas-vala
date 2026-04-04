@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { buildPipelineIdempotencyKey, normalizePipelineState } from "./pipeline-shared.ts";
+import { PIPELINE_ORDER, buildPipelineIdempotencyKey, normalizePipelineState } from "./pipeline-shared.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -11,7 +11,10 @@ type PipelineState = ReturnType<typeof normalizePipelineState>;
 const MAX_RETRIES = 3;
 const LICENSE_TTL_DAYS = Number(Deno.env.get("APK_LICENSE_TTL_DAYS") || "365");
 const WORKER_LOCK_SECONDS = Number(Deno.env.get("APK_WORKER_LOCK_SECONDS") || "90");
+const SIGNED_URL_TTL_SECONDS = Number(Deno.env.get("APK_SIGNED_URL_TTL_SECONDS") || "300");
 const POSTGRES_UNIQUE_VIOLATION = "23505";
+const MS_PER_DAY = 86_400_000;
+const LOCKABLE_PIPELINE_STATES = PIPELINE_ORDER.filter((state) => state !== "ready");
 
 function nowIso() {
   return new Date().toISOString();
@@ -302,7 +305,7 @@ async function runLicenseStage(admin: any, job: any) {
   }
 
   const licenseValue = randomKey("SV-OFFLINE");
-  const expireAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * LICENSE_TTL_DAYS).toISOString();
+  const expireAt = new Date(Date.now() + LICENSE_TTL_DAYS * MS_PER_DAY).toISOString();
 
   const { data: inserted, error } = await admin.from("license_keys").insert({
     product_id: job.product_id,
@@ -325,7 +328,7 @@ async function runLicenseStage(admin: any, job: any) {
   }).select("id, license_key").single();
 
   if (error) {
-    if (String(error.message || "").toLowerCase().includes("duplicate") || String(error.code || "") === POSTGRES_UNIQUE_VIOLATION) {
+    if (String(error.code || "") === POSTGRES_UNIQUE_VIOLATION || String(error.message || "").toLowerCase().includes("duplicate")) {
       const { data: existing } = await admin
         .from("license_keys")
         .select("id, license_key")
@@ -364,7 +367,7 @@ async function runUploadingStage(admin: any, job: any) {
   });
 
   const apkPath = String(job.apk_file_path || `${job.slug}/release.apk`);
-  const signedExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  const signedExpiresAt = new Date(Date.now() + SIGNED_URL_TTL_SECONDS * 1000).toISOString();
 
   await updateJob(admin, job.id, {
     artifact_metadata: {
@@ -430,7 +433,7 @@ async function lockNextJob(admin: any, workerId: string) {
   const { data: candidate } = await admin
     .from("apk_build_queue")
     .select("*")
-    .in("pipeline_status", ["queued", "analyzing", "fixing", "scanning", "building", "signing", "licensing", "uploading", "marketplace"]) 
+    .in("pipeline_status", LOCKABLE_PIPELINE_STATES)
     .or(`lock_expires_at.is.null,lock_expires_at.lt."${nowIso()}"`)
     .order("created_at", { ascending: true })
     .limit(1)
@@ -783,6 +786,21 @@ Deno.serve(async (req) => {
     if (act === "worker" || act === "process_next") {
       const body = await handleWorker(admin, data || {}, supabaseUrl, anonKey);
       return respond(body, 200);
+    }
+
+    if (act === "auto_marketplace_workflow") {
+      const limit = Math.max(1, Math.min(50, Number(data?.limit || 10)));
+      const body = await handleWorker(admin, { ...(data || {}), max_jobs: limit }, supabaseUrl, anonKey);
+      return respond({
+        success: true,
+        processed: body.processed_count,
+        queued: body.processed_count,
+        verified: 0,
+        attached: 0,
+        skipped: 0,
+        results: body.processed,
+        message: `✅ Workflow processed ${body.processed_count} canonical pipeline jobs`,
+      }, 200);
     }
 
     if (act === "factory_build_callback" || act === "build_complete") {

@@ -412,8 +412,10 @@ jobs:
       - name: Configure signing materials
         run: |
           if [ -n "\${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
-            echo "\${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > /tmp/release.keystore
-            echo "KEYSTORE_PATH=/tmp/release.keystore" >> $GITHUB_ENV
+            umask 077
+            KEYSTORE_FILE="$(mktemp /tmp/release-keystore-XXXXXX.jks)"
+            echo "\${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > "$KEYSTORE_FILE"
+            echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> $GITHUB_ENV
             echo "KEYSTORE_READY=true" >> $GITHUB_ENV
           else
             echo "KEYSTORE_READY=false" >> $GITHUB_ENV
@@ -431,7 +433,7 @@ jobs:
               -Pandroid.injected.signing.key.password="\${{ secrets.ANDROID_KEY_PASSWORD }}" \
               --no-daemon
           else
-            # Fallback produces an unsigned release APK when keystore secrets are unavailable.
+            # Fallback keeps the build moving when signing secrets are unavailable; output signing depends on project Gradle config.
             ./gradlew assembleRelease --no-daemon
           fi
           
