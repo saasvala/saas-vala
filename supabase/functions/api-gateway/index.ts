@@ -9033,6 +9033,8 @@ type BuilderRunBody = {
 
 const BUILDER_AGENT_FLOW = ['PROMPT_AI', 'ARCHITECT_AI', 'DEV_AI', 'DEBUG_AI', 'SCAN_AI', 'TEST_AI', 'BUILD_AI', 'DEPLOY_AI', 'MONITOR_AI'] as const
 const BUILDER_MAX_RETRIES = 3
+const BUILDER_RETRY_AGENT = 'DEBUG_AI'
+const BUILDER_RETRY_OUTPUT = 'retry_queued'
 const BUILDER_STEP_AGENT_PLAN = [
   { step: 'parse_prompt', agent: 'PROMPT_AI' },
   { step: 'generate_architecture', agent: 'ARCHITECT_AI' },
@@ -9169,15 +9171,10 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
   // GET /builder/status/:project_id and GET /builder/status
   if (method === 'GET' && pathParts[0] === 'status') {
     const projectId = String(pathParts[1] || '').trim()
-    const baseProjectQuery = admin
-      .from('projects')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(1)
-
-    const { data: project, error: projectError } = projectId
-      ? await admin.from('projects').select('*').eq('id', projectId).maybeSingle()
-      : await baseProjectQuery.maybeSingle()
+    const projectQuery = admin.from('projects').select('*')
+    if (projectId) projectQuery.eq('id', projectId)
+    else projectQuery.order('created_at', { ascending: false }).limit(1)
+    const { data: project, error: projectError } = await projectQuery.maybeSingle()
 
     if (projectError || !project) return fail('Project not found', 404, 'NOT_FOUND')
 
@@ -9245,8 +9242,8 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .from('ai_tasks')
       .select('*', { count: 'exact', head: true })
       .eq('project_id', projectId)
-      .eq('agent', 'DEBUG_AI')
-      .eq('output', 'retry_queued')
+      .eq('agent', BUILDER_RETRY_AGENT)
+      .eq('output', BUILDER_RETRY_OUTPUT)
     const retryCount = Number(existingRetries || 0)
     if (retryCount >= BUILDER_MAX_RETRIES) {
       return fail('Retry limit exceeded', 409, 'BUILDER_RETRY_LIMIT_REACHED', { retry_limit: BUILDER_MAX_RETRIES })
@@ -9262,9 +9259,9 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
     if (retryLogError) return fail(retryLogError.message, 400, 'BUILDER_RETRY_LOG_FAILED')
     const { error: retryTaskError } = await admin.from('ai_tasks').insert({
       project_id: projectId,
-      agent: 'DEBUG_AI',
+      agent: BUILDER_RETRY_AGENT,
       input: lastFailedStep?.step || 'retry',
-      output: 'retry_queued',
+      output: BUILDER_RETRY_OUTPUT,
       status: 'queued',
     })
     if (retryTaskError) return fail(retryTaskError.message, 400, 'BUILDER_RETRY_TASK_FAILED')
