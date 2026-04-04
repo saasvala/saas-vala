@@ -91,6 +91,8 @@ const CategoryFlow = React.lazy(() => import("./pages/CategoryFlow"));
 const ProductDetail = React.lazy(() => import("./pages/ProductDetail"));
 const Checkout = React.lazy(() => import("./pages/Checkout"));
 const Success = React.lazy(() => import("./pages/Success"));
+const Offers = React.lazy(() => import("./pages/Offers"));
+const OfferDetail = React.lazy(() => import("./pages/OfferDetail"));
 const Subscription = React.lazy(() => import("./pages/Subscription"));
 const AppAccess = React.lazy(() => import("./pages/AppAccess"));
 const Logout = React.lazy(() => import("./pages/Logout"));
@@ -452,6 +454,8 @@ function AppRoutes() {
         <Route path="/" element={<Marketplace />} />
         <Route path="/marketplace" element={<Marketplace />} />
         <Route path="/search" element={<Marketplace />} />
+        <Route path="/offers" element={<Offers />} />
+        <Route path="/offer/:id" element={<OfferDetail />} />
 
         {/* Public lazy routes */}
         <Route path="/edu-pwa" element={<EduPwa />} />
