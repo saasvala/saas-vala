@@ -575,7 +575,6 @@ function AppRoutes() {
         <Route path="/reseller/leads" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/seo-leads" replace /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/api-keys" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/keys" replace /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/keys" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/keys" replace /></RoleGuard></AuthGuard>} />
-        <Route path="/reseller/clients" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller/users" replace /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/subscription" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/subscription" replace /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/settings" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/reseller-dashboard?tab=settings" replace /></RoleGuard></AuthGuard>} />
         <Route path="/reseller/seo" element={<AuthGuard><RoleGuard role="reseller"><Navigate to="/seo-leads" replace /></RoleGuard></AuthGuard>} />
@@ -595,8 +594,8 @@ function AppRoutes() {
         <Route path="/admin/apk-pipeline/:id/logs" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
         <Route path="/admin/apk-pipeline/:id/errors" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
         <Route path="/admin/apk-pipeline/:id/output" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
-        <Route path="/admin/*" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/dashboard" replace /></RoleGuard></AuthGuard>} />
-        <Route path="/admin/products" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/marketplace/products" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/server-manager" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/servers" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/users" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/resellers" replace /></RoleGuard></AuthGuard>} />
 
         <Route path="/admin/wallet" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/wallet" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/audit-logs" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/audit-logs" replace /></RoleGuard></AuthGuard>} />
@@ -609,7 +608,6 @@ function AppRoutes() {
         <Route path="/settings" element={<AuthGuard><Settings /></AuthGuard>} />
         <Route path="/audit-logs" element={<AuthGuard><RoleGuard role="super_admin"><AuditLogs /></RoleGuard></AuthGuard>} />
         <Route path="/system-health" element={<AuthGuard><RoleGuard role="super_admin"><SystemHealth /></RoleGuard></AuthGuard>} />
-        <Route path="/auto-pilot" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
         <Route path="/auto-pilot/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
         <Route path="/auto-pilot/system-monitor" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
         <Route path="/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot/apk-pipeline" replace /></RoleGuard></AuthGuard>} />
@@ -626,11 +624,13 @@ function AppRoutes() {
         <Route path="/admin/marketplace/languages" element={<AuthGuard><RoleGuard role="super_admin"><MarketplaceAdmin /></RoleGuard></AuthGuard>} />
         <Route path="/admin/marketplace/pricing" element={<AuthGuard><RoleGuard role="super_admin"><MarketplaceAdmin /></RoleGuard></AuthGuard>} />
         <Route path="/admin/marketplace/analytics" element={<AuthGuard><RoleGuard role="super_admin"><MarketplaceAdmin /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/*" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/dashboard" replace /></RoleGuard></AuthGuard>} />
         <Route path="/marketplace/product/:id" element={<ProductRouteGuarded />} />
+        <Route path="/orders" element={<AuthGuard><Navigate to="/user/orders" replace /></AuthGuard>} />
         <Route path="/logout" element={<Logout />} />
         <Route path="/unauthorized" element={<Navigate to="/dashboard" replace />} />
         <Route path="/404" element={<NotFound />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+
       </Routes>
     </Suspense>
   );
