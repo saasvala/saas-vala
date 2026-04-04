@@ -6168,17 +6168,8 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     return await handleServers('POST', ['server', 'ai-action'], { server_id: serverId, action: 'fix_issues', params: body?.params || {} }, userId, sb)
   }
 
-  // POST /server/deploy/git
-  if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'git') {
-    const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
-    if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
-    return await handleServers('POST', ['git', 'deploy'], { server_id: serverId }, userId, sb)
-  }
-
-  // POST /server/deploy
-  if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && !thirdSegment) {
-    const deployKind = String(body?.deploy_kind || body?.deploy_type || body?.type || '').trim().toLowerCase()
-    if (deployKind === 'apk') {
+  const routeServerDeploy = async (preferApk: boolean) => {
+    if (preferApk) {
       return await handleApk('POST', ['build'], body, userId, sb)
     }
     const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
@@ -6186,9 +6177,20 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     return await handleServers('POST', ['git', 'deploy'], { server_id: serverId }, userId, sb)
   }
 
+  // POST /server/deploy/git
+  if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'git') {
+    return await routeServerDeploy(false)
+  }
+
+  // POST /server/deploy
+  if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && !thirdSegment) {
+    const deployKind = String(body?.deploy_kind || body?.deploy_type || body?.type || '').trim().toLowerCase()
+    return await routeServerDeploy(deployKind === 'apk')
+  }
+
   // POST /server/deploy/apk
   if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'apk') {
-    return await handleApk('POST', ['build'], body, userId, sb)
+    return await routeServerDeploy(true)
   }
 
   // GET /server/deploy/status/:id
@@ -9544,7 +9546,7 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
     })
   }
 
-  // POST /builder/debug
+  // POST /builder/debug (DEBUG_AI alias: routes to retry/self-heal loop endpoint)
   if (method === 'POST' && pathParts[0] === 'debug') {
     return await handleBuilder('POST', ['retry'], body, userId, sb)
   }
