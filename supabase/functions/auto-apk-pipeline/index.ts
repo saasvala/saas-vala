@@ -96,29 +96,6 @@ async function logStep(
   });
 }
 
-async function logTrace(
-  admin: any,
-  traceId: string,
-  action: string,
-  payload: Record<string, unknown>,
-  statusCode = 200,
-) {
-  await admin.from("trace_logs").insert({
-    trace_id: traceId,
-    module: "apk_pipeline",
-    action,
-    api_endpoint: "auto-apk-pipeline",
-    request_payload: payload,
-    response_status: statusCode,
-    db_queries: [],
-    execution_time: 0,
-  });
-}
-
-function mapStatus(step: PipelineStep | "failed"): PipelineStep | FinalStatus {
-  if (step === "failed") return "failed";
-  return step === "ready" ? "ready" : step;
-}
 
 async function selectAiModel(
   admin: any,
@@ -489,28 +466,7 @@ async function stepUpload(admin: any, job: any): Promise<StepResult> {
   };
 }
 
-async function stepMarketplaceSync(admin: any, job: any): Promise<StepResult> {
-  if (!job.product_id) {
-    return { ok: false, error: { reason: "missing_product_id" }, retryable: false };
-  }
-  const artifacts = job.artifacts || {};
-  const apkPath = String(artifacts.object_path || `${job.slug || job.id}/release-signed.apk`);
-  const { error } = await admin
-    .from("products")
-    .update({
-      apk_url: apkPath,
-      is_apk: true,
-      apk_enabled: true,
-      marketplace_visible: true,
-      build_status: "success",
-      build_id: job.id,
-    })
-    .eq("id", job.product_id);
-  if (error) {
-    return { ok: false, error: { reason: "marketplace_sync_failed", details: error.message }, retryable: true };
-  }
-  return { ok: true, payload: { marketplace_attached: true, download_now_enabled: true } };
-}
+
 
 async function runStep(admin: any, job: any, supabaseUrl: string, anonKey: string): Promise<{ next: PipelineStep | "failed"; result: StepResult }> {
   const currentStep = String(job.current_step || "queued") as PipelineStep;
@@ -555,9 +511,6 @@ async function runStep(admin: any, job: any, supabaseUrl: string, anonKey: strin
   return { next: "failed", result: { ok: false, error: { reason: "unknown_step", step: currentStep }, retryable: false } };
 }
 
-function mergeJson(base: any, patch: any) {
-  return { ...(base || {}), ...(patch || {}) };
-}
 
 async function processOneJob(admin: any, job: any, supabaseUrl: string, anonKey: string) {
   const currentStep = String(job.current_step || "queued") as PipelineStep;
@@ -642,6 +595,7 @@ n
         const text = await reposRes.text();
         return respond({ error: "repo_scan_failed", details: text }, 500);
       }
+
 
         });
         queued.push({ id: job.id, slug, trace_id: job.trace_id });

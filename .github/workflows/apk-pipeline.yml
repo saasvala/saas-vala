@@ -1,0 +1,46 @@
+name: APK Pipeline Track
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: saas-vala-apk-pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apk_pipeline_worker:
+    name: "📱 APK Pipeline Worker"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Invoke APK pipeline worker (queued -> ready)
+        env:
+          SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+          APK_PIPELINE_SERVICE_TOKEN: ${{ secrets.APK_PIPELINE_SERVICE_TOKEN }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ] || [ -z "$APK_PIPELINE_SERVICE_TOKEN" ]; then
+            echo "Missing APK pipeline secrets; skipping."
+            exit 0
+          fi
+
+          curl -sS -X POST "$SUPABASE_URL/functions/v1/apk-pipeline-worker" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $APK_PIPELINE_SERVICE_TOKEN" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -d '{"action":"process_queue","data":{"source":"github_actions"}}'

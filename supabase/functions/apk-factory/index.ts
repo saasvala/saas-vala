@@ -33,6 +33,7 @@ Deno.serve(async (req) => {
 
   try {
     const { action, data } = await req.json();
+    const requestTraceId = data?.trace_id || crypto.randomUUID();
     const githubToken = Deno.env.get("SAASVALA_GITHUB_TOKEN")!;
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -180,13 +181,7 @@ Deno.serve(async (req) => {
                   package_name: `com.saasvala.${slug.replace(/-/g, "_")}`,
                   product_id: product_id || "",
                   supabase_url: supabaseUrl,
-                  priority_tier: priority_tier || "normal",
-                  resource_class: resource_class || "standard",
-                  build_target: build_target || "apk",
-                },
-              }),
-            }
-          );
+
 
         if (!dispatchRes.ok) {
           const err = await dispatchRes.text();
@@ -206,23 +201,14 @@ Deno.serve(async (req) => {
             repo_name: slug,
             repo_url: targetRepo,
             slug,
-              build_status: "building",
-              product_id: product_id || null,
-              target_industry: "general",
-              build_started_at: new Date().toISOString(),
-              priority_tier: priority_tier || "normal",
-              priority_score: priority_tier === "vip" ? 100 : 50,
-              resource_class: resource_class || "standard",
-              build_target: build_target || "apk",
-            },
-            { onConflict: "slug" }
-          );
+
 
         return respond({
           success: true,
           slug,
           repo_url: targetRepo,
           status: "building",
+          trace_id: requestTraceId,
           message: `🔧 APK build triggered via GitHub Actions for ${slug}`,
         });
       }
@@ -289,10 +275,7 @@ Deno.serve(async (req) => {
           status: buildStatus,
           error: buildError,
           product_id: pid,
-          callback_signature,
-          artifact_checksum,
-          artifact_checksum_algorithm,
-          build_target,
+
         } = data || {};
 
         if (!completeSlug)
@@ -324,12 +307,11 @@ Deno.serve(async (req) => {
             .from("apk_build_queue")
             .update({
               build_status: "completed",
+              pipeline_stage: "ready",
+              trace_id: callbackTraceId || requestTraceId,
               apk_file_path: apk_path,
               build_completed_at: new Date().toISOString(),
-              artifact_checksum: artifact_checksum || null,
-              artifact_checksum_algorithm: artifact_checksum_algorithm || "sha256",
-              build_target: build_target || "apk",
-              rollback_status: "none",
+
             })
             .eq("slug", completeSlug);
 
@@ -391,6 +373,7 @@ Deno.serve(async (req) => {
 
           return respond({
             success: true,
+            trace_id: callbackTraceId || requestTraceId,
             message: `✅ APK for ${completeSlug} built and attached!`,
           });
         } else {
@@ -398,9 +381,11 @@ Deno.serve(async (req) => {
             .from("apk_build_queue")
             .update({
               build_status: "failed",
+              pipeline_stage: "failed",
+              trace_id: callbackTraceId || requestTraceId,
               build_error: buildError || "Unknown error",
               build_completed_at: new Date().toISOString(),
-              rollback_status: "restored_previous_stable",
+
             })
             .eq("slug", completeSlug);
 
@@ -422,6 +407,7 @@ Deno.serve(async (req) => {
 
           return respond({
             success: false,
+            trace_id: callbackTraceId || requestTraceId,
             message: `❌ APK build failed for ${completeSlug}: ${buildError}`,
           });
         }
@@ -472,18 +458,7 @@ on:
       supabase_url:
         description: 'Supabase URL for callback'
         required: false
-      priority_tier:
-        description: 'Build priority tier (vip/normal)'
-        required: false
-        default: 'normal'
-      resource_class:
-        description: 'Runner resource class (light/standard/heavy)'
-        required: false
-        default: 'standard'
-      build_target:
-        description: 'Artifact build target (apk/aab/web)'
-        required: false
-        default: 'apk'
+
 
 jobs:
   build:
@@ -606,13 +581,7 @@ jobs:
               \\"data\\": {
                 \\"slug\\": \\"\${{ github.event.inputs.app_slug }}\\",
                 \\"status\\": \\"$STATUS\\",
-                \\"product_id\\": \\"\${{ github.event.inputs.product_id }}\\",
-                \\"apk_path\\": \\"\${{ github.event.inputs.app_slug }}/release.apk\\",
-                \\"artifact_checksum\\": \\"$ARTIFACT_CHECKSUM\\",
-                \\"artifact_checksum_algorithm\\": \\"sha256\\",
-                \\"build_target\\": \\"\${{ github.event.inputs.build_target }}\\"
-              }
-            }" || echo "Callback failed"
+
 `;
 }
 

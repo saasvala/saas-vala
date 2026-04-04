@@ -150,13 +150,7 @@ export default function ApkPipeline() {
     }
   };
 
-  const retryBuild = async (pipelineId: string) => {
-    const res = await apiClient.post(`pipeline/retry/${pipelineId}`);
-    if (res.error) {
-      toast.error(res.error);
-      return;
-    }
-    toast.success('Retry queued');
+
     fetchBuilds();
     loadStatus(pipelineId);
   };
@@ -172,11 +166,7 @@ export default function ApkPipeline() {
     loadStatus(pipelineId);
   };
 
-  const downloadApk = async (pipelineId: string) => {
-    const res = await apiClient.get<{ allowed?: boolean; download_url?: string; url?: string }>(`apk/download/${pipelineId}`);
-    if (res.error) {
-      toast.error(res.error);
-      return;
+
     }
     const payload = res.data as any;
     const directUrl = payload?.download_url || payload?.url;
@@ -187,7 +177,7 @@ export default function ApkPipeline() {
     window.open(directUrl, '_blank', 'noopener,noreferrer');
   };
 
-  const pipelineLabel = pollStatus?.status || selected?.build_status || 'queued';
+
 
   return (
     <DashboardLayout>

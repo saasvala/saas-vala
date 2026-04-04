@@ -6,33 +6,7 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-policy-signature, x-policy-timestamp",
 };
 
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map((v) => stableStringify(v)).join(",")}]`;
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
-}
 
-async function hmacSha256Hex(secret: string, value: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function signRuntimePolicy(policy: Record<string, unknown>, signingSecret: string) {
-  const signed_at = new Date().toISOString();
-  const payload = { ...policy, signed_at };
-  const canonical = stableStringify(payload);
-  const signature = await hmacSha256Hex(signingSecret, canonical);
-  return { ...payload, signature, signature_alg: "hmac-sha256" };
-}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -52,7 +26,6 @@ Deno.serve(async (req) => {
     const defaultSyncMinutes = Number(Deno.env.get("APK_POLICY_SYNC_MINUTES") || "60");
     const adminClient = createClient(supabaseUrl, serviceKey);
 
-    const { license_key, device_id, app_signature, app_version_code } = await req.json();
 
     if (!license_key) {
       return new Response(
@@ -89,6 +62,7 @@ Deno.serve(async (req) => {
           result: "invalid",
           reason: "License key not found",
           ip_address: ip,
+          trace_id: reqTraceId,
         });
 
         return new Response(
@@ -115,6 +89,7 @@ Deno.serve(async (req) => {
           result: "blocked",
           reason: `License status: ${licKey.status}`,
           ip_address: ip,
+          trace_id: reqTraceId,
         });
 
         return new Response(
@@ -141,6 +116,7 @@ Deno.serve(async (req) => {
           result: "invalid",
           reason: "License expired",
           ip_address: ip,
+          trace_id: reqTraceId,
         });
 
         return new Response(
@@ -201,11 +177,13 @@ Deno.serve(async (req) => {
         result: "valid",
         reason: "License verified successfully",
         ip_address: ip,
+        trace_id: reqTraceId,
       });
 
       return new Response(
         JSON.stringify({
           status: "valid",
+          trace_id: reqTraceId,
           user_id: licKey.created_by || null,
           verified_at: new Date().toISOString(),
           policy: signedPolicy,
@@ -235,6 +213,7 @@ Deno.serve(async (req) => {
         result: "blocked",
         reason: blockedReason,
         ip_address: ip,
+        trace_id: reqTraceId,
       });
 
       return new Response(
@@ -257,6 +236,7 @@ Deno.serve(async (req) => {
           result: "wrong_device",
           reason: `Bound to device ${existingDevice.substring(0, 8)}..., attempted from ${device_id.substring(0, 8)}...`,
           ip_address: ip,
+          trace_id: reqTraceId,
         });
 
         return new Response(
@@ -275,6 +255,10 @@ Deno.serve(async (req) => {
           .update({
             device_info: { device_id, app_signature: app_signature || null, bound_at: new Date().toISOString() },
             verification_attempts: (apkDownload.verification_attempts || 0) + 1,
+            device_id,
+            trace_id: reqTraceId,
+            offline_cache_token: crypto.randomUUID(),
+            offline_expires_at: new Date(Date.now() + OFFLINE_LICENSE_EXPIRY_DAYS * 24 * 60 * 60 * 1000).toISOString(),
           })
           .eq("id", apkDownload.id);
       } else {
@@ -283,6 +267,8 @@ Deno.serve(async (req) => {
           .from("apk_downloads")
           .update({
             verification_attempts: (apkDownload.verification_attempts || 0) + 1,
+            device_id,
+            trace_id: reqTraceId,
           })
           .eq("id", apkDownload.id);
       }
@@ -341,14 +327,17 @@ Deno.serve(async (req) => {
       result: "valid",
       reason: "License verified successfully",
       ip_address: ip,
+      trace_id: reqTraceId,
     });
 
     return new Response(
       JSON.stringify({
         status: "valid",
+        trace_id: reqTraceId,
         user_id: apkDownload.user_id,
         product_id: apkDownload.product_id,
         bound_device: apkDownload.device_info?.device_id || device_id || null,
+        offline_expires_at: apkDownload.offline_expires_at || null,
         verified_at: new Date().toISOString(),
         policy: signedPolicy,
       }),
