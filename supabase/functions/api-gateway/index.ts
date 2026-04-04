@@ -9166,26 +9166,31 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
     })
   }
 
-  // GET /builder/status/:project_id
-  if (method === 'GET' && pathParts[0] === 'status' && pathParts[1]) {
+  // GET /builder/status/:project_id and GET /builder/status
+  if (method === 'GET' && pathParts[0] === 'status') {
     const projectId = String(pathParts[1] || '').trim()
-    const { data: project, error: projectError } = await admin
+    const baseProjectQuery = admin
       .from('projects')
       .select('*')
-      .eq('id', projectId)
-      .maybeSingle()
+      .order('created_at', { ascending: false })
+      .limit(1)
+
+    const { data: project, error: projectError } = projectId
+      ? await admin.from('projects').select('*').eq('id', projectId).maybeSingle()
+      : await baseProjectQuery.maybeSingle()
+
     if (projectError || !project) return fail('Project not found', 404, 'NOT_FOUND')
 
     const { data: latestLog } = await admin
       .from('build_logs')
       .select('*')
-      .eq('project_id', projectId)
+      .eq('project_id', project.id)
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle()
 
     return ok({
-      project_id: projectId,
+      project_id: project.id,
       status: project.status || 'unknown',
       current_step: latestLog?.step || null,
       step_status: latestLog?.status || null,
@@ -9235,6 +9240,17 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle()
+
+    const { count: existingRetries } = await admin
+      .from('ai_tasks')
+      .select('*', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .eq('agent', 'DEBUG_AI')
+      .eq('output', 'retry_queued')
+    const retryCount = Number(existingRetries || 0)
+    if (retryCount >= BUILDER_MAX_RETRIES) {
+      return fail('Retry limit exceeded', 409, 'BUILDER_RETRY_LIMIT_REACHED', { retry_limit: BUILDER_MAX_RETRIES })
+    }
 
     await admin.from('projects').update({ status: 'running', updated_at: nowIso() }).eq('id', projectId)
     const { error: retryLogError } = await admin.from('build_logs').insert({

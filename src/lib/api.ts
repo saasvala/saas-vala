@@ -543,8 +543,8 @@ export const builderApi = {
     target_platforms?: string[];
   }) => apiCall('POST', 'builder/create', data),
   run: (data: { project_id: string; version?: string }) => apiCall('POST', 'builder/run', data),
-  status: (projectId: string) => apiCall('GET', `builder/status/${projectId}`),
-  logs: (projectId: string) => apiCall('GET', `builder/logs/${projectId}`),
+  status: (projectId?: string) => apiCall('GET', projectId ? `builder/status/${projectId}` : 'builder/status'),
+  logs: (projectId?: string) => apiCall('GET', projectId ? `builder/logs/${projectId}` : 'builder/logs'),
   retry: (projectId: string) => apiCall('POST', 'builder/retry', { project_id: projectId }),
 };
 
