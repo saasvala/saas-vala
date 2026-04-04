@@ -13,8 +13,8 @@ export function createAsyncTaskQueue() {
         if (!next) continue;
         try {
           await next();
-        } catch {
-          // ignore individual queue task failures
+        } catch (error) {
+          console.error('background queue task failed', error);
         }
       }
     } finally {

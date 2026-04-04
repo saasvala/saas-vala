@@ -117,6 +117,7 @@ async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promi
 }
 
 type ApiCallOptions = {
+  /** Force a network request by bypassing fresh/stale cache reads and shared in-flight reuse. */
   bypassCache?: boolean;
 };
 

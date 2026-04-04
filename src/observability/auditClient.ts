@@ -77,6 +77,7 @@ function toJson(value: Record<string, unknown> | null | undefined): Json {
 const auditWriteQueue = createAsyncTaskQueue();
 
 export async function writeAuditEvent(input: AuditWriteInput): Promise<string | null> {
+  // Audit writes are queued to keep UI and API flows non-blocking while preserving write order.
   return auditWriteQueue.enqueue(async () => {
     const action = input.action ?? 'read';
     const payload = {

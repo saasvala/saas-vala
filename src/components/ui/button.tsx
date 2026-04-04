@@ -50,6 +50,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       }
       if (asChild) return;
       if (!action) {
+        // Emit fallback telemetry so listeners can track unmapped/dead-click prevention events.
         window.dispatchEvent(
           new CustomEvent("button-engine:event", {
             detail: {
