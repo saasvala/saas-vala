@@ -45,8 +45,9 @@ const API_MAX_RETRY_DELAY_MS = Number(import.meta.env.VITE_API_MAX_RETRY_DELAY_M
 const API_RETRY_JITTER_MS = Number(import.meta.env.VITE_API_RETRY_JITTER_MS || 120);
 const RETRYABLE_STATUS_CODES = new Set([502, 503, 504]);
 const API_CACHE_TTL_MS = 30_000;
-const API_CACHE_SLA_MS = Number(import.meta.env.VITE_API_CACHE_SLA_MS || 300);
+
 const responseCache = new Map<string, { data: unknown; ts: number }>();
+const inFlightGetRequests = new Map<string, Promise<unknown>>();
 let consecutiveFailures = 0;
 let degradedUntil = 0;
 let escalationRaised = false;
@@ -110,22 +111,12 @@ async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promi
   throw new ApiError(lastError instanceof Error ? lastError.message : 'Network request failed', 0, 'NETWORK_ERROR', lastError);
 }
 
-function warnIfCacheSlaExceeded(path: string, elapsedMs: number) {
-  if (elapsedMs <= API_CACHE_SLA_MS) return;
-  console.warn(`[api-cache-sla] Cache response exceeded SLA`, {
-    path,
-    elapsed_ms: elapsedMs,
-    sla_ms: API_CACHE_SLA_MS,
-  });
-}
 
-async function apiCall<T = any>(method: string, path: string, body?: any): Promise<T> {
-  const startedAt = performance.now();
   const headers = await getAuthHeaders();
   const now = Date.now();
 
   const config: RequestInit = { method, headers };
-  const cacheKey = method === 'GET' ? `${path}|${JSON.stringify(body || {})}` : '';
+  const cacheKey = method === 'GET' ? pathWithQuery : '';
 
   if (method === 'GET' && body) {
     const params = new URLSearchParams();
@@ -152,7 +143,7 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
       return cached.data as T;
     }
   }
-  const res = await fetchWithTimeoutAndRetry(requestUrl, config);
+
   const data = await res.json().catch(() => ({}));
   debugLog('response', { status: res.status, elapsed_ms: Math.round(performance.now() - startedAt) });
 
@@ -201,6 +192,16 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
   }
 
   return data;
+  };
+
+  if (method !== 'GET') {
+    return runRequest();
+  }
+  const pending = runRequest().finally(() => {
+    inFlightGetRequests.delete(getCacheKey);
+  });
+  inFlightGetRequests.set(getCacheKey, pending);
+  return pending;
 }
 
 export type CrudActionType = 'create' | 'read' | 'update' | 'delete';

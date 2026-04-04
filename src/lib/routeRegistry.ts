@@ -23,6 +23,7 @@ export const APP_ROUTE_PATTERNS = [
   '/auth',
   '/login',
   '/signup',
+  '/support',
   '/dashboard',
   '/admin/dashboard',
   '/reseller/dashboard',

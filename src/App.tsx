@@ -1,8 +1,10 @@
 import { Toaster } from "@/components/ui/toaster";
-import { Toaster as Sonner } from "@/components/ui/sonner";
+import { Toaster as Sonner, toast } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { OfflineRetryBanner } from "@/components/global/OfflineRetryBanner";
 import { ClientProtection } from "@/components/global/ClientProtection";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
@@ -12,6 +14,7 @@ import { Loader2 } from "lucide-react";
 import React, { Suspense, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { APP_ROUTE_PATTERNS, registerRoutePatterns } from "@/lib/routeRegistry";
+import { dashboardApi, systemHealthApi } from "@/lib/api";
 
 // Only eagerly load the landing page (Marketplace) and Auth
 import Marketplace from "./pages/Marketplace";
@@ -104,9 +107,23 @@ const ApkPipeline = React.lazy(() => import("./pages/ApkPipeline"));
 const queryClient = new QueryClient();
 
 function PageLoader() {
+  const handleRetry = () => {
+    if (typeof window !== "undefined") window.location.reload();
+  };
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
-      <Loader2 className="h-8 w-8 animate-spin text-primary" />
+    <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-background px-4">
+      <div className="w-full max-w-sm space-y-2">
+        <Skeleton className="h-4 w-2/3" />
+        <Skeleton className="h-20 w-full" />
+        <Skeleton className="h-4 w-1/2" />
+      </div>
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin text-primary" />
+        <span>Loading...</span>
+      </div>
+      <Button variant="outline" size="sm" onClick={handleRetry} action="LOADER_RETRY" fallbackRoute="/">
+        Retry
+      </Button>
     </div>
   );
 }
@@ -446,6 +463,37 @@ function AppRoutes() {
     registerRoutePatterns(APP_ROUTE_PATTERNS);
   }, []);
 
+  useEffect(() => {
+    const onRateLimitWarning = (event: Event) => {
+      const detail = (event as CustomEvent<{ remaining?: number; reset?: number | null }>).detail;
+      if (typeof detail?.remaining === 'number') {
+        if (detail.remaining === 0) {
+          toast.error('API rate limit reached. Please retry shortly.');
+        } else {
+          toast.warning(`API limit nearing (${detail.remaining} requests left).`);
+        }
+      }
+    };
+    window.addEventListener('api:rate-limit-warning', onRateLimitWarning as EventListener);
+    return () => {
+      window.removeEventListener('api:rate-limit-warning', onRateLimitWarning as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    void queryClient.prefetchQuery({
+      queryKey: ['preload', 'dashboard', user.id],
+      queryFn: () => dashboardApi.get(),
+      staleTime: 30_000,
+    });
+    void queryClient.prefetchQuery({
+      queryKey: ['preload', 'system-health', user.id],
+      queryFn: () => systemHealthApi.get(),
+      staleTime: 30_000,
+    });
+  }, [user?.id]);
+
   return (
     <Suspense fallback={<PageLoader />}>
       <Routes>
@@ -464,6 +512,7 @@ function AppRoutes() {
         <Route path="/edu-pwa" element={<EduPwa />} />
         <Route path="/install" element={<Install />} />
         <Route path="/health-pwa" element={<HealthPwa />} />
+        <Route path="/health" element={<Navigate to="/system-health" replace />} />
         <Route path="/realestate-pwa" element={<RealEstatePwa />} />
         <Route path="/ecom-pwa" element={<EcomPwa />} />
         <Route path="/retail-pwa" element={<RetailPwa />} />
