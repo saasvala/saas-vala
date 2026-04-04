@@ -33,6 +33,7 @@ let soundPlaying = false;
 const DEFAULT_DEBOUNCE_MS = 150;
 const DEFAULT_THROTTLE_MS = 150;
 const MAX_RETRY_BACKOFF_MS = 4000;
+const LOGIN_ROUTE = '/login';
 
 function isLikelyNetworkError(error: unknown): boolean {
   const message = String((error as { message?: Primitive })?.message || '').toLowerCase();
@@ -94,9 +95,9 @@ export async function executeButtonAction<T>({
   const resolvedRoute = resolveSafeRoute(config.route, '/');
   if (config.auth && !isAuthenticated) {
     if (navigate) {
-      navigate(resolveSafeRoute('/login', '/'));
+      navigate(resolveSafeRoute(LOGIN_ROUTE, '/'));
     } else if (typeof window !== 'undefined') {
-      window.location.assign('/login');
+      window.location.assign(LOGIN_ROUTE);
     }
     inFlightActions.delete(lockKey);
     onLoadingChange?.(false);
@@ -114,53 +115,32 @@ export async function executeButtonAction<T>({
     return undefined;
   }
 
-  if (config.api && !run) {
-    try {
-      const response = await fetch(config.api, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config.payload ?? {}),
-      });
-      const data = await response.json().catch(() => ({}));
-      updateState?.(actionKey, data);
-      window.dispatchEvent(new CustomEvent('button-engine:event', {
-        detail: { action: actionKey, route: config.route ?? null, api: config.api, traceId, result: 'success' },
-      }));
-      return data as T;
-    } catch (error) {
-      window.dispatchEvent(new CustomEvent('button-engine:event', {
-        detail: { action: actionKey, route: config.route ?? null, api: config.api, traceId, result: 'error', error: String((error as { message?: Primitive })?.message || error) },
-      }));
-      throw error;
-    } finally {
-      inFlightActions.delete(lockKey);
-      onLoadingChange?.(false);
-    }
-  }
-
-  if (!run) {
-    inFlightActions.delete(lockKey);
-    onLoadingChange?.(false);
-    return undefined;
-  }
-
   let attempt = 0;
+  let succeeded = false;
+  let failureMessage: string | null = null;
+  let responseData: unknown;
   try {
     while (attempt <= retries) {
       try {
-        const response = await run();
+        const response = run
+          ? await run()
+          : config.api
+            ? await fetch(config.api, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config.payload ?? {}),
+          }).then((res) => res.json())
+            : undefined;
         if (validateResponse && (response === null || response === undefined)) {
           throw new Error('Empty response');
         }
-        window.dispatchEvent(new CustomEvent('button-engine:event', {
-          detail: { action: actionKey, route: config.route ?? null, api: config.api ?? null, traceId, result: 'success' },
-        }));
+        responseData = response;
+        updateState?.(actionKey, response);
+        succeeded = true;
         return response;
       } catch (error) {
         if (attempt >= retries || !isLikelyNetworkError(error)) {
-          window.dispatchEvent(new CustomEvent('button-engine:event', {
-            detail: { action: actionKey, route: config.route ?? null, api: config.api ?? null, traceId, result: 'error', error: String((error as { message?: Primitive })?.message || error) },
-          }));
+          failureMessage = String((error as { message?: Primitive })?.message || error);
           throw error;
         }
         const delay = Math.min(MAX_RETRY_BACKOFF_MS, retryBackoffMs * (2 ** attempt));
@@ -169,9 +149,19 @@ export async function executeButtonAction<T>({
       }
     }
     return undefined;
+  } catch (error) {
+    if (!failureMessage) {
+      failureMessage = String((error as { message?: Primitive })?.message || error);
+    }
+    throw error;
   } finally {
     inFlightActions.delete(lockKey);
     onLoadingChange?.(false);
+    window.dispatchEvent(new CustomEvent('button-engine:event', {
+      detail: succeeded
+        ? { action: actionKey, route: config.route ?? null, api: config.api ?? null, traceId, result: 'success', data: responseData ?? null }
+        : { action: actionKey, route: config.route ?? null, api: config.api ?? null, traceId, result: 'error', error: failureMessage || 'Unknown error' },
+    }));
   }
 }
 

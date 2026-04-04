@@ -54,7 +54,7 @@ BEGIN
       FROM pg_indexes
       WHERE schemaname = 'public'
         AND tablename = 'transactions'
-        AND indexdef ILIKE '%(user_id, created_at%'
+        AND indexdef ILIKE '%(user_id, created_at)%'
     )
   THEN
     CREATE INDEX idx_transactions_user_id_created_at ON public.transactions (user_id, created_at DESC);
