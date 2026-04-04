@@ -100,6 +100,7 @@ const serverStatusCache: { data: unknown | null; expiresAt: number } = { data: n
 const dashboardStatsCache: { data: unknown | null; expiresAt: number } = { data: null, expiresAt: 0 }
 const seoAnalyticsCache: { data: unknown | null; expiresAt: number } = { data: null, expiresAt: 0 }
 const PRODUCT_LIST_CACHE_TTL_MS = 60 * 1000
+const CATEGORY_LIST_CACHE_TTL_MS = 60 * 1000
 const SERVER_STATUS_CACHE_TTL_MS = 30 * 1000
 const DASHBOARD_STATS_CACHE_TTL_MS = 30 * 1000
 const SEO_ANALYTICS_CACHE_TTL_MS = 60 * 1000
@@ -131,6 +132,11 @@ const NOTIFY_MAX_TITLE_LENGTH = 120
 const MAX_IMAGE_OPTIMIZE_WIDTH = 4096
 const MAX_IMAGE_OPTIMIZE_QUALITY = 100
 const SUPPORTED_API_VERSIONS = new Set(['v1', 'v2'])
+// Legacy module aliases mapped to canonical module/action routes to reduce avoidable 404s.
+const MODULE_ALIASES: Record<string, { module: string; prependAction?: string }> = {
+  cart: { module: 'marketplace', prependAction: 'cart' },
+  orders: { module: 'marketplace', prependAction: 'orders' },
+}
 const FINAL_RESELLER_GAP_FEATURE_KEYS = [
   'tier_based_dynamic_commission_engine',
   'per_product_commission_override',
@@ -2940,15 +2946,27 @@ async function handleProducts(method: string, pathParts: string[], body: any, us
 
   // GET /products
   if (method === 'GET' && !id) {
-    const { data, error } = await sb.from('products').select('*').order('created_at', { ascending: false })
+    const page = clampInt(body?.page, 1, 100000, 1)
+    const limit = clampInt(body?.limit, 1, 100, 50)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+    const { data, error } = await sb
+      .from('products')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .range(from, to)
     if (error) return err(error.message)
     return json({ data })
   }
 
   // GET /products/categories
   if (method === 'GET' && id === 'categories') {
+    const redisKey = 'cache:products:categories'
+    const redisCached = await redisGetJson<any[]>(redisKey)
+    if (redisCached) return json({ data: redisCached, cached: true, cache: 'redis' })
     const { data, error } = await sb.from('categories').select('*').eq('is_active', true).order('sort_order')
     if (error) return err(error.message)
+    await redisSetJson(redisKey, data || [], Math.floor(CATEGORY_LIST_CACHE_TTL_MS / 1000))
     return json({ data })
   }
 
@@ -5255,12 +5273,16 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
     const geoDefaults = GEO_FALLBACK_BY_COUNTRY[countryCode] || { language: requestedLanguage || 'en', currency: 'USD' }
     const language = requestedLanguage || geoDefaults.language || 'en'
     const currency = requestedCurrency || geoDefaults.currency || 'USD'
+    const page = clampInt(req ? new URL(req.url).searchParams.get('page') : body?.page, 1, 100000, 1)
+    const limit = clampInt(req ? new URL(req.url).searchParams.get('limit') : body?.limit, 1, 100, 60)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
 
     const { data, error } = await sb
       .from('products')
       .select('id, name, slug, description, short_description, price, status, business_type, features, apk_url, build_id, build_status, discount_percent, rating, created_at, marketplace_visible')
       .order('created_at', { ascending: false })
-      .limit(500)
+      .range(from, to)
     if (error) return err(error.message)
     const rows = data || []
     const ratesPayload = await resolveCurrencyRates(admin)
@@ -5352,12 +5374,16 @@ async function handleProductAliases(method: string, pathParts: string[], body: a
   if (method === 'GET' && action === 'search') {
     const q = sanitizeSearchTerm(String(body.q || '').trim())
     const filters = parseQueryFilters(body.filter)
+    const page = clampInt(body?.page, 1, 100000, 1)
+    const limit = clampInt(body?.limit, 1, 100, 60)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
     let query = sb
       .from('products')
       .select('id, name, slug, description, short_description, price, status, business_type, features, apk_url, discount_percent, rating, tags, created_at, marketplace_visible')
       .eq('marketplace_visible', true)
       .order('created_at', { ascending: false })
-      .limit(500)
+      .range(from, to)
 
     if (q) {
       query = query.or(`name.ilike.%${q}%,slug.ilike.%${q}%,description.ilike.%${q}%,business_type.ilike.%${q}%`)
@@ -11944,11 +11970,12 @@ Deno.serve(async (req) => {
       return fail('Unsupported API version', 400, 'UNSUPPORTED_API_VERSION', { supported: Array.from(SUPPORTED_API_VERSIONS) })
     }
     const normalizedPath = fullPath
-      .replace(/^api\/v\d+\/?/, '')
-      .replace(/^api\/?/, '')
+
     const parts = normalizedPath.split('/').filter(Boolean)
-    const module = parts[0]
-    const subParts = parts.slice(1)
+    const rawModule = parts[0]
+    const alias = rawModule ? MODULE_ALIASES[rawModule] : undefined
+    const module = alias?.module || rawModule
+    const subParts = alias?.prependAction ? [alias.prependAction, ...parts.slice(1)] : parts.slice(1)
 
     // Parse body for POST/PUT/DELETE, query params for GET
     let body: any = {}
@@ -12090,6 +12117,25 @@ Deno.serve(async (req) => {
         break
       case 'marketplace':
         routeResponse = await handleMarketplace(req.method, subParts, body, userId, sb)
+        break
+      case 'favorite':
+        routeResponse = await handleMarketplace(req.method, ['favorite', ...subParts], body, userId, sb)
+        break
+      case 'favorites':
+        if (subParts.length === 0 && req.method === 'GET') {
+          routeResponse = await handleMarketplace('GET', ['favorite', 'list'], body, userId, sb)
+          break
+        }
+        if (subParts[0] === 'toggle') {
+          routeResponse = await handleMarketplace(req.method, ['favorite', 'toggle'], body, userId, sb)
+          break
+        }
+        routeResponse = fail('Route not found', 404, 'ROUTE_NOT_FOUND', {
+          module,
+          endpoint: `${module}/${subParts[0] || ''}`,
+          version: requestedVersion,
+          is_graceful_not_found: true,
+        })
         break
       case 'cart':
         if (subParts.length === 0) {

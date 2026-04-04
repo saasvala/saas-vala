@@ -35,6 +35,10 @@ export const APP_ROUTE_PATTERNS = [
   '/cart',
   '/checkout',
   '/success',
+  '/support',
+  '/subscription',
+  '/favorites',
+  '/recent',
   '/keys',
   '/app/:id',
 ];
@@ -71,10 +75,19 @@ export function safeNavigate(
   options?: NavigateOptions,
   fallback = '/',
 ) {
+  const safeFallback = resolveSafeRoute(typeof fallback === 'string' ? fallback : '/', '/');
   if (typeof route === 'number') {
-    navigate(route);
+    try {
+      navigate(route);
+    } catch {
+      navigate(safeFallback, options);
+    }
     return;
   }
-  const safeRoute = resolveSafeRoute(typeof route === 'string' ? route : undefined, fallback);
-  navigate(safeRoute, options);
+  const safeRoute = resolveSafeRoute(typeof route === 'string' ? route : undefined, safeFallback);
+  try {
+    navigate(safeRoute, options);
+  } catch {
+    navigate(safeFallback, options);
+  }
 }

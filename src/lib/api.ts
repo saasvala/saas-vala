@@ -3,11 +3,8 @@ import { savePostLoginRedirect, savePreLogoutState } from './sessionState';
 
 export const API_BASE_V1 = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v1`;
 export const API_BASE_V2 = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/api-gateway/api/v2`;
-const SUPPORTED_API_VERSIONS = new Set(['v1', 'v2']);
-const DEFAULT_API_VERSION = 'v1';
-const configuredVersion = String(import.meta.env.VITE_API_VERSION || DEFAULT_API_VERSION).toLowerCase();
-const API_VERSION = SUPPORTED_API_VERSIONS.has(configuredVersion) ? configuredVersion : DEFAULT_API_VERSION;
-const API_BASE = API_VERSION === 'v2' ? API_BASE_V2 : API_BASE_V1;
+const API_BASE = API_BASE_V1;
+const DEBUG_API = String(import.meta.env.VITE_DEBUG_API || '').toLowerCase() === 'true';
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
   let { data: { session } } = await supabase.auth.getSession();
@@ -23,9 +20,8 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
     'Content-Type': 'application/json',
     'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
   };
-  if (session?.access_token) {
-    headers['Authorization'] = `Bearer ${session.access_token}`;
-  }
+  if (!session?.access_token) throw new ApiError('Bearer token required', 401, 'AUTH_TOKEN_MISSING');
+  headers['Authorization'] = `Bearer ${session.access_token}`;
   return headers;
 }
 
@@ -49,8 +45,7 @@ const API_MAX_RETRY_DELAY_MS = Number(import.meta.env.VITE_API_MAX_RETRY_DELAY_M
 const API_RETRY_JITTER_MS = Number(import.meta.env.VITE_API_RETRY_JITTER_MS || 120);
 const RETRYABLE_STATUS_CODES = new Set([502, 503, 504]);
 const API_CACHE_TTL_MS = 30_000;
-const API_STALE_CACHE_TTL_MS = 5 * 60_000;
-const RATE_LIMIT_WARNING_THRESHOLD = 10;
+
 const responseCache = new Map<string, { data: unknown; ts: number }>();
 const inFlightGetRequests = new Map<string, Promise<unknown>>();
 let consecutiveFailures = 0;
@@ -116,50 +111,7 @@ async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promi
   throw new ApiError(lastError instanceof Error ? lastError.message : 'Network request failed', 0, 'NETWORK_ERROR', lastError);
 }
 
-type ApiCallOptions = {
-  /** Force a network request by bypassing fresh/stale cache reads and shared in-flight reuse. */
-  bypassCache?: boolean;
-};
 
-async function apiCall<T = any>(method: string, path: string, body?: any, options: ApiCallOptions = {}): Promise<T> {
-  const requestStartedAt = Date.now();
-  const pathWithQuery = (() => {
-    if (method !== 'GET' || !body) return path;
-    const params = new URLSearchParams();
-    Object.entries(body).forEach(([k, v]) => {
-      if (v !== undefined && v !== null) params.set(k, String(v));
-    });
-    const query = params.toString();
-    return query ? `${path}?${query}` : path;
-  })();
-  const getCacheKey = method === 'GET' ? pathWithQuery : '';
-  if (method === 'GET' && !options.bypassCache) {
-    const cached = responseCache.get(getCacheKey);
-    if (cached) {
-      const age = requestStartedAt - cached.ts;
-      if (age < API_CACHE_TTL_MS) {
-        return cached.data as T;
-      }
-      if (age < API_STALE_CACHE_TTL_MS) {
-        const existingInFlight = inFlightGetRequests.get(getCacheKey);
-        if (!existingInFlight) {
-          const refreshPromise = apiCall<T>(method, path, body, { bypassCache: true });
-          inFlightGetRequests.set(getCacheKey, refreshPromise);
-          void refreshPromise.finally(() => {
-            if (inFlightGetRequests.get(getCacheKey) === refreshPromise) {
-              inFlightGetRequests.delete(getCacheKey);
-            }
-          });
-        }
-        return cached.data as T;
-      }
-    }
-    const inFlight = inFlightGetRequests.get(getCacheKey);
-    if (inFlight) {
-      return inFlight as Promise<T>;
-    }
-  }
-  const runRequest = async (): Promise<T> => {
   const headers = await getAuthHeaders();
   const now = Date.now();
 
@@ -177,32 +129,23 @@ async function apiCall<T = any>(method: string, path: string, body?: any, option
   }
 
   const pathWithoutLeadingSlash = path.replace(/^\/+/, '');
+  const requestUrl = `${API_BASE}/${pathWithoutLeadingSlash}`;
+  const debugLog = (label: string, data?: unknown) => {
+    if (!DEBUG_API) return;
+    console.debug(`[api:${method}:${pathWithoutLeadingSlash}] ${label}`, data ?? '');
+  };
   if (degradedUntil > now && method === 'GET') {
     const cached = responseCache.get(cacheKey);
-    if (cached && now - cached.ts < API_CACHE_TTL_MS) return cached.data as T;
-  }
-  const res = await fetchWithTimeoutAndRetry(`${API_BASE}/${pathWithoutLeadingSlash}`, config);
-  if (method === 'GET') {
-    const remaining = Number(res.headers.get('x-ratelimit-remaining') ?? res.headers.get('X-RateLimit-Remaining') ?? NaN);
-    const reset = Number(res.headers.get('x-ratelimit-reset') ?? res.headers.get('X-RateLimit-Reset') ?? NaN);
-    if (Number.isFinite(remaining) && remaining <= RATE_LIMIT_WARNING_THRESHOLD && remaining >= 0) {
-      window.dispatchEvent(
-        new CustomEvent('api:rate-limit-warning', {
-          detail: { remaining, reset: Number.isFinite(reset) ? reset : null, path: pathWithoutLeadingSlash },
-        }),
-      );
-      if (remaining === 0) {
-        const retryAfterHeader = Number(res.headers.get('retry-after') ?? res.headers.get('Retry-After') ?? NaN);
-        const retryAfterMs = Number.isFinite(retryAfterHeader)
-          ? Math.max(0, retryAfterHeader * 1000)
-          : Number.isFinite(reset)
-            ? Math.max(0, (reset * 1000) - Date.now())
-            : undefined;
-        throw new ApiError('Rate limit exceeded', 429, 'RATE_LIMIT', { retryAfterMs });
-      }
+    if (cached && now - cached.ts < API_CACHE_TTL_MS) {
+      const elapsed = Math.round(performance.now() - startedAt);
+      debugLog('cache-hit', { elapsed_ms: elapsed, sla_ms: API_CACHE_SLA_MS });
+      warnIfCacheSlaExceeded(pathWithoutLeadingSlash, elapsed);
+      return cached.data as T;
     }
   }
+
   const data = await res.json().catch(() => ({}));
+  debugLog('response', { status: res.status, elapsed_ms: Math.round(performance.now() - startedAt) });
 
   if (!res.ok) {
     const errorPayload = data?.error;
@@ -239,6 +182,9 @@ async function apiCall<T = any>(method: string, path: string, body?: any, option
   escalationRaised = false;
   if (method === 'GET') {
     responseCache.set(cacheKey, { data, ts: Date.now() });
+    const elapsed = Math.round(performance.now() - startedAt);
+    debugLog('cache-store', { elapsed_ms: elapsed, sla_ms: API_CACHE_SLA_MS });
+    warnIfCacheSlaExceeded(pathWithoutLeadingSlash, elapsed);
   } else {
     for (const key of responseCache.keys()) {
       if (key.startsWith(`${path}`) || key.includes(path.split('?')[0])) responseCache.delete(key);
@@ -446,10 +392,15 @@ export const resellerFeaturesApi = {
 // ===================== MARKETPLACE =====================
 export const marketplaceApi = {
   products: () => apiCall('GET', 'marketplace/products'),
-  productSearch: (q?: string, filter?: string | Record<string, unknown>) =>
-    apiCall('GET', 'product/search', { q, filter: typeof filter === 'string' ? filter : filter ? JSON.stringify(filter) : undefined }),
-  productList: (params?: { country?: string; lang?: string; currency?: string }) =>
-    apiCall('GET', 'product/list', params),
+  productSearch: (q?: string, filter?: string | Record<string, unknown>, pagination?: { page?: number; limit?: number }) =>
+    apiCall('GET', 'product/search', {
+      q,
+      filter: typeof filter === 'string' ? filter : filter ? JSON.stringify(filter) : undefined,
+      page: pagination?.page,
+      limit: pagination?.limit,
+    }),
+  productList: (params?: { country?: string; lang?: string; currency?: string; page?: number; limit?: number }) =>
+    apiCall('GET', 'product/list', { page: 1, limit: 60, ...params }),
   approve: (productId: string) => apiCall('PUT', 'marketplace/approve', { product_id: productId }),
   orders: () => apiCall('GET', 'marketplace/orders'),
   orderHistory: () => apiCall('GET', 'marketplace/order-history'),
