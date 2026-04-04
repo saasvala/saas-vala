@@ -171,12 +171,14 @@ type DomainEventType =
   | 'product_created'
   | 'lead_generated'
   | 'build_completed'
+  | 'builder_complete'
   | 'payment_success'
   | 'payment_init'
   | 'order_completed'
   | 'subscription_renewed'
   | 'subscription_activated'
   | 'license_key_assigned'
+  | 'user_signup'
   | 'banner_created'
   | 'banner_updated'
   | 'banner_deleted'
@@ -647,34 +649,44 @@ async function emitDomainEvent(
       status: 'queued',
       tenant_id: tenantId || null,
     })
-    const eventTypeMap: Record<string, string> = {
-      build_completed: 'apk_ready',
-      payment_success: 'payment_success',
-      lead_generated: 'lead_generated',
+    const eventTypeMap: Record<string, string[]> = {
+      build_completed: ['apk_ready', 'builder_complete'],
+      builder_complete: ['builder_complete'],
+      payment_success: ['payment_success'],
+      user_signup: ['user_signup'],
+      lead_generated: ['lead_generated'],
     }
-    const mappedEventType = eventTypeMap[eventType] || null
-    if (!mappedEventType) return
+    const mappedEventTypes = eventTypeMap[eventType] || []
+    if (!mappedEventTypes.length) return
     const { data: webhookEndpoints } = await admin
       .from('webhook_endpoints')
-      .select('id')
+      .select('id,events')
       .eq('is_active', true)
-      .contains('events', [mappedEventType])
     if (!Array.isArray(webhookEndpoints) || webhookEndpoints.length === 0) return
+    const filteredEndpoints = webhookEndpoints.filter((endpoint: any) => {
+      const events = Array.isArray(endpoint?.events) ? endpoint.events.map((v: unknown) => String(v)) : []
+      return mappedEventTypes.some((type) => events.includes(type))
+    })
+    if (!filteredEndpoints.length) return
+    const deliveryRows = filteredEndpoints.flatMap((endpoint: any) => {
+      const events = Array.isArray(endpoint?.events) ? endpoint.events.map((v: unknown) => String(v)) : []
+      const endpointEventTypes = mappedEventTypes.filter((type) => events.includes(type))
+      return endpointEventTypes.map((mappedEventType) => ({
+        endpoint_id: endpoint.id,
+        event_type: mappedEventType,
+        payload: {
+          event: mappedEventType,
+          data: payload,
+          tenant_id: tenantId || null,
+        },
+        status: 'pending',
+        attempts: 0,
+      }))
+    })
+    if (!deliveryRows.length) return
     const { data: deliveries } = await admin
       .from('webhook_deliveries')
-      .insert(
-        webhookEndpoints.map((endpoint: any) => ({
-          endpoint_id: endpoint.id,
-          event_type: mappedEventType,
-          payload: {
-            event: mappedEventType,
-            data: payload,
-            tenant_id: tenantId || null,
-          },
-          status: 'pending',
-          attempts: 0,
-        }))
-      )
+      .insert(deliveryRows)
       .select('id,endpoint_id,event_type')
     if (!Array.isArray(deliveries) || deliveries.length === 0) return
     await admin.from('async_jobs').insert(
@@ -4827,6 +4839,11 @@ async function handleMarketplace(method: string, pathParts: string[], body: any,
       ref_code: refCode,
       referrer_id: referrerReseller.user_id,
     })
+    await emitDomainEvent(admin, 'user_signup', {
+      user_id: userId,
+      ref_code: refCode,
+      referrer_id: referrerReseller.user_id,
+    }, null)
 
     return json({ data: insertedReferral }, 201)
   }
@@ -9236,6 +9253,14 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
     } catch (auditError) {
       console.error('builder create audit failed:', auditError)
     }
+
+    await emitDomainEvent(admin, 'builder_complete', {
+      project_id: project.id,
+      trace_id: traceId,
+      user_id: userId,
+      status: 'initiated',
+      source: 'builder_create',
+    }, null)
 
     return ok({
       project_id: project.id,
