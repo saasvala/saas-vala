@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { marketplaceApi } from '@/lib/api';
 import { supabase } from '@/integrations/supabase/client';
+import { subscribeQuickActionEvents } from '@/lib/quickActionEvents';
 
 export interface MarketplaceProduct {
   id: string;
@@ -130,32 +131,76 @@ export function mapDbProduct(product: any, index: number): MarketplaceProduct {
 export function useMarketplaceProducts(locale?: { country?: string; lang?: string; currency?: string }) {
   const [products, setProducts] = useState<MarketplaceProduct[]>([]);
   const [loading, setLoading] = useState(true);
+  const inFlightRef = useRef(false);
+  const pendingRefetchRef = useRef(false);
+
+  const fetchProducts = useCallback(async () => {
+    if (inFlightRef.current) {
+      pendingRefetchRef.current = true;
+      setLoading(true);
+      return;
+    }
+    inFlightRef.current = true;
+    setLoading(true);
+    try {
+      do {
+        pendingRefetchRef.current = false;
+        try {
+          const res = await marketplaceApi.productList({
+            country: locale?.country,
+            lang: locale?.lang,
+            currency: locale?.currency,
+          });
+          const mapped = (res.data || []).map((p: any, i: number) => mapDbProduct(p, i));
+          setProducts(prioritizeProducts(mapped));
+        } catch (e) {
+          console.error('Failed to fetch marketplace products:', e);
+          try {
+            const fallback = await marketplaceApi.products();
+            const mapped = (fallback.data || []).map((p: any, i: number) => mapDbProduct(p, i));
+            setProducts(prioritizeProducts(mapped));
+          } catch {
+            setProducts([]);
+          }
+        }
+      } while (pendingRefetchRef.current);
+    } finally {
+      inFlightRef.current = false;
+      setLoading(false);
+    }
+  }, [locale?.country, locale?.currency, locale?.lang]);
 
   useEffect(() => {
-    const fetchProducts = async () => {
-      setLoading(true);
-      try {
-        const res = await marketplaceApi.productList({
-          country: locale?.country,
-          lang: locale?.lang,
-          currency: locale?.currency,
-        });
-        const mapped = (res.data || []).map((p: any, i: number) => mapDbProduct(p, i));
-        setProducts(prioritizeProducts(mapped));
-      } catch (e) {
-        console.error('Failed to fetch marketplace products:', e);
-        try {
-          const fallback = await marketplaceApi.products();
-          const mapped = (fallback.data || []).map((p: any, i: number) => mapDbProduct(p, i));
-          setProducts(prioritizeProducts(mapped));
-        } catch {
-          setProducts([]);
-        }
-      }
-      setLoading(false);
-    };
     fetchProducts();
-  }, [locale?.country, locale?.lang, locale?.currency]);
+  }, [fetchProducts]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('marketplace-products-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+        fetchProducts();
+      })
+      .on('system', { event: 'error' }, (payload) => {
+        const details = (payload as { message?: string; error?: unknown }) || {};
+        console.error('[marketplace-products-live] realtime subscription error', {
+          message: details.message || null,
+          error: details.error || null,
+          payload,
+        });
+      })
+      .subscribe();
+
+    const unsubscribeQuickEvents = subscribeQuickActionEvents((event) => {
+      if (event === 'product_added' || event === 'apk_uploaded') {
+        fetchProducts();
+      }
+    });
+
+    return () => {
+      unsubscribeQuickEvents();
+      supabase.removeChannel(channel);
+    };
+  }, [fetchProducts]);
 
   const dbRow1 = products.slice(0, 30);
   const remaining = products.slice(30);

@@ -1943,7 +1943,7 @@ async function handleAudit(method: string, pathParts: string[], body: any, userI
     })
   }
 
-  if (method === 'POST' && action === 'create') {
+  if (method === 'POST' && (action === 'create' || action === 'log')) {
     const actionNameRaw = String(body.action || 'create').toLowerCase()
     const actionName = (['create', 'read', 'update', 'delete', 'login', 'logout', 'suspend', 'activate'].includes(actionNameRaw)
       ? actionNameRaw
@@ -5173,12 +5173,32 @@ async function handleServers(method: string, pathParts: string[], body: any, use
   const id = pathParts[1]
   const secondSegment = pathParts[1]
   const thirdSegment = pathParts[2]
+  const fourthSegment = pathParts[3]
+
+  const ensureServerManagePermission = async (serverId: string) => {
+    const { data: server, error: serverError } = await sb
+      .from('servers')
+      .select('id,created_by')
+      .eq('id', serverId)
+      .maybeSingle()
+    if (serverError) return { ok: false as const, response: fail(serverError.message, 400, 'DB_ERROR') }
+    if (!server) return { ok: false as const, response: fail('Server not found', 404, 'NOT_FOUND') }
+    if (server.created_by === userId) return { ok: true as const, response: null }
+    const adminAllowed = await isSuperAdminUser(userId)
+    if (!adminAllowed) return { ok: false as const, response: fail('Forbidden', 403, 'FORBIDDEN') }
+    return { ok: true as const, response: null }
+  }
 
   // GET /servers/list
   if (method === 'GET' && segment === 'servers' && secondSegment === 'list') {
     const { data, error } = await sb.from('servers').select('*').order('created_at', { ascending: false })
     if (error) return fail(error.message, 400, 'DB_ERROR')
     return ok(data || [])
+  }
+
+  // GET /server/list
+  if (method === 'GET' && segment === 'server' && secondSegment === 'list') {
+    return await handleServers('GET', ['servers', 'list'], body, userId, sb)
   }
 
   // POST /server/add
@@ -5254,6 +5274,11 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     return ok(data)
   }
 
+  // POST /agent/register
+  if (method === 'POST' && segment === 'agent' && secondSegment === 'register') {
+    return await handleServers(method, ['agent', 'connect'], body, userId, sb)
+  }
+
   // POST /agent/status
   if (method === 'POST' && segment === 'agent' && secondSegment === 'status') {
     const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
@@ -5325,6 +5350,67 @@ async function handleServers(method: string, pathParts: string[], body: any, use
       executed: true,
       result: data,
     })
+  }
+
+  // POST /server/scan
+  if (method === 'POST' && segment === 'server' && secondSegment === 'scan') {
+    const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
+    if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
+    return await handleServers('POST', ['git', 'scan'], { server_id: serverId }, userId, sb)
+  }
+
+  // POST /server/fix
+  if (method === 'POST' && segment === 'server' && secondSegment === 'fix') {
+    const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
+    if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
+    return await handleServers('POST', ['server', 'ai-action'], { server_id: serverId, action: 'fix_issues', params: body?.params || {} }, userId, sb)
+  }
+
+  // POST /server/deploy/git
+  if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'git') {
+    const serverId = sanitizeTextInput(body?.server_id || body?.serverId || '', 120)
+    if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
+    return await handleServers('POST', ['git', 'deploy'], { server_id: serverId }, userId, sb)
+  }
+
+  // POST /server/deploy/apk
+  if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'apk') {
+    return await handleApk('POST', ['build'], body, userId, sb)
+  }
+
+  // GET /server/deploy/status/:id
+  if (method === 'GET' && segment === 'server' && secondSegment === 'deploy' && thirdSegment === 'status' && fourthSegment) {
+    return await handleServers('GET', ['deploy', 'status', fourthSegment], body, userId, sb)
+  }
+
+  // POST /server/suspend/:id
+  if (method === 'POST' && segment === 'server' && secondSegment === 'suspend' && thirdSegment) {
+    const guard = await ensureServerManagePermission(thirdSegment)
+    if (!guard.ok) return guard.response
+    const { error } = await sb.from('servers').update({ status: 'suspended' }).eq('id', thirdSegment)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'server', thirdSegment, 'suspended', userId)
+    return ok({ server_id: thirdSegment, status: 'suspended' })
+  }
+
+  // POST /server/activate/:id
+  if (method === 'POST' && segment === 'server' && secondSegment === 'activate' && thirdSegment) {
+    const guard = await ensureServerManagePermission(thirdSegment)
+    if (!guard.ok) return guard.response
+    const { error } = await sb.from('servers').update({ status: 'live' }).eq('id', thirdSegment)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'server', thirdSegment, 'activated', userId)
+    return ok({ server_id: thirdSegment, status: 'live' })
+  }
+
+  // DELETE /server/delete/:id
+  if (method === 'DELETE' && segment === 'server' && secondSegment === 'delete' && thirdSegment) {
+    const guard = await ensureServerManagePermission(thirdSegment)
+    if (!guard.ok) return guard.response
+    const { error } = await sb.from('servers').delete().eq('id', thirdSegment)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    await logActivity(admin, 'server', thirdSegment, 'deleted', userId)
+    return ok({ server_id: thirdSegment, deleted: true })
   }
 
   // POST /server/git-scan
@@ -5786,6 +5872,16 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     return ok(data, 201)
   }
 
+  // POST /domain/dns/configure
+  if (method === 'POST' && segment === 'domain' && secondSegment === 'dns' && thirdSegment === 'configure') {
+    return await handleServers('POST', ['dns', 'create'], body, userId, sb)
+  }
+
+  // POST /domain/ssl/generate
+  if (method === 'POST' && segment === 'domain' && secondSegment === 'ssl' && thirdSegment === 'generate') {
+    return await handleServers('POST', ['ssl', 'generate'], body, userId, sb)
+  }
+
   // GET /server/settings
   if (method === 'GET' && segment === 'server' && secondSegment === 'settings') {
     if (!body.server_id) return fail('server_id required', 422, 'VALIDATION_ERROR')
@@ -5833,6 +5929,11 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     dashboardStatsCache.expiresAt = Date.now() + DASHBOARD_STATS_CACHE_TTL_MS
     await redisSetJson(redisKey, payload, Math.floor(DASHBOARD_STATS_CACHE_TTL_MS / 1000))
     return ok(payload)
+  }
+
+  // GET /server/metrics
+  if (method === 'GET' && segment === 'server' && id === 'metrics') {
+    return await handleServers('GET', ['server', 'health'], body, userId, sb)
   }
 
   return fail('Not found', 404, 'NOT_FOUND')
@@ -7389,6 +7490,27 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
     let apkPath = normalizeApkStoragePath(productDirect?.apk_url)
     let resolvedBuildStatus = normalizeSyncedBuildStatus(productDirect?.build_status)
 
+    // Pipeline output compatibility: allow /apk/download/:pipelineBuildId
+    if (!product) {
+      const { data: queueBuild } = await admin
+        .from('apk_build_queue')
+        .select('id, product_id, apk_file_path, build_status')
+        .eq('id', identifier)
+        .maybeSingle()
+      if (queueBuild?.product_id) {
+        const { data: linkedProduct } = await admin
+          .from('products')
+          .select('id, name, apk_url, price, build_id, build_status')
+          .eq('id', queueBuild.product_id)
+          .maybeSingle()
+        if (linkedProduct) {
+          product = linkedProduct
+          apkPath = normalizeApkStoragePath(queueBuild.apk_file_path) || normalizeApkStoragePath(linkedProduct.apk_url)
+          resolvedBuildStatus = normalizeSyncedBuildStatus(queueBuild.build_status || linkedProduct.build_status)
+        }
+      }
+    }
+
     if (product?.id && (!apkPath || resolvedBuildStatus !== 'success')) {
       const { data: latestSuccessBuild } = await findLatestSuccessfulApkBuild(admin, product.id)
       const latestPath = normalizeApkStoragePath(latestSuccessBuild?.apk_url)
@@ -7553,6 +7675,182 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
   }
 
   return err('Not found', 404)
+}
+
+type PipelineRequestBody = {
+  repo_name?: string
+  repoName?: string
+  repo_url?: string
+  repoUrl?: string
+  slug?: string
+  target_industry?: string | null
+  targetIndustry?: string | null
+  product_id?: string | null
+}
+
+async function handlePipeline(method: string, pathParts: string[], body: PipelineRequestBody, userId: string, sb: ReturnType<typeof adminClient>) {
+  // POST /pipeline/start
+  if (method === 'POST' && pathParts[0] === 'start') {
+    const repoName = String(body?.repo_name || body?.repoName || '').trim()
+    const repoUrl = String(body?.repo_url || body?.repoUrl || '').trim()
+    const explicitSlug = String(body?.slug || '').trim()
+    const slug = (explicitSlug || repoName.toLowerCase())
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+    if (!repoName || !repoUrl || !slug) return err('repo_name, repo_url, and slug are required', 422, 'VALIDATION_ERROR')
+
+    const { data: created, error: createError } = await sb
+      .from('apk_build_queue')
+      .insert({
+        repo_name: repoName,
+        repo_url: repoUrl,
+        slug,
+        target_industry: body?.target_industry || body?.targetIndustry || null,
+        product_id: body?.product_id || null,
+        build_status: 'queued',
+        build_error: null,
+        build_started_at: nowIso(),
+      })
+      .select('*')
+      .single()
+
+    if (createError || !created) return fail(createError?.message || 'Pipeline creation returned no data', 400, 'PIPELINE_START_FAILED')
+
+    await logActivity(adminClient(), 'pipeline', created.id, 'pipeline_started', userId, {
+      slug,
+      repo_url: repoUrl,
+      status: 'queued',
+    })
+
+    return ok({
+      pipeline_id: created.id,
+      id: created.id,
+      status: normalizeApkPipelineStatus(created.build_status),
+      raw_status: created.build_status,
+      step: 'queued',
+    }, 201)
+  }
+
+  // GET /pipeline/status/:id
+  if (method === 'GET' && pathParts[0] === 'status' && pathParts[1]) {
+    const pipelineId = String(pathParts[1] || '').trim()
+    const { data, error } = await sb.from('apk_build_queue').select('*').eq('id', pipelineId).maybeSingle()
+    if (error || !data) return fail('Pipeline not found', 404, 'NOT_FOUND', { id: pipelineId, redirect: '/admin/apk-pipeline' })
+    const normalized = normalizeApkPipelineStatus(data.build_status)
+    return ok({
+      id: data.id,
+      pipeline_id: data.id,
+      status: normalized,
+      raw_status: data.build_status,
+      current_step: normalized,
+      can_retry: normalized === 'failed',
+      can_cancel: ['queued', 'scanning', 'debugging', 'developing', 'building', 'verifying'].includes(normalized),
+      timestamps: {
+        started_at: data.build_started_at || null,
+        completed_at: data.build_completed_at || null,
+        updated_at: data.updated_at || null,
+      },
+    })
+  }
+
+  // GET /pipeline/logs/:id
+  if (method === 'GET' && pathParts[0] === 'logs' && pathParts[1]) {
+    const pipelineId = String(pathParts[1] || '').trim()
+    const { data, error } = await sb.from('apk_build_queue').select('*').eq('id', pipelineId).maybeSingle()
+    if (error || !data) return fail('Pipeline not found', 404, 'NOT_FOUND', { id: pipelineId, redirect: '/admin/apk-pipeline' })
+    const status = normalizeApkPipelineStatus(data.build_status)
+    const logs = [
+      `[${data.created_at}] created`,
+      data.build_started_at ? `[${data.build_started_at}] started` : null,
+      `[${data.updated_at || data.created_at}] status=${status}`,
+      data.build_error ? `[${data.updated_at || data.created_at}] error=${data.build_error}` : null,
+    ].filter(Boolean)
+    return ok({
+      id: data.id,
+      pipeline_id: data.id,
+      status,
+      logs,
+    })
+  }
+
+  // GET /pipeline/errors/:id
+  if (method === 'GET' && pathParts[0] === 'errors' && pathParts[1]) {
+    const pipelineId = String(pathParts[1] || '').trim()
+    const { data, error } = await sb.from('apk_build_queue').select('*').eq('id', pipelineId).maybeSingle()
+    if (error || !data) return fail('Pipeline not found', 404, 'NOT_FOUND', { id: pipelineId, redirect: '/admin/apk-pipeline' })
+    const status = normalizeApkPipelineStatus(data.build_status)
+    const hasError = status === 'failed' || !!data.build_error
+    return ok({
+      id: data.id,
+      pipeline_id: data.id,
+      status,
+      has_error: hasError,
+      error: data.build_error || null,
+      auto_debug_available: hasError,
+      debug_action: hasError ? 'retry' : null,
+    })
+  }
+
+  // POST /pipeline/retry/:id
+  if (method === 'POST' && pathParts[0] === 'retry' && pathParts[1]) {
+    const pipelineId = String(pathParts[1] || '').trim()
+    const { data: existing, error: existingError } = await sb.from('apk_build_queue').select('*').eq('id', pipelineId).maybeSingle()
+    if (existingError || !existing) return fail('Pipeline not found', 404, 'NOT_FOUND', { id: pipelineId, redirect: '/admin/apk-pipeline' })
+
+    const attempts = Number(existing.build_attempts || 0) + 1
+    const { error: updateError } = await sb.from('apk_build_queue').update({
+      build_status: 'queued',
+      build_error: null,
+      build_started_at: nowIso(),
+      build_completed_at: null,
+      build_attempts: attempts,
+      updated_at: nowIso(),
+    }).eq('id', pipelineId)
+
+    if (updateError) return fail(updateError.message, 400, 'PIPELINE_RETRY_FAILED')
+    await logActivity(adminClient(), 'pipeline', pipelineId, 'pipeline_retried', userId, { attempt: attempts })
+    return ok({
+      id: pipelineId,
+      pipeline_id: pipelineId,
+      status: 'queued',
+      attempt: attempts,
+      flow: ['retry', 'ai_debug', 'rebuild'],
+    })
+  }
+
+  // POST /pipeline/cancel/:id
+  if (method === 'POST' && pathParts[0] === 'cancel' && pathParts[1]) {
+    const pipelineId = String(pathParts[1] || '').trim()
+    const { data: existing, error: existingError } = await sb.from('apk_build_queue').select('*').eq('id', pipelineId).maybeSingle()
+    if (existingError || !existing) return fail('Pipeline not found', 404, 'NOT_FOUND', { id: pipelineId, redirect: '/admin/apk-pipeline' })
+
+    const current = normalizeApkPipelineStatus(existing.build_status)
+    if (['ready', 'failed', 'cancelled'].includes(current)) {
+      return ok({
+        id: pipelineId,
+        pipeline_id: pipelineId,
+        status: current,
+        cancelled: current === 'cancelled',
+      })
+    }
+
+    const { error: updateError } = await sb.from('apk_build_queue').update({
+      build_status: 'cancelled',
+      build_completed_at: nowIso(),
+      updated_at: nowIso(),
+    }).eq('id', pipelineId)
+    if (updateError) return fail(updateError.message, 400, 'PIPELINE_CANCEL_FAILED')
+    await logActivity(adminClient(), 'pipeline', pipelineId, 'pipeline_cancelled', userId)
+    return ok({
+      id: pipelineId,
+      pipeline_id: pipelineId,
+      status: 'cancelled',
+      cancelled: true,
+    })
+  }
+
+  return fail('Route not found', 404, 'ROUTE_NOT_FOUND', { module: 'pipeline' })
 }
 
 async function creditWalletRequestIdempotent(admin: any, reqRow: any, actorUserId: string, creditSource: string) {
@@ -9677,6 +9975,7 @@ Deno.serve(async (req) => {
       case 'domain':
       case 'ssl':
       case 'git':
+      case 'agent':
       case 'server':
         routeResponse = await handleServers(req.method, [module, ...subParts], body, userId, sb)
         break
@@ -9691,6 +9990,7 @@ Deno.serve(async (req) => {
       case 'auto': routeResponse = await handleAuto(req.method, subParts, body, userId, sb); break
       case 'auto-pilot': routeResponse = await handleAutoPilot(req.method, subParts, body, userId, sb); break
       case 'apk': routeResponse = await handleApk(req.method, subParts, body, userId, sb); break
+      case 'pipeline': routeResponse = await handlePipeline(req.method, subParts, body, userId, sb); break
       case 'geo': routeResponse = await handleGeo(req.method, subParts, body, req); break
       case 'translate': routeResponse = await handleTranslate(req.method, subParts, body, req); break
       case 'currency': routeResponse = await handleCurrency(req.method, subParts, body); break

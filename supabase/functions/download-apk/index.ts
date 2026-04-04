@@ -43,7 +43,7 @@ Deno.serve(async (req) => {
     }
 
     // 2. Parse request
-    const { product_id, license_key } = await req.json();
+
     if (!product_id || !license_key) {
       return new Response(
         JSON.stringify({ error: "product_id and license_key required" }),
@@ -112,10 +112,29 @@ Deno.serve(async (req) => {
       );
     }
 
+    if (apkDownload?.offline_expires_at && new Date(apkDownload.offline_expires_at) < new Date()) {
+      if (apkDownload?.id) {
+        await adminClient
+          .from("apk_downloads")
+          .update({
+            offline_cache_token: null,
+            trace_id: reqTraceId,
+          })
+          .eq("id", apkDownload.id);
+      }
+      return new Response(
+        JSON.stringify({
+          error: "Offline license token expired. Re-verify license using verify-license endpoint and retry download.",
+          trace_id: reqTraceId,
+        }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     // 5. Get product APK URL and expected checksum
     const { data: product, error: prodErr } = await adminClient
       .from("products")
-      .select("id, name, apk_url")
+      .select("id, name, apk_url, min_supported_apk_version_code, force_update_required, current_stable_apk_checksum")
       .eq("id", product_id)
       .single();
 
@@ -128,13 +147,17 @@ Deno.serve(async (req) => {
 
     const { data: apkVersion } = await adminClient
       .from("apk_versions")
-      .select("checksum")
+      .select("checksum, min_supported_version_code, force_update, hash_algorithm")
       .eq("apk_id", product_id)
+      .eq("rollout_status", "active")
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    const expectedChecksum = String(apkVersion?.checksum || "").trim().toLowerCase();
+    const expectedChecksum = String(apkVersion?.checksum || product.current_stable_apk_checksum || "").trim().toLowerCase();
+    const checksumAlgorithm = String(apkVersion?.hash_algorithm || "sha256");
+    const minSupportedVersionCode = Number(apkVersion?.min_supported_version_code || product.min_supported_apk_version_code || 1);
+    const forceUpdateRequired = Boolean(apkVersion?.force_update || product.force_update_required);
     if (expectedChecksum) {
       const checksumPattern = /^[a-f0-9]{64}$/;
       if (!checksumPattern.test(expectedChecksum)) {
@@ -164,9 +187,23 @@ Deno.serve(async (req) => {
       user_id: user.id,
       product_id: product_id,
       license_key: license_key,
+
       download_ip: req.headers.get("x-forwarded-for") || "unknown",
+      user_agent: req.headers.get("user-agent") || null,
       signed_url_expires_at: new Date(Date.now() + 300000).toISOString(),
+      trace_id: reqTraceId,
+      result: "success",
     });
+
+    if (apkDownload?.id) {
+      await adminClient
+        .from("apk_downloads")
+        .update({
+          trace_id: reqTraceId,
+          device_id: device_id || apkDownload?.device_id || apkDownload?.device_info?.device_id || null,
+        })
+        .eq("id", apkDownload.id);
+    }
 
     // 8. Update download count on product
     await adminClient.rpc("log_activity", {
@@ -178,17 +215,22 @@ Deno.serve(async (req) => {
         license_key,
         product_name: product.name,
         checksum_verified: Boolean(expectedChecksum),
+
       },
     });
 
     return new Response(
       JSON.stringify({
         success: true,
+        trace_id: reqTraceId,
         download_url: signedData.signedUrl,
         expires_in: 300,
         product_name: product.name,
         checksum: expectedChecksum || null,
+        checksum_algorithm: checksumAlgorithm,
         checksum_verified: Boolean(expectedChecksum),
+        min_supported_version_code: minSupportedVersionCode,
+        force_update_required: forceUpdateRequired,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
