@@ -129,6 +129,7 @@ const NOTIFY_MAX_TITLE_LENGTH = 120
 const MAX_IMAGE_OPTIMIZE_WIDTH = 4096
 const MAX_IMAGE_OPTIMIZE_QUALITY = 100
 const SUPPORTED_API_VERSIONS = new Set(['v1', 'v2'])
+// Legacy module aliases mapped to canonical module/action routes to reduce avoidable 404s.
 const MODULE_ALIASES: Record<string, { module: string; prependAction?: string }> = {
   cart: { module: 'marketplace', prependAction: 'cart' },
   orders: { module: 'marketplace', prependAction: 'orders' },

@@ -20,7 +20,7 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
     'Content-Type': 'application/json',
     'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
   };
-  if (!session?.access_token) throw new ApiError('Unauthorized', 401, 'AUTH_TOKEN_MISSING');
+  if (!session?.access_token) throw new ApiError('Bearer token required', 401, 'AUTH_TOKEN_MISSING');
   headers['Authorization'] = `Bearer ${session.access_token}`;
   return headers;
 }
@@ -110,6 +110,15 @@ async function fetchWithTimeoutAndRetry(url: string, config: RequestInit): Promi
   throw new ApiError(lastError instanceof Error ? lastError.message : 'Network request failed', 0, 'NETWORK_ERROR', lastError);
 }
 
+function warnIfCacheSlaExceeded(path: string, elapsedMs: number) {
+  if (elapsedMs <= API_CACHE_SLA_MS) return;
+  console.warn(`[api-cache-sla] Cache response exceeded SLA`, {
+    path,
+    elapsed_ms: elapsedMs,
+    sla_ms: API_CACHE_SLA_MS,
+  });
+}
+
 async function apiCall<T = any>(method: string, path: string, body?: any): Promise<T> {
   const startedAt = performance.now();
   const headers = await getAuthHeaders();
@@ -139,9 +148,7 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
     if (cached && now - cached.ts < API_CACHE_TTL_MS) {
       const elapsed = Math.round(performance.now() - startedAt);
       debugLog('cache-hit', { elapsed_ms: elapsed, sla_ms: API_CACHE_SLA_MS });
-      if (elapsed > API_CACHE_SLA_MS) {
-        console.warn(`[api-cache-sla] Cache response exceeded SLA`, { path: pathWithoutLeadingSlash, elapsed_ms: elapsed, sla_ms: API_CACHE_SLA_MS });
-      }
+      warnIfCacheSlaExceeded(pathWithoutLeadingSlash, elapsed);
       return cached.data as T;
     }
   }
@@ -186,13 +193,7 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
     responseCache.set(cacheKey, { data, ts: Date.now() });
     const elapsed = Math.round(performance.now() - startedAt);
     debugLog('cache-store', { elapsed_ms: elapsed, sla_ms: API_CACHE_SLA_MS });
-    if (elapsed > API_CACHE_SLA_MS) {
-      console.warn(`[api-cache-sla] GET response exceeded cache SLA target`, {
-        path: pathWithoutLeadingSlash,
-        elapsed_ms: elapsed,
-        sla_ms: API_CACHE_SLA_MS,
-      });
-    }
+    warnIfCacheSlaExceeded(pathWithoutLeadingSlash, elapsed);
   } else {
     for (const key of responseCache.keys()) {
       if (key.startsWith(`${path}`) || key.includes(path.split('?')[0])) responseCache.delete(key);

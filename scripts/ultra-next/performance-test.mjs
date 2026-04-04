@@ -61,7 +61,7 @@ async function run() {
     slaBreaches,
     elapsedMs,
     crashFree: true,
-    stableResponse: slaBreaches === 0,
+    slaCompliant: slaBreaches === 0,
   });
 
   if (failures > 0 || slaBreaches > 0) process.exitCode = 1;
