@@ -10,8 +10,7 @@ CREATE TABLE IF NOT EXISTS public.device_bindings (
   last_active TIMESTAMPTZ NOT NULL DEFAULT now(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (key_id),
-  UNIQUE (key_id, device_id)
+  UNIQUE (key_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_device_bindings_user_id ON public.device_bindings(user_id);

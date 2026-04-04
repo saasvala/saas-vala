@@ -270,6 +270,14 @@ Deno.serve(async (req) => {
       }
 
       // Bind device on first use
+      const bindingPayload = {
+        user_id: apkDownload.user_id || licenseMeta?.created_by || null,
+        device_id,
+        key_id: licenseMeta?.id || null,
+        status: "active",
+        last_active: new Date().toISOString(),
+      };
+
       if (!existingDevice) {
         await adminClient
           .from("apk_downloads")
@@ -283,15 +291,21 @@ Deno.serve(async (req) => {
           })
           .eq("id", apkDownload.id);
 
-        await adminClient
+        const { error: bindError } = await adminClient
           .from("device_bindings")
-          .upsert({
+          .upsert(bindingPayload, { onConflict: "key_id" });
+        if (bindError) {
+          await adminClient.from("license_verification_logs").insert({
+            license_key,
+            device_id: device_id || null,
+            app_signature: app_signature || null,
             user_id: apkDownload.user_id || licenseMeta?.created_by || null,
-            device_id,
-            key_id: licenseMeta?.id || null,
-            status: "active",
-            last_active: new Date().toISOString(),
-          }, { onConflict: "key_id" });
+            result: "warning",
+            reason: `Device binding sync failed: ${bindError.message}`,
+            ip_address: ip,
+            trace_id: reqTraceId,
+          });
+        }
       } else {
         // Same device, just update attempts
         await adminClient
@@ -303,15 +317,21 @@ Deno.serve(async (req) => {
           })
           .eq("id", apkDownload.id);
 
-        await adminClient
+        const { error: bindError } = await adminClient
           .from("device_bindings")
-          .upsert({
+          .upsert(bindingPayload, { onConflict: "key_id" });
+        if (bindError) {
+          await adminClient.from("license_verification_logs").insert({
+            license_key,
+            device_id: device_id || null,
+            app_signature: app_signature || null,
             user_id: apkDownload.user_id || licenseMeta?.created_by || null,
-            device_id,
-            key_id: licenseMeta?.id || null,
-            status: "active",
-            last_active: new Date().toISOString(),
-          }, { onConflict: "key_id" });
+            result: "warning",
+            reason: `Device binding sync failed: ${bindError.message}`,
+            ip_address: ip,
+            trace_id: reqTraceId,
+          });
+        }
       }
     }
 
