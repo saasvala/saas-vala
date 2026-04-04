@@ -564,163 +564,13 @@ async function processOneJob(admin: any, job: any, supabaseUrl: string, anonKey:
   await logStep(admin, job, currentStep, "started", { status: job.status }, {});
   await logTrace(admin, job.trace_id, "step_started", { step: currentStep, job_id: job.id });
 
-  const { next, result } = await runStep(admin, job, supabaseUrl, anonKey);
-  const nextAttempt = Number(job.attempt || 0) + (result.ok ? 0 : 1);
-  const maxRetry = Number(job.max_retry || 3);
+
 
   if (!result.ok && currentStep === "scanning") {
     await emitSecurityAlert(admin, job.trace_id, "mandatory_scan_gate_failed", result.error || {});
   }
 
-  if (!result.ok && result.retryable && nextAttempt <= maxRetry) {
-    const retryAt = new Date(Date.now() + nextAttempt * 15000).toISOString();
-    await logStep(admin, job, currentStep, "retry", {}, {}, result.error || {});
-    await transitionJob(admin, job, currentStep, {
-      attempt: nextAttempt,
-      last_error: result.error || {},
-      next_retry_at: retryAt,
-      lease_expires_at: null,
-      lease_token: null,
-    });
-    await logTrace(admin, job.trace_id, "step_retry", {
-      step: currentStep,
-      attempt: nextAttempt,
-      retry_at: retryAt,
-    });
-    return { done: false, state: "retry" };
-  }
-
-  if (!result.ok) {
-    await logStep(admin, job, currentStep, currentStep === "scanning" ? "blocked" : "failed", {}, {}, result.error || {});
-    await admin.from("apk_pipeline_dead_letters").insert({
-      job_id: job.id,
-      trace_id: job.trace_id,
-      step: currentStep,
-      reason: String(result.error?.reason || "step_failed"),
-      payload: result.error || {},
-    });
-    await transitionJob(admin, job, "failed", {
-      attempt: nextAttempt,
-      last_error: result.error || {},
-      dead_lettered: nextAttempt > maxRetry || !(result.retryable ?? false),
-      lease_expires_at: null,
-      lease_token: null,
-    });
-    await upsertApkBuildAndProduct(admin, job, "failed");
-    await logTrace(admin, job.trace_id, "job_failed", { step: currentStep, error: result.error }, 500);
-    return { done: true, state: "failed" };
-  }
-
-  const artifacts = mergeJson(job.artifacts, result.payload || {});
-  const aiModelUsed = mergeJson(job.ai_model_used, result.payload?.ai_model ? { [currentStep]: result.payload.ai_model } : {});
-
-  await logStep(admin, job, currentStep, "success", {}, result.payload || {}, {});
-  await transitionJob(admin, job, next, {
-    artifacts,
-    ai_model_used: aiModelUsed,
-    lease_expires_at: null,
-    lease_token: null,
-    next_retry_at: null,
-    build_log: result.payload?.build ? JSON.stringify(result.payload.build) : job.build_log,
-  });
-
-  if (next === "ready") {
-    const apkUrl = String(artifacts.object_path || `${job.slug || job.id}/release-signed.apk`);
-    await upsertApkBuildAndProduct(admin, job, "success", apkUrl);
-    await logTrace(admin, job.trace_id, "job_ready", { apk_url: apkUrl, job_id: job.id });
-    await admin.from("events").insert({
-      type: "apk_ready",
-      status: "processed",
-      trace_id: job.trace_id,
-      payload: { job_id: job.id, product_id: job.product_id, apk_url: apkUrl },
-    });
-    return { done: true, state: "ready" };
-  }
-
-  await logTrace(admin, job.trace_id, "step_completed", { from: currentStep, to: next, job_id: job.id });
-  return { done: false, state: "progressed" };
-}
-
-async function getJobById(admin: any, id: string) {
-  const { data } = await admin.from("apk_pipeline_jobs").select("*").eq("id", id).maybeSingle();
-  return data;
-}
-
-async function runWorker(admin: any, workerId: string, supabaseUrl: string, anonKey: string, maxJobs: number) {
-  const processed: any[] = [];
-  for (let i = 0; i < maxJobs; i++) {
-    const job = await claimNextJob(admin, workerId);
-    if (!job) break;
-    const result = await processOneJob(admin, job, supabaseUrl, anonKey);
-    const latest = await getJobById(admin, job.id);
-    processed.push({
-      id: job.id,
-      trace_id: job.trace_id,
-      result,
-      status: latest?.status,
-      current_step: latest?.current_step,
-      attempt: latest?.attempt,
-    });
-  }
-  return processed;
-}
-
-function respond(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
-}
-
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
-
-  try {
-    const body = await req.json();
-    const action = String(body?.action || "enqueue");
-    const data = body?.data || {};
-
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const admin = createClient(supabaseUrl, serviceKey);
-
-    if (action === "enqueue") {
-      const job = await enqueueJob(admin, data);
-      return respond({
-        success: true,
-        mode: "enqueue",
-        job,
-      });
-    }
-
-    if (action === "worker_tick") {
-      const workerId = String(data.worker_id || `worker-${crypto.randomUUID().slice(0, 8)}`);
-      const maxJobs = Math.max(1, Math.min(50, Number(data.max_jobs || 5)));
-      const processed = await runWorker(admin, workerId, supabaseUrl, anonKey, maxJobs);
-      return respond({
-        success: true,
-        mode: "worker_tick",
-        worker_id: workerId,
-        processed_count: processed.length,
-        processed,
-      });
-    }
-
-    if (action === "run_full_automation") {
-      const workerId = String(data.worker_id || `worker-${crypto.randomUUID().slice(0, 8)}`);
-      const repoUrl = String(data.repo_url || "").trim();
-      if (!repoUrl) return respond({ error: "repo_url is required" }, 400);
-
-      const job = await enqueueJob(admin, data);
-      const maxTicks = Math.max(1, Math.min(25, Number(data.max_ticks || 10)));
-      const maxJobsPerTick = Math.max(1, Math.min(10, Number(data.max_jobs_per_tick || 1)));
-      let finalJob = job;
-      for (let i = 0; i < maxTicks; i++) {
-        await runWorker(admin, workerId, supabaseUrl, anonKey, maxJobsPerTick);
-        const latest = await getJobById(admin, job.id);
-        if (latest) finalJob = latest;
-        if (latest?.status === "ready" || latest?.status === "failed") break;
+n
       }
 
       return respond({
@@ -741,21 +591,7 @@ Deno.serve(async (req) => {
           .order("created_at", { ascending: true });
         return respond({ success: true, job, steps });
       }
-      if (data.trace_id) {
-        const { data: jobs } = await admin
-          .from("apk_pipeline_jobs")
-          .select("*")
-          .eq("trace_id", String(data.trace_id))
-          .order("created_at", { ascending: false })
-          .limit(1);
-        const job = jobs?.[0];
-        if (!job) return respond({ error: "job_not_found" }, 404);
-        const { data: steps } = await admin
-          .from("apk_pipeline_step_logs")
-          .select("*")
-          .eq("job_id", job.id)
-          .order("created_at", { ascending: true });
-        return respond({ success: true, job, steps });
+n
       }
       const { data: jobs } = await admin
         .from("apk_pipeline_jobs")
@@ -806,28 +642,11 @@ Deno.serve(async (req) => {
         const text = await reposRes.text();
         return respond({ error: "repo_scan_failed", details: text }, 500);
       }
-      const repos = await reposRes.json();
-      const queued: any[] = [];
-      for (const repo of repos || []) {
-        const slug = deriveSlug(repo?.name, repo?.html_url, "");
-        if (!slug) continue;
-        const { data: existingProduct } = await admin.from("products").select("id").eq("slug", slug).maybeSingle();
-        const job = await enqueueJob(admin, {
-          trace_id: randomTraceId(),
-          product_id: existingProduct?.id || null,
-          slug,
-          repo_url: repo.html_url || `https://github.com/saasvala/${slug}`,
-          max_retry: 3,
-          priority: 100,
+
         });
         queued.push({ id: job.id, slug, trace_id: job.trace_id });
       }
-      return respond({
-        success: true,
-        mode: "legacy_full_pipeline",
-        queued_count: queued.length,
-        queued,
-      });
+
     }
 
     return respond({ error: `Unknown action: ${action}` }, 400);

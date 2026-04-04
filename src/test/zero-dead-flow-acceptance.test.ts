@@ -5,6 +5,10 @@ import path from 'node:path';
 const appPath = path.resolve(process.cwd(), 'src/App.tsx');
 const gatewayPath = path.resolve(process.cwd(), 'supabase/functions/api-gateway/index.ts');
 const apkPath = path.resolve(process.cwd(), 'supabase/functions/download-apk/index.ts');
+const verifyLicensePath = path.resolve(process.cwd(), 'supabase/functions/verify-license/index.ts');
+const licenseSyncPolicyPath = path.resolve(process.cwd(), 'supabase/functions/license-sync-policy/index.ts');
+const apkFactoryPath = path.resolve(process.cwd(), 'supabase/functions/apk-factory/index.ts');
+const autoApkPipelinePath = path.resolve(process.cwd(), 'supabase/functions/auto-apk-pipeline/index.ts');
 
 function mustRead(file: string) {
   return fs.readFileSync(file, 'utf8');
@@ -97,5 +101,50 @@ describe('ZERO DEAD FLOW acceptance gates', () => {
     expect(source.includes('UNSUPPORTED_API_VERSION')).toBeTruthy();
     expect(source.includes('ROUTE_NOT_FOUND')).toBeTruthy();
     expect(source.includes('is_graceful_not_found: true')).toBeTruthy();
+  });
+
+  test('license verification enforces device binding, runtime block, and signed policy envelope', () => {
+    const source = mustRead(verifyLicensePath);
+    expect(source.includes('wrong_device')).toBeTruthy();
+    expect(source.includes('runtime_blocked')).toBeTruthy();
+    expect(source.includes('min_supported_apk_version_code')).toBeTruthy();
+    expect(source.includes('signRuntimePolicy')).toBeTruthy();
+    expect(source.includes('apk_runtime_policy_logs')).toBeTruthy();
+  });
+
+  test('license sync policy endpoint supports signed sync + analytics ingestion with rate limits', () => {
+    const source = mustRead(licenseSyncPolicyPath);
+    expect(source.includes('action === "ingest_event"')).toBeTruthy();
+    expect(source.includes('APK_ANALYTICS_PER_MINUTE_PER_LICENSE')).toBeTruthy();
+    expect(source.includes('analytics_rate_limited')).toBeTruthy();
+    expect(source.includes('signPolicy')).toBeTruthy();
+    expect(source.includes('force_update')).toBeTruthy();
+  });
+
+  test('download apk response includes trusted hash and update governance metadata', () => {
+    const source = mustRead(apkPath);
+    expect(source.includes('checksum_algorithm')).toBeTruthy();
+    expect(source.includes('min_supported_version_code')).toBeTruthy();
+    expect(source.includes('force_update_required')).toBeTruthy();
+    expect(source.includes('download_origin')).toBeTruthy();
+    expect(source.includes('user_agent')).toBeTruthy();
+  });
+
+  test('apk factory callback validates signatures and manages rollback/checksum metadata', () => {
+    const source = mustRead(apkFactoryPath);
+    expect(source.includes('Invalid callback signature')).toBeTruthy();
+    expect(source.includes('artifact_checksum')).toBeTruthy();
+    expect(source.includes('previous_stable_apk_path')).toBeTruthy();
+    expect(source.includes('rollback_status')).toBeTruthy();
+    expect(source.includes('build_target')).toBeTruthy();
+  });
+
+  test('auto apk pipeline supports vip priority and resource/build target metadata', () => {
+    const source = mustRead(autoApkPipelinePath);
+    expect(source.includes('priority_tier')).toBeTruthy();
+    expect(source.includes('priority_score')).toBeTruthy();
+    expect(source.includes('resource_class')).toBeTruthy();
+    expect(source.includes('build_target')).toBeTruthy();
+    expect(source.includes('order("priority_score", { ascending: false })')).toBeTruthy();
   });
 });

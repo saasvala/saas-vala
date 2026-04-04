@@ -93,6 +93,7 @@ const Success = React.lazy(() => import("./pages/Success"));
 const Subscription = React.lazy(() => import("./pages/Subscription"));
 const AppAccess = React.lazy(() => import("./pages/AppAccess"));
 const Logout = React.lazy(() => import("./pages/Logout"));
+const ApkPipeline = React.lazy(() => import("./pages/ApkPipeline"));
 
 const queryClient = new QueryClient();
 
@@ -214,7 +215,7 @@ const ADMIN_MASTER_ROUTES = new Set([
   '/admin/apk-pipeline',
   '/admin/audit-logs',
 ]);
-const ADMIN_DYNAMIC_PREFIXES = ['/admin/marketplace/'] as const;
+const ADMIN_DYNAMIC_PREFIXES = ['/admin/marketplace/', '/admin/apk-pipeline/'] as const;
 
 function isValidAdminRoute(route: string) {
   if (ADMIN_MASTER_ROUTES.has(route)) return true;
@@ -496,10 +497,15 @@ function AppRoutes() {
 
         {/* Admin routes */}
         <Route path="/admin" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/marketplace" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/apk-pipeline/new" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/apk-pipeline/:id" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/apk-pipeline/:id/logs" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/apk-pipeline/:id/errors" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/apk-pipeline/:id/output" element={<AuthGuard><RoleGuard role="super_admin"><ApkPipeline /></RoleGuard></AuthGuard>} />
         <Route path="/admin/*" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/dashboard" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/products" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/marketplace/products" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/wallet" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/wallet" replace /></RoleGuard></AuthGuard>} />
-        <Route path="/admin/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot/apk-pipeline" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/audit-logs" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/audit-logs" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/orders" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/dashboard/orders" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/seo" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/seo-leads" replace /></RoleGuard></AuthGuard>} />
