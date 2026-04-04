@@ -9,6 +9,9 @@ const corsHeaders = {
 type PipelineState = ReturnType<typeof normalizePipelineState>;
 
 const MAX_RETRIES = 3;
+const LICENSE_TTL_DAYS = Number(Deno.env.get("APK_LICENSE_TTL_DAYS") || "365");
+const WORKER_LOCK_SECONDS = Number(Deno.env.get("APK_WORKER_LOCK_SECONDS") || "90");
+const POSTGRES_UNIQUE_VIOLATION = "23505";
 
 function nowIso() {
   return new Date().toISOString();
@@ -299,7 +302,7 @@ async function runLicenseStage(admin: any, job: any) {
   }
 
   const licenseValue = randomKey("SV-OFFLINE");
-  const expireAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 365).toISOString();
+  const expireAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * LICENSE_TTL_DAYS).toISOString();
 
   const { data: inserted, error } = await admin.from("license_keys").insert({
     product_id: job.product_id,
@@ -322,7 +325,7 @@ async function runLicenseStage(admin: any, job: any) {
   }).select("id, license_key").single();
 
   if (error) {
-    if (String(error.message || "").toLowerCase().includes("duplicate") || String(error.code || "") === "23505") {
+    if (String(error.message || "").toLowerCase().includes("duplicate") || String(error.code || "") === POSTGRES_UNIQUE_VIOLATION) {
       const { data: existing } = await admin
         .from("license_keys")
         .select("id, license_key")
@@ -435,7 +438,7 @@ async function lockNextJob(admin: any, workerId: string) {
 
   if (!candidate) return null;
 
-  const lockUntil = new Date(Date.now() + 90_000).toISOString();
+  const lockUntil = new Date(Date.now() + WORKER_LOCK_SECONDS * 1000).toISOString();
   const { data: locked } = await admin
     .from("apk_build_queue")
     .update({ worker_id: workerId, lock_expires_at: lockUntil, last_heartbeat_at: nowIso() })

@@ -294,7 +294,7 @@ Deno.serve(async (req) => {
           success: buildStatus === "success",
           message: buildStatus === "success"
             ? `✅ Build callback forwarded for ${completeSlug}`
-            : `❌ Failed build callback forwarded for ${completeSlug}` ,
+            : `❌ Failed build callback forwarded for ${completeSlug}`,
           pipeline: pipelineJson,
         });
       }
@@ -431,6 +431,7 @@ jobs:
               -Pandroid.injected.signing.key.password="\${{ secrets.ANDROID_KEY_PASSWORD }}" \
               --no-daemon
           else
+            # Fallback produces an unsigned release APK when keystore secrets are unavailable.
             ./gradlew assembleRelease --no-daemon
           fi
           
