@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 import { productsApi } from '@/lib/api';
 import type { Json } from '@/integrations/supabase/types';
 import { supabase } from '@/integrations/supabase/client';
+import { subscribeQuickActionEvents } from '@/lib/quickActionEvents';
 
 export interface Product {
   id: string;
@@ -42,7 +43,7 @@ export function useProducts() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchProducts = async () => {
+  const fetchProducts = useCallback(async () => {
     setLoading(true);
     try {
       const res = await productsApi.list();
@@ -59,9 +60,9 @@ export function useProducts() {
       }
     }
     setLoading(false);
-  };
+  }, []);
 
-  const fetchCategories = async () => {
+  const fetchCategories = useCallback(async () => {
     try {
       const res = await productsApi.categories();
       setCategories((res.data || []) as Category[]);
@@ -77,7 +78,7 @@ export function useProducts() {
         console.error(fallbackError);
       }
     }
-  };
+  }, []);
 
   const createProduct = async (product: Partial<Product>) => {
     try {
@@ -143,7 +144,27 @@ export function useProducts() {
   useEffect(() => {
     fetchProducts();
     fetchCategories();
-  }, []);
+  }, [fetchCategories, fetchProducts]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('products-dashboard-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+        fetchProducts();
+      })
+      .subscribe();
+
+    const unsubscribeQuickEvents = subscribeQuickActionEvents((event) => {
+      if (event === 'product_added' || event === 'apk_uploaded') {
+        fetchProducts();
+      }
+    });
+
+    return () => {
+      unsubscribeQuickEvents();
+      supabase.removeChannel(channel);
+    };
+  }, [fetchProducts]);
 
   return {
     products,

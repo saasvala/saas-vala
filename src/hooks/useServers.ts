@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { serversApi } from '@/lib/api';
 import { supabase } from '@/integrations/supabase/client';
 import type { Json } from '@/integrations/supabase/types';
+import { subscribeQuickActionEvents } from '@/lib/quickActionEvents';
 
 export interface AgentStatus {
   agent_alive: boolean;
@@ -214,6 +215,35 @@ export function useServers() {
       if (heartbeatRef.current) { clearInterval(heartbeatRef.current); heartbeatRef.current = null; }
     };
   }, [servers.length, checkAllAgents]);
+
+  useEffect(() => {
+    const channels = [
+      supabase
+        .channel('servers-dashboard-live')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'servers' }, () => {
+          fetchServers();
+        })
+        .subscribe(),
+      supabase
+        .channel('deployments-dashboard-live')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'deployments' }, () => {
+          fetchDeployments();
+        })
+        .subscribe(),
+    ];
+
+    const unsubscribeQuickEvents = subscribeQuickActionEvents((event) => {
+      if (event === 'server_deployed') {
+        fetchServers();
+        fetchDeployments();
+      }
+    });
+
+    return () => {
+      unsubscribeQuickEvents();
+      channels.forEach((channel) => supabase.removeChannel(channel));
+    };
+  }, [fetchDeployments, fetchServers]);
 
   return {
     servers, deployments, loading, agentStatuses, checkingAgent,

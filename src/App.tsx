@@ -3,7 +3,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { OfflineRetryBanner } from "@/components/global/OfflineRetryBanner";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, Navigate, useParams } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import { SidebarProvider } from "@/hooks/useSidebarState";
 import { CartProvider } from "@/hooks/useCart";
@@ -203,10 +203,40 @@ function RoleGuard({ children, role }: { children: React.ReactNode; role: 'super
   return <ResellerRoute>{children}</ResellerRoute>;
 }
 
+const ADMIN_MASTER_ROUTES = new Set([
+  '/admin/dashboard',
+  '/admin/products',
+  '/admin/keys',
+  '/admin/servers',
+  '/admin/wallet',
+  '/admin/resellers',
+  '/admin/marketplace',
+  '/admin/apk-pipeline',
+  '/admin/audit-logs',
+]);
+const ADMIN_DYNAMIC_PREFIXES = ['/admin/marketplace/'] as const;
+
+function isValidAdminRoute(route: string) {
+  if (ADMIN_MASTER_ROUTES.has(route)) return true;
+  if (ADMIN_DYNAMIC_PREFIXES.some((prefix) => route.startsWith(prefix))) return true;
+  return false;
+}
+
+function createRouteGuard(route: string, hasUser: boolean, allow: boolean) {
+  if (!isValidAdminRoute(route)) return <Navigate to="/" replace />;
+  if (!hasUser) return <Navigate to="/login" replace />;
+  if (!allow) return <Navigate to="/unauthorized" replace />;
+  return null;
+}
+
 function AdminRoute({ children }: { children: React.ReactNode }) {
-  const { isSuperAdmin, loading } = useAuth();
+  const { isSuperAdmin, loading, user } = useAuth();
+  const location = useLocation();
   if (loading) return <PageLoader />;
-  if (!isSuperAdmin) return <Navigate to="/unauthorized" replace />;
+  if (location.pathname.startsWith('/admin')) {
+    const guardResult = createRouteGuard(location.pathname, !!user, isSuperAdmin);
+    if (guardResult) return guardResult;
+  }
   return <>{children}</>;
 }
 
@@ -370,6 +400,7 @@ function AppRoutes() {
         {/* Protected routes */}
         <Route path="/onboarding" element={<AuthGuard><Onboarding /></AuthGuard>} />
         <Route path="/dashboard" element={<AuthGuard>{setupDone ? <Dashboard /> : <Navigate to="/onboarding" replace />}</AuthGuard>} />
+        <Route path="/admin/dashboard" element={<AuthGuard><RoleGuard role="super_admin"><Dashboard /></RoleGuard></AuthGuard>} />
         <Route path="/support" element={<AuthGuard><Support /></AuthGuard>} />
         <Route path="/support/ticket" element={<AuthGuard><SupportTicket /></AuthGuard>} />
         <Route path="/feedback" element={<AuthGuard><Feedback /></AuthGuard>} />
@@ -467,6 +498,9 @@ function AppRoutes() {
         <Route path="/admin" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/marketplace" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/*" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/dashboard" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/products" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/marketplace/products" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/wallet" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/wallet" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/apk-pipeline" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot/apk-pipeline" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/audit-logs" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/audit-logs" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/orders" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/dashboard/orders" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/seo" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/seo-leads" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/ai" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/saas-ai-dashboard" replace /></RoleGuard></AuthGuard>} />

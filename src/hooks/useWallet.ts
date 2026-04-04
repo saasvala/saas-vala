@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { walletApi } from '@/lib/api';
 import { supabase } from '@/integrations/supabase/client';
 import type { RealtimeChannel } from '@supabase/supabase-js';
+import { subscribeQuickActionEvents } from '@/lib/quickActionEvents';
 
 export interface Wallet {
   id: string;
@@ -175,6 +176,17 @@ export function useWallet() {
       channels.forEach((channel) => supabase.removeChannel(channel));
     };
   }, [wallet?.id, fetchTransactions, fetchWallet, fetchAllWallets]);
+
+  useEffect(() => {
+    const unsubscribeQuickEvents = subscribeQuickActionEvents((event) => {
+      if (event === 'credits_added') {
+        fetchWallet();
+        fetchAllWallets();
+        fetchTransactions();
+      }
+    });
+    return () => unsubscribeQuickEvents();
+  }, [fetchAllWallets, fetchTransactions, fetchWallet]);
 
   return {
     wallet,
