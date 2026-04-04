@@ -9167,13 +9167,14 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
   }
 
   // GET /builder/status and GET /builder/status/:project_id
-  if (method === 'GET' && pathParts[0] === 'status' && !pathParts[1]) {
+  if (method === 'GET' && pathParts[0] === 'status' && pathParts.length === 1) {
+    const statusLimit = 100
     const { data: projects, error: projectsError } = await admin
       .from('projects')
       .select('id,name,status,created_at,updated_at')
       .eq('created_by', userId)
       .order('created_at', { ascending: false })
-      .limit(100)
+      .limit(statusLimit)
     if (projectsError) return fail(projectsError.message, 400, 'BUILDER_STATUS_FAILED')
 
     const projectIds = (projects || []).map((p: any) => p.id).filter(Boolean)
@@ -9223,10 +9224,12 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
           updated_at: p.updated_at || null,
         }
       }),
+      limit: statusLimit,
+      truncated: (projects || []).length >= statusLimit,
     })
   }
 
-  if (method === 'GET' && pathParts[0] === 'status' && pathParts[1]) {
+  if (method === 'GET' && pathParts[0] === 'status' && pathParts.length === 2 && pathParts[1]) {
     const projectId = String(pathParts[1] || '').trim()
     const { data: project, error: projectError } = await admin
       .from('projects')
