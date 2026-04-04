@@ -159,7 +159,7 @@ Deno.serve(async (req) => {
       // FUNCTION 2: Trigger APK build via VPS factory
       // ═══════════════════════════════════════════
       case "trigger_apk_build": {
-        const { catalog_id, slug, repo_url, product_id } = data || {};
+        const { catalog_id, slug, repo_url, product_id, priority_tier, resource_class, build_target } = data || {};
         if (!slug) return respond({ error: "slug required" }, 400);
 
         const githubToken = Deno.env.get("SAASVALA_GITHUB_TOKEN");
@@ -233,6 +233,10 @@ Deno.serve(async (req) => {
                 product_id: product_id || null,
                 target_industry: detectIndustry(slug, repoData.description || ""),
                 build_started_at: new Date().toISOString(),
+                priority_tier: priority_tier || "normal",
+                priority_score: priority_tier === "vip" ? 100 : 50,
+                resource_class: resource_class || "standard",
+                build_target: build_target || "apk",
               },
               { onConflict: "slug" }
             );
@@ -252,6 +256,10 @@ Deno.serve(async (req) => {
                 build_status: "pending",
                 product_id: product_id || null,
                 target_industry: detectIndustry(slug, repoData.description || ""),
+                priority_tier: priority_tier || "normal",
+                priority_score: priority_tier === "vip" ? 100 : 50,
+                resource_class: resource_class || "standard",
+                build_target: build_target || "apk",
               },
               { onConflict: "slug" }
             );
@@ -281,6 +289,10 @@ Deno.serve(async (req) => {
       // ═══════════════════════════════════════════
       case "bulk_build": {
         const limit = data?.limit || 10;
+        const priorityTier = data?.priority_tier || "normal";
+        const priorityScore = priorityTier === "vip" ? 100 : 50;
+        const resourceClass = data?.resource_class || "standard";
+        const buildTarget = data?.build_target || "apk";
         const { data: pendingCatalog } = await admin
           .from("source_code_catalog")
           .select("id, slug, github_repo_url, project_name")
@@ -295,8 +307,19 @@ Deno.serve(async (req) => {
             catalog_id: entry.id,
             upload_type: "apk_build",
             status: "queued",
-            priority: 5,
+            priority: priorityTier === "vip" ? 10 : 5,
           });
+
+          await admin.from("apk_build_queue").upsert({
+            repo_name: entry.project_name || entry.slug,
+            repo_url: entry.github_repo_url || `https://github.com/saasvala/${entry.slug}`,
+            slug: entry.slug,
+            build_status: "pending",
+            priority_tier: priorityTier,
+            priority_score: priorityScore,
+            resource_class: resourceClass,
+            build_target: buildTarget,
+          }, { onConflict: "slug" });
 
           await admin
             .from("source_code_catalog")
@@ -387,6 +410,10 @@ Deno.serve(async (req) => {
       case "check_updates": {
         const githubToken = Deno.env.get("SAASVALA_GITHUB_TOKEN");
         if (!githubToken) return respond({ error: "GitHub token not configured" }, 500);
+        const priorityTier = data?.priority_tier || "normal";
+        const priorityScore = priorityTier === "vip" ? 100 : 50;
+        const resourceClass = data?.resource_class || "standard";
+        const buildTarget = data?.build_target || "apk";
 
         const since = new Date(Date.now() - 86400000).toISOString();
         const repos = await fetchSaasvalaRepos(githubToken);
@@ -411,8 +438,19 @@ Deno.serve(async (req) => {
               catalog_id: catalogEntry.id,
               upload_type: "apk_rebuild",
               status: "queued",
-              priority: 3,
+              priority: priorityTier === "vip" ? 9 : 3,
             });
+
+            await admin.from("apk_build_queue").upsert({
+              repo_name: slug,
+              repo_url: `https://github.com/saasvala/${slug}`,
+              slug,
+              build_status: "pending",
+              priority_tier: priorityTier,
+              priority_score: priorityScore,
+              resource_class: resourceClass,
+              build_target: buildTarget,
+            }, { onConflict: "slug" });
 
             await admin
               .from("source_code_catalog")
@@ -607,6 +645,10 @@ Deno.serve(async (req) => {
       case "auto_marketplace_workflow": {
         const githubToken = Deno.env.get("SAASVALA_GITHUB_TOKEN");
         const batchLimit = data?.limit || 20;
+        const priorityTier = data?.priority_tier || "normal";
+        const priorityScore = priorityTier === "vip" ? 100 : 50;
+        const resourceClass = data?.resource_class || "standard";
+        const buildTarget = data?.build_target || "apk";
 
         const results: any[] = [];
         let processed = 0, verified = 0, attached = 0, queued = 0, skipped = 0;
@@ -706,6 +748,10 @@ Deno.serve(async (req) => {
                     build_status: "pending",
                     product_id: product.id,
                     target_industry: "general",
+                    priority_tier: priorityTier,
+                    priority_score: priorityScore,
+                    resource_class: resourceClass,
+                    build_target: buildTarget,
                   });
                 }
                 results.push({ id: product.id, slug, status: "queued", repo_verified: true });
@@ -729,6 +775,10 @@ Deno.serve(async (req) => {
                 build_status: "pending",
                 product_id: product.id,
                 target_industry: "general",
+                priority_tier: priorityTier,
+                priority_score: priorityScore,
+                resource_class: resourceClass,
+                build_target: buildTarget,
               });
             }
             results.push({ id: product.id, slug, status: "queued" });
@@ -790,7 +840,14 @@ Deno.serve(async (req) => {
           if (s in queueStats) (queueStats as any)[s]++;
         }
 
-        return respond({ success: true, catalog: stats, queue: queueStats });
+        const { data: buildQueue } = await admin
+          .from("apk_build_queue")
+          .select("build_status, priority_tier")
+          .order("priority_score", { ascending: false })
+          .order("created_at", { ascending: true })
+          .limit(100);
+
+        return respond({ success: true, catalog: stats, queue: queueStats, build_queue: buildQueue || [] });
       }
 
       default:
