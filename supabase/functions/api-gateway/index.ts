@@ -5452,6 +5452,16 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     return ok(data, 201)
   }
 
+  // POST /webhook/payment
+  if (method === 'POST' && segment === 'webhook' && secondSegment === 'payment') {
+    return await handleMarketplace('POST', ['payment', 'webhook'], body, userId, sb)
+  }
+
+  // POST /webhook/deploy
+  if (method === 'POST' && segment === 'webhook' && secondSegment === 'deploy') {
+    return await handleServers('POST', ['deploy', 'webhook'], body, userId, sb)
+  }
+
   // GET /projects
   if (method === 'GET' && segment === 'projects' && !id) {
     const { data, error } = await sb.from('servers').select('*').order('created_at', { ascending: false })
@@ -5936,7 +5946,109 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     return await handleServers('GET', ['server', 'health'], body, userId, sb)
   }
 
-  return fail('Not found', 404, 'NOT_FOUND')
+  // GET /server/health/live/:id
+  if (method === 'GET' && segment === 'server' && secondSegment === 'health' && thirdSegment === 'live' && fourthSegment) {
+    const { data, error } = await sb
+      .from('server_health_metrics')
+      .select('*')
+      .eq('server_id', fourthSegment)
+      .order('recorded_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    if (!data) {
+      return ok({ safe: true, message: 'fallback', server_id: fourthSegment, metrics: null })
+    }
+    return ok(data)
+  }
+
+  // GET /server/alerts/:id
+  if (method === 'GET' && segment === 'server' && secondSegment === 'alerts' && thirdSegment) {
+    const { data, error } = await sb
+      .from('server_alerts')
+      .select('*')
+      .eq('server_id', thirdSegment)
+      .order('created_at', { ascending: false })
+      .limit(100)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    if (!data || data.length === 0) {
+      return ok({ safe: true, message: 'fallback', server_id: thirdSegment, alerts: [] })
+    }
+    return ok(data)
+  }
+
+  // GET /server/jobs/:id
+  if (method === 'GET' && segment === 'server' && secondSegment === 'jobs' && thirdSegment) {
+    const { data, error } = await sb
+      .from('server_jobs')
+      .select('*')
+      .eq('server_id', thirdSegment)
+      .order('created_at', { ascending: false })
+      .limit(100)
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    if (!data || data.length === 0) {
+      return ok({ safe: true, message: 'fallback', server_id: thirdSegment, jobs: [] })
+    }
+    return ok(data)
+  }
+
+  // POST /server/job/retry/:id
+  if (method === 'POST' && segment === 'server' && secondSegment === 'job' && thirdSegment === 'retry' && fourthSegment) {
+    const { data: job, error: jobError } = await sb
+      .from('server_jobs')
+      .select('*')
+      .eq('id', fourthSegment)
+      .maybeSingle()
+    if (jobError) return fail(jobError.message, 400, 'DB_ERROR')
+    if (!job) {
+      return ok({ safe: true, message: 'fallback', job_id: fourthSegment, retried: false })
+    }
+    const nextRetryCount = Number(job.retry_count || 0) + 1
+    const { data, error } = await sb
+      .from('server_jobs')
+      .update({
+        status: 'pending',
+        retry_count: nextRetryCount,
+      })
+      .eq('id', fourthSegment)
+      .select('*')
+      .maybeSingle()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    return ok(data || { id: fourthSegment, status: 'pending', retry_count: nextRetryCount })
+  }
+
+  // GET /server/credential/access?server_id=...&otp=...
+  if (method === 'GET' && segment === 'server' && secondSegment === 'credential' && thirdSegment === 'access') {
+    const serverId = sanitizeTextInput(body?.server_id || body?.id || '', 120)
+    const providedOtp = sanitizeTextInput(body?.otp || body?.one_time_password || '', 32)
+    if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
+    if (!providedOtp) return fail('OTP required', 401, 'OTP_REQUIRED')
+
+    const expectedOtp = String(Deno.env.get('SERVER_CREDENTIAL_ACCESS_OTP') || '').trim()
+    if (!expectedOtp) return fail('Credential vault OTP is not configured', 503, 'OTP_NOT_CONFIGURED')
+    if (providedOtp !== expectedOtp) return fail('Invalid OTP', 403, 'INVALID_OTP')
+
+    const { data, error } = await sb
+      .from('server_credentials')
+      .select('id,server_id,username,status,created_at,updated_at')
+      .eq('server_id', serverId)
+      .maybeSingle()
+    if (error) return fail(error.message, 400, 'DB_ERROR')
+    if (!data) {
+      return ok({ safe: true, message: 'fallback', server_id: serverId, credential: null })
+    }
+    return ok({
+      id: data.id,
+      server_id: data.server_id,
+      username: data.username,
+      status: data.status,
+      created_at: data.created_at,
+      updated_at: data.updated_at,
+      sensitive_redacted: true,
+    })
+  }
+
+  return ok({ safe: true, message: 'fallback' })
 }
 
 // ===================== 7. GITHUB =====================
@@ -9866,6 +9978,16 @@ Deno.serve(async (req) => {
       return await handleWallet(req.method, subParts, body, 'system-webhook', admin)
     }
 
+    // External webhook aliases without JWT
+    if (module === 'webhook' && req.method === 'POST' && subParts[0] === 'payment') {
+      const admin = adminClient()
+      return await handleMarketplace('POST', ['payment', 'webhook'], body, 'system-webhook', admin)
+    }
+    if (module === 'webhook' && req.method === 'POST' && subParts[0] === 'deploy') {
+      const admin = adminClient()
+      return await handleServers('POST', ['deploy', 'webhook'], body, body?.triggered_by || '', admin)
+    }
+
     // Scheduler subscription endpoint without JWT (secret-gated in handler)
     if (module === 'subscriptions' && req.method === 'POST' && subParts[0] === 'cron-run') {
       const admin = adminClient()
@@ -9977,6 +10099,7 @@ Deno.serve(async (req) => {
       case 'git':
       case 'agent':
       case 'server':
+      case 'webhook':
         routeResponse = await handleServers(req.method, [module, ...subParts], body, userId, sb)
         break
       case 'github': routeResponse = await handleGithub(req.method, subParts, body, userId, sb); break
