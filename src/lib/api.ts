@@ -630,17 +630,16 @@ export interface ApkDownloadResponse {
 
 export const apkApi = {
   create: (data: any) =>
-    crudWithFallback('apk', 'create', data, () => apiCall('POST', 'apk/build', data)),
+    crudWithFallback('apk', 'create', data, () => apiCall('POST', 'apk/upload', data)),
   list: (params?: Record<string, unknown>) =>
-    crudWithFallback('apk', 'read', params, () => apiCall('GET', 'apk/history', params)),
+    crudWithFallback('apk', 'read', params, () => apiCall('GET', 'apk/list', params)),
   update: (data: any) =>
     crudWithFallback('apk', 'update', data, () => apiCall('PUT', 'apk/update', data)),
   delete: (data: { id: string }) =>
     crudWithFallback('apk', 'delete', data, () => apiCall('DELETE', 'apk/delete', data)),
-  build: (data: any) =>
-    crudWithFallback('apk', 'create', data, () => apiCall('POST', 'apk/build', data)),
-  history: () =>
-    crudWithFallback('apk', 'read', undefined, () => apiCall('GET', 'apk/history')),
+  // Legacy compatibility endpoints.
+  build: (data: any) => apiCall('POST', 'apk/build', data),
+  history: () => apiCall('GET', 'apk/history'),
   status: (id: string) => apiCall('GET', `apk/status/${id}`),
   download: (id: string) => apiCall<ApkDownloadResponse>('GET', `apk/download/${id}`),
 };
@@ -667,8 +666,9 @@ export const builderApi = {
   }) => crudWithFallback('builder', 'create', data, () => apiCall('POST', 'builder/create', data)),
   run: (data: { project_id: string; version?: string }) => apiCall('POST', 'builder/run', data),
   status: (projectId: string) =>
-    crudWithFallback('builder', 'read', { project_id: projectId }, () => apiCall('GET', `builder/status/${projectId}`)),
+    crudWithFallback('builder', 'read', { project_id: projectId }, () => apiCall('GET', 'builder/status', { project_id: projectId })),
   logs: (projectId: string) => apiCall('GET', `builder/logs/${projectId}`),
+  // Retry is modeled as update in the global CRUD contract for this project-wide mapping.
   retry: (projectId: string) =>
     crudWithFallback('builder', 'update', { project_id: projectId }, () => apiCall('POST', 'builder/retry', { project_id: projectId })),
 };
