@@ -535,6 +535,19 @@ export const ultraBuilderApi = {
   apkBuild: (data: any) => apiCall('POST', 'apk/build', data),
 };
 
+export const builderApi = {
+  create: (data: {
+    name: string;
+    prompt: string;
+    stack_preference?: string;
+    target_platforms?: string[];
+  }) => apiCall('POST', 'builder/create', data),
+  run: (data: { project_id: string; version?: string }) => apiCall('POST', 'builder/run', data),
+  status: (projectId: string) => apiCall('GET', `builder/status/${projectId}`),
+  logs: (projectId: string) => apiCall('GET', `builder/logs/${projectId}`),
+  retry: (projectId: string) => apiCall('POST', 'builder/retry', { project_id: projectId }),
+};
+
 // ===================== WALLET =====================
 export const walletApi = {
   get: () => apiCall('GET', 'wallet'),

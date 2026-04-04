@@ -8604,6 +8604,251 @@ type PipelineRequestBody = {
   product_id?: string | null
 }
 
+type BuilderCreateBody = {
+  name?: string
+  prompt?: string
+  stack_preference?: string | null
+  target_platforms?: string[] | null
+}
+
+type BuilderRunBody = {
+  project_id?: string
+  version?: string | null
+}
+
+const BUILDER_AGENT_FLOW = ['PROMPT_AI', 'ARCHITECT_AI', 'DEV_AI', 'DEBUG_AI', 'SCAN_AI', 'TEST_AI', 'BUILD_AI', 'DEPLOY_AI', 'MONITOR_AI'] as const
+const BUILDER_MAX_RETRIES = 3
+const BUILDER_STEP_AGENT_PLAN = [
+  { step: 'parse_prompt', agent: 'PROMPT_AI' },
+  { step: 'generate_architecture', agent: 'ARCHITECT_AI' },
+  { step: 'generate_frontend', agent: 'DEV_AI' },
+  { step: 'generate_backend', agent: 'DEV_AI' },
+  { step: 'connect_db', agent: 'DEV_AI' },
+  { step: 'run_debug', agent: 'DEBUG_AI' },
+  { step: 'run_scan', agent: 'SCAN_AI' },
+  { step: 'run_test', agent: 'TEST_AI' },
+  { step: 'build_apk', agent: 'BUILD_AI' },
+  { step: 'deploy', agent: 'DEPLOY_AI' },
+  { step: 'monitor', agent: 'MONITOR_AI' },
+] as const
+
+async function handleBuilder(method: string, pathParts: string[], body: BuilderCreateBody | BuilderRunBody, userId: string, sb: ReturnType<typeof adminClient>) {
+  const admin = adminClient()
+
+  // POST /builder/create
+  if (method === 'POST' && pathParts[0] === 'create') {
+    const name = String((body as BuilderCreateBody)?.name || '').trim()
+    const prompt = String((body as BuilderCreateBody)?.prompt || '').trim()
+    if (!name || !prompt) return err('name and prompt are required', 422, 'VALIDATION_ERROR')
+
+    const stack_preference = String((body as BuilderCreateBody)?.stack_preference || '').trim() || 'auto'
+    const target_platforms = Array.isArray((body as BuilderCreateBody)?.target_platforms)
+      ? ((body as BuilderCreateBody).target_platforms || []).map((v) => String(v || '').trim()).filter(Boolean)
+      : ['web', 'apk', 'api']
+
+    const { data: project, error: projectError } = await admin
+      .from('projects')
+      .insert({
+        name,
+        status: 'created',
+        prompt,
+        created_by: userId,
+        metadata: {
+          stack_preference,
+          target_platforms,
+          builder_flow: BUILDER_AGENT_FLOW,
+        },
+      })
+      .select('*')
+      .single()
+    if (projectError || !project) return fail(projectError?.message || 'Project create failed', 400, 'BUILDER_CREATE_FAILED')
+
+    const { data: version } = await admin
+      .from('project_versions')
+      .insert({
+        project_id: project.id,
+        version: 'v1.0.0',
+        status: 'created',
+      })
+      .select('*')
+      .single()
+
+    const { error: seedTaskError } = await admin.from('ai_tasks').insert([
+      { project_id: project.id, agent: 'PROMPT_AI', input: prompt, output: 'Requirement parsed', status: 'success' },
+      { project_id: project.id, agent: 'ARCHITECT_AI', input: name, output: 'Architecture seeded', status: 'success' },
+    ])
+    if (seedTaskError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', project.id)
+      return fail(seedTaskError.message, 400, 'BUILDER_TASK_SEED_FAILED')
+    }
+
+    const { error: seedLogError } = await admin.from('build_logs').insert({
+      project_id: project.id,
+      step: 'create',
+      status: 'success',
+      error: null,
+    })
+    if (seedLogError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', project.id)
+      return fail(seedLogError.message, 400, 'BUILDER_LOG_SEED_FAILED')
+    }
+
+    return ok({
+      project_id: project.id,
+      status: project.status || 'created',
+      version: version?.version || 'v1.0.0',
+    }, 201)
+  }
+
+  // POST /builder/run
+  if (method === 'POST' && pathParts[0] === 'run') {
+    const projectId = String((body as BuilderRunBody)?.project_id || '').trim()
+    if (!projectId) return err('project_id is required', 422, 'VALIDATION_ERROR')
+
+    const { data: project, error: projectError } = await admin
+      .from('projects')
+      .select('*')
+      .eq('id', projectId)
+      .maybeSingle()
+    if (projectError || !project) return fail('Project not found', 404, 'NOT_FOUND')
+
+    await admin.from('projects').update({
+      status: 'running',
+      updated_at: nowIso(),
+    }).eq('id', projectId)
+
+    const taskRows = BUILDER_STEP_AGENT_PLAN.map(({ step, agent }) => ({
+      project_id: projectId,
+      agent,
+      input: step,
+      output: `queued:${step}`,
+      status: 'queued',
+    }))
+    const { error: taskInsertError } = await admin.from('ai_tasks').insert(taskRows)
+    if (taskInsertError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', projectId)
+      return fail(taskInsertError.message, 400, 'BUILDER_TASK_INSERT_FAILED')
+    }
+
+    const logRows = BUILDER_STEP_AGENT_PLAN.map(({ step }) => ({
+      project_id: projectId,
+      step,
+      status: 'queued',
+      error: null,
+    }))
+    const { error: logInsertError } = await admin.from('build_logs').insert(logRows)
+    if (logInsertError) {
+      await admin.from('projects').update({ status: 'failed', updated_at: nowIso() }).eq('id', projectId)
+      return fail(logInsertError.message, 400, 'BUILDER_LOG_INSERT_FAILED')
+    }
+
+    return ok({
+      project_id: projectId,
+      status: 'running',
+      retry_limit: BUILDER_MAX_RETRIES,
+      flow: BUILDER_AGENT_FLOW,
+      step_count: BUILDER_STEP_AGENT_PLAN.length,
+    })
+  }
+
+  // GET /builder/status/:project_id
+  if (method === 'GET' && pathParts[0] === 'status' && pathParts[1]) {
+    const projectId = String(pathParts[1] || '').trim()
+    const { data: project, error: projectError } = await admin
+      .from('projects')
+      .select('*')
+      .eq('id', projectId)
+      .maybeSingle()
+    if (projectError || !project) return fail('Project not found', 404, 'NOT_FOUND')
+
+    const { data: latestLog } = await admin
+      .from('build_logs')
+      .select('*')
+      .eq('project_id', projectId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    return ok({
+      project_id: projectId,
+      status: project.status || 'unknown',
+      current_step: latestLog?.step || null,
+      step_status: latestLog?.status || null,
+      self_healing: true,
+    })
+  }
+
+  // GET /builder/logs/:project_id and GET /builder/logs
+  if (method === 'GET' && pathParts[0] === 'logs') {
+    const projectId = String(pathParts[1] || '').trim()
+    if (projectId) {
+      const { data: logs, error: logsError } = await admin
+        .from('build_logs')
+        .select('*')
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: false })
+        .limit(200)
+      if (logsError) return fail(logsError.message, 400, 'BUILDER_LOGS_FAILED')
+      return ok({ project_id: projectId, logs: logs || [] })
+    }
+    const { data: logs, error: logsError } = await admin
+      .from('build_logs')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(200)
+    if (logsError) return fail(logsError.message, 400, 'BUILDER_LOGS_FAILED')
+    return ok({ logs: logs || [] })
+  }
+
+  // POST /builder/retry
+  if (method === 'POST' && pathParts[0] === 'retry') {
+    const projectId = String((body as BuilderRunBody)?.project_id || '').trim()
+    if (!projectId) return err('project_id is required', 422, 'VALIDATION_ERROR')
+
+    const { data: project, error: projectError } = await admin
+      .from('projects')
+      .select('id,status')
+      .eq('id', projectId)
+      .maybeSingle()
+    if (projectError || !project) return fail('Project not found', 404, 'NOT_FOUND')
+
+    const { data: lastFailedStep } = await admin
+      .from('build_logs')
+      .select('*')
+      .eq('project_id', projectId)
+      .eq('status', 'failed')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    await admin.from('projects').update({ status: 'running', updated_at: nowIso() }).eq('id', projectId)
+    const { error: retryLogError } = await admin.from('build_logs').insert({
+      project_id: projectId,
+      step: lastFailedStep?.step || 'retry',
+      status: 'queued',
+      error: null,
+    })
+    if (retryLogError) return fail(retryLogError.message, 400, 'BUILDER_RETRY_LOG_FAILED')
+    const { error: retryTaskError } = await admin.from('ai_tasks').insert({
+      project_id: projectId,
+      agent: 'DEBUG_AI',
+      input: lastFailedStep?.step || 'retry',
+      output: 'retry_queued',
+      status: 'queued',
+    })
+    if (retryTaskError) return fail(retryTaskError.message, 400, 'BUILDER_RETRY_TASK_FAILED')
+
+    return ok({
+      project_id: projectId,
+      status: 'running',
+      retry_step: lastFailedStep?.step || 'retry',
+      retry_limit: BUILDER_MAX_RETRIES,
+    })
+  }
+
+  return fail('Route not found', 404, 'ROUTE_NOT_FOUND', { module: 'builder' })
+}
+
 async function handlePipeline(method: string, pathParts: string[], body: PipelineRequestBody, userId: string, sb: ReturnType<typeof adminClient>) {
   // POST /pipeline/start
   if (method === 'POST' && pathParts[0] === 'start') {
@@ -10982,6 +11227,7 @@ Deno.serve(async (req) => {
       case 'auto-pilot': routeResponse = await handleAutoPilot(req.method, subParts, body, userId, sb); break
       case 'apk': routeResponse = await handleApk(req.method, subParts, body, userId, sb); break
       case 'pipeline': routeResponse = await handlePipeline(req.method, subParts, body, userId, sb); break
+      case 'builder': routeResponse = await handleBuilder(req.method, subParts, body, userId, sb); break
       case 'geo': routeResponse = await handleGeo(req.method, subParts, body, req); break
       case 'translate': routeResponse = await handleTranslate(req.method, subParts, body, req); break
       case 'currency': routeResponse = await handleCurrency(req.method, subParts, body); break
@@ -11097,3 +11343,12 @@ Deno.serve(async (req) => {
     return fail('Internal server error', 500, 'INTERNAL_ERROR', { fallback: true, retryable: true })
   }
 })
+    const { count: retryCount } = await admin
+      .from('ai_tasks')
+      .select('id', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .eq('agent', 'DEBUG_AI')
+      .eq('output', 'retry_queued')
+    if (Number(retryCount || 0) >= BUILDER_MAX_RETRIES) {
+      return fail('Retry limit reached', 409, 'RETRY_LIMIT_REACHED', { retry_limit: BUILDER_MAX_RETRIES })
+    }

@@ -525,7 +525,9 @@ function AppRoutes() {
         <Route path="/manufacturing-role-detail" element={<AuthGuard><ManufacturingRoleDetail /></AuthGuard>} />
         <Route path="/education" element={<AuthGuard><EducationCategory /></AuthGuard>} />
         <Route path="/vala-builder" element={<AuthGuard><ValaBuilder /></AuthGuard>} />
-        <Route path="/builder" element={<AuthGuard><Navigate to="/vala-builder" replace /></AuthGuard>} />
+        <Route path="/builder" element={<AuthGuard><ValaBuilder /></AuthGuard>} />
+        <Route path="/builder/:project_id" element={<AuthGuard><ValaBuilder /></AuthGuard>} />
+        <Route path="/builder/logs" element={<AuthGuard><ValaBuilder /></AuthGuard>} />
         <Route path="/auto-pilot" element={<AuthGuard><RoleGuard role="super_admin"><Automation /></RoleGuard></AuthGuard>} />
         <Route path="/admin/billing" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot" replace /></RoleGuard></AuthGuard>} />
         <Route path="/auto-pilot/new-request" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/auto-pilot" replace /></RoleGuard></AuthGuard>} />
@@ -613,7 +615,7 @@ function AppRoutes() {
         <Route path="/logout" element={<Logout />} />
         <Route path="/unauthorized" element={<Navigate to="/dashboard" replace />} />
         <Route path="/404" element={<NotFound />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </Suspense>
   );
