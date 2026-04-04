@@ -121,6 +121,12 @@ export async function runOrchestrator(input = {}) {
   let activeModelIndex = 0;
   let activeStrategyIndex = 0;
   const fallbackEnabled = task.ai_routing?.fallback_enabled !== false;
+  const modelPriority = Array.isArray(task.ai_routing?.model_priority) && task.ai_routing.model_priority.length > 0
+    ? task.ai_routing.model_priority
+    : ['openai_gpt', 'claude', 'gemini'];
+  const fixStrategies = Array.isArray(task.ai_routing?.fix_strategies) && task.ai_routing.fix_strategies.length > 0
+    ? task.ai_routing.fix_strategies
+    : ['focused_patch', 'dependency_refresh', 'runtime_stabilize', 'permission_repair', 'clean_rebuild'];
 
   logReport('orchestrator_start', { task, state: runState });
   runState = RUN_STATES.RUNNING;
@@ -131,8 +137,8 @@ export async function runOrchestrator(input = {}) {
 
   while (loop <= maxLoops && !buildSucceeded) {
     const loopArtifacts = [];
-    const activeModel = task.ai_routing?.model_priority?.[activeModelIndex] || 'openai_gpt';
-    const activeStrategy = task.ai_routing?.fix_strategies?.[activeStrategyIndex] || 'focused_patch';
+    const activeModel = modelPriority[activeModelIndex] || 'openai_gpt';
+    const activeStrategy = fixStrategies[activeStrategyIndex] || 'focused_patch';
 
     logReport('orchestrator_loop_start', {
       loop,
@@ -143,7 +149,9 @@ export async function runOrchestrator(input = {}) {
     });
 
     for (const step of SELF_HEAL_FLOW) {
-      const mappedState = RUN_STATES[step.state.toUpperCase()] || RUN_STATES.RUNNING;
+      const mappedState = Object.values(RUN_STATES).includes(step.state)
+        ? step.state
+        : RUN_STATES.RUNNING;
       logReport('orchestrator_status', {
         loop,
         stage: step.stage,
@@ -194,8 +202,8 @@ export async function runOrchestrator(input = {}) {
       break;
     }
 
-    activeModelIndex = (activeModelIndex + 1) % Math.max(1, task.ai_routing?.model_priority?.length || 1);
-    activeStrategyIndex = (activeStrategyIndex + 1) % Math.max(1, task.ai_routing?.fix_strategies?.length || 1);
+    activeModelIndex = (activeModelIndex + 1) % modelPriority.length;
+    activeStrategyIndex = (activeStrategyIndex + 1) % fixStrategies.length;
     loop += 1;
   }
 

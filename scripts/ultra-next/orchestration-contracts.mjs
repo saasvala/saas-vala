@@ -61,7 +61,7 @@ export const FAILURE_TYPES = Object.freeze({
 
 export function createTaskEnvelope(input = {}) {
   return {
-    version: 'apk_self_heal_v2',
+    version: 'v2.0.0',
     task_id: input.task_id || `task-${Date.now()}`,
     requested_at: input.requested_at || new Date().toISOString(),
     request: {
