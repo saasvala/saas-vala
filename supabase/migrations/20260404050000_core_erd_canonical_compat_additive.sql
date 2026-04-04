@@ -75,6 +75,20 @@ WHERE user_id IS NULL
 ALTER TABLE public.resellers
   ADD COLUMN IF NOT EXISTS commission NUMERIC(5,2);
 
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'resellers_commission_percent_range'
+      AND conrelid = 'public.resellers'::regclass
+  ) THEN
+    ALTER TABLE public.resellers
+      ADD CONSTRAINT resellers_commission_percent_range
+      CHECK (commission IS NULL OR (commission >= 0 AND commission <= 100));
+  END IF;
+END $$;
+
 UPDATE public.resellers
 SET commission = commission_percent
 WHERE commission IS NULL
