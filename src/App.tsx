@@ -597,7 +597,7 @@ function AppRoutes() {
         <Route path="/admin/server-manager" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/admin/servers" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/wallet" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/wallet" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/audit-logs" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/audit-logs" replace /></RoleGuard></AuthGuard>} />
-        <Route path="/admin/orders" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/dashboard/orders" replace /></RoleGuard></AuthGuard>} />
+        <Route path="/admin/orders" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/user/orders" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/seo" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/seo-leads" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/ai" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/saas-ai-dashboard" replace /></RoleGuard></AuthGuard>} />
         <Route path="/admin/resellers" element={<AuthGuard><RoleGuard role="super_admin"><Navigate to="/resellers" replace /></RoleGuard></AuthGuard>} />
