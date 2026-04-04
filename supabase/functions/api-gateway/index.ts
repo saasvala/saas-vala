@@ -8616,6 +8616,21 @@ type BuilderRunBody = {
   version?: string | null
 }
 
+const BUILDER_AGENT_FLOW = ['PROMPT_AI', 'ARCHITECT_AI', 'DEV_AI', 'DEBUG_AI', 'SCAN_AI', 'TEST_AI', 'BUILD_AI', 'DEPLOY_AI', 'MONITOR_AI'] as const
+const BUILDER_STEP_AGENT_PLAN = [
+  { step: 'parse_prompt', agent: 'PROMPT_AI' },
+  { step: 'generate_architecture', agent: 'ARCHITECT_AI' },
+  { step: 'generate_frontend', agent: 'DEV_AI' },
+  { step: 'generate_backend', agent: 'DEV_AI' },
+  { step: 'connect_db', agent: 'DEV_AI' },
+  { step: 'run_debug', agent: 'DEBUG_AI' },
+  { step: 'run_scan', agent: 'SCAN_AI' },
+  { step: 'run_test', agent: 'TEST_AI' },
+  { step: 'build_apk', agent: 'BUILD_AI' },
+  { step: 'deploy', agent: 'DEPLOY_AI' },
+  { step: 'monitor', agent: 'MONITOR_AI' },
+] as const
+
 async function handleBuilder(method: string, pathParts: string[], body: BuilderCreateBody | BuilderRunBody, userId: string, sb: ReturnType<typeof adminClient>) {
   const admin = adminClient()
 
@@ -8625,8 +8640,8 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
     const prompt = String((body as BuilderCreateBody)?.prompt || '').trim()
     if (!name || !prompt) return err('name and prompt are required', 422, 'VALIDATION_ERROR')
 
-    const stackPreference = String((body as BuilderCreateBody)?.stack_preference || '').trim() || 'auto'
-    const targetPlatforms = Array.isArray((body as BuilderCreateBody)?.target_platforms)
+    const stack_preference = String((body as BuilderCreateBody)?.stack_preference || '').trim() || 'auto'
+    const target_platforms = Array.isArray((body as BuilderCreateBody)?.target_platforms)
       ? ((body as BuilderCreateBody).target_platforms || []).map((v) => String(v || '').trim()).filter(Boolean)
       : ['web', 'apk', 'api']
 
@@ -8638,9 +8653,9 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
         prompt,
         created_by: userId,
         metadata: {
-          stack_preference: stackPreference,
-          target_platforms: targetPlatforms,
-          architecture_flow: ['PROMPT_AI', 'ARCHITECT_AI', 'DEV_AI', 'DEBUG_AI', 'SCAN_AI', 'TEST_AI', 'BUILD_AI', 'DEPLOY_AI', 'MONITOR_AI'],
+          stack_preference,
+          target_platforms,
+          architecture_flow: BUILDER_AGENT_FLOW,
         },
       })
       .select('*')
@@ -8689,33 +8704,21 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .maybeSingle()
     if (projectError || !project) return fail('Project not found', 404, 'NOT_FOUND')
 
-    const steps = [
-      'parse_prompt',
-      'generate_architecture',
-      'generate_frontend',
-      'generate_backend',
-      'connect_db',
-      'run_debug',
-      'run_test',
-      'build_apk',
-      'deploy',
-    ]
-
     await admin.from('projects').update({
       status: 'running',
       updated_at: nowIso(),
     }).eq('id', projectId)
 
-    const taskRows = steps.map((step, i) => ({
+    const taskRows = BUILDER_STEP_AGENT_PLAN.map(({ step, agent }) => ({
       project_id: projectId,
-      agent: ['PROMPT_AI', 'ARCHITECT_AI', 'DEV_AI', 'DEV_AI', 'DEV_AI', 'DEBUG_AI', 'TEST_AI', 'BUILD_AI', 'DEPLOY_AI'][i],
+      agent,
       input: step,
       output: `queued:${step}`,
       status: 'queued',
     }))
     await admin.from('ai_tasks').insert(taskRows)
 
-    const logRows = steps.map((step) => ({
+    const logRows = BUILDER_STEP_AGENT_PLAN.map(({ step }) => ({
       project_id: projectId,
       step,
       status: 'queued',
@@ -8727,8 +8730,8 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       project_id: projectId,
       status: 'running',
       retry_limit: 3,
-      flow: ['PROMPT_AI', 'ARCHITECT_AI', 'DEV_AI', 'DEBUG_AI', 'SCAN_AI', 'TEST_AI', 'BUILD_AI', 'DEPLOY_AI', 'MONITOR_AI'],
-      step_count: steps.length,
+      flow: BUILDER_AGENT_FLOW,
+      step_count: BUILDER_STEP_AGENT_PLAN.length,
     })
   }
 
