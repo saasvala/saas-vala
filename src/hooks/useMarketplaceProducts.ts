@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { marketplaceApi } from '@/lib/api';
 import { supabase } from '@/integrations/supabase/client';
+import { subscribeQuickActionEvents } from '@/lib/quickActionEvents';
 
 export interface MarketplaceProduct {
   id: string;
@@ -131,31 +132,52 @@ export function useMarketplaceProducts(locale?: { country?: string; lang?: strin
   const [products, setProducts] = useState<MarketplaceProduct[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const fetchProducts = async () => {
-      setLoading(true);
+  const fetchProducts = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await marketplaceApi.productList({
+        country: locale?.country,
+        lang: locale?.lang,
+        currency: locale?.currency,
+      });
+      const mapped = (res.data || []).map((p: any, i: number) => mapDbProduct(p, i));
+      setProducts(prioritizeProducts(mapped));
+    } catch (e) {
+      console.error('Failed to fetch marketplace products:', e);
       try {
-        const res = await marketplaceApi.productList({
-          country: locale?.country,
-          lang: locale?.lang,
-          currency: locale?.currency,
-        });
-        const mapped = (res.data || []).map((p: any, i: number) => mapDbProduct(p, i));
+        const fallback = await marketplaceApi.products();
+        const mapped = (fallback.data || []).map((p: any, i: number) => mapDbProduct(p, i));
         setProducts(prioritizeProducts(mapped));
-      } catch (e) {
-        console.error('Failed to fetch marketplace products:', e);
-        try {
-          const fallback = await marketplaceApi.products();
-          const mapped = (fallback.data || []).map((p: any, i: number) => mapDbProduct(p, i));
-          setProducts(prioritizeProducts(mapped));
-        } catch {
-          setProducts([]);
-        }
+      } catch {
+        setProducts([]);
       }
-      setLoading(false);
-    };
+    }
+    setLoading(false);
+  }, [locale?.country, locale?.currency, locale?.lang]);
+
+  useEffect(() => {
     fetchProducts();
-  }, [locale?.country, locale?.lang, locale?.currency]);
+  }, [fetchProducts]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('marketplace-products-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+        fetchProducts();
+      })
+      .subscribe();
+
+    const unsubscribeQuickEvents = subscribeQuickActionEvents((event) => {
+      if (event === 'product_added' || event === 'apk_uploaded') {
+        fetchProducts();
+      }
+    });
+
+    return () => {
+      unsubscribeQuickEvents();
+      supabase.removeChannel(channel);
+    };
+  }, [fetchProducts]);
 
   const dbRow1 = products.slice(0, 30);
   const remaining = products.slice(30);
