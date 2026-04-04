@@ -1,5 +1,9 @@
 import React, { useEffect } from 'react';
 
+const RECOVERY_DELAY_MS = 1500;
+const FREEZE_THRESHOLD_MS = 5000;
+const WATCHDOG_INTERVAL_MS = 3000;
+
 declare global {
   interface Window {
     _lastRender?: number;
@@ -38,20 +42,14 @@ function queueRecoveryReload() {
   showRecoveryMessage();
   window.setTimeout(() => {
     window.location.reload();
-  }, 1500);
-}
-
-function markRender() {
-  window._lastRender = performance.now();
+  }, RECOVERY_DELAY_MS);
 }
 
 export function GlobalRecovery() {
   useEffect(() => {
-    markRender();
-  });
-
-  useEffect(() => {
-    window._lastRender = performance.now();
+    if (typeof window._lastRender !== 'number') {
+      window._lastRender = performance.now();
+    }
     const previousOnError = window.onerror;
     const previousOnUnhandledRejection = window.onunhandledrejection;
 
@@ -60,7 +58,7 @@ export function GlobalRecovery() {
       if (typeof previousOnError === 'function') {
         previousResult = previousOnError(...args);
       }
-      queueRecoveryReload();
+      if (!previousResult) queueRecoveryReload();
       return previousResult;
     };
 
@@ -68,19 +66,21 @@ export function GlobalRecovery() {
       const previousResult =
         typeof previousOnUnhandledRejection === 'function'
           ? previousOnUnhandledRejection(event)
-          : true;
-      queueRecoveryReload();
+          : undefined;
+      const handledByPrevious = previousResult === true;
+      const shouldRecover = !handledByPrevious && !event.defaultPrevented;
+      if (shouldRecover) queueRecoveryReload();
       return previousResult;
     };
 
     window._recoveryWatchdogId = window.setInterval(() => {
       const lastRender = window._lastRender ?? performance.now();
-      const stuck = performance.now() - lastRender > 5000;
+      const stuck = performance.now() - lastRender > FREEZE_THRESHOLD_MS;
       if (stuck) {
         console.warn('UI FREEZE DETECTED');
         queueRecoveryReload();
       }
-    }, 3000);
+    }, WATCHDOG_INTERVAL_MS);
 
     return () => {
       if (typeof window._recoveryWatchdogId === 'number') {
@@ -115,7 +115,7 @@ export class AppErrorBoundary extends React.Component<React.PropsWithChildren, A
     if (this.recoverTimer !== null) return;
     this.recoverTimer = window.setTimeout(() => {
       queueRecoveryReload();
-    }, 1500);
+    }, RECOVERY_DELAY_MS);
   }
 
   componentWillUnmount() {
