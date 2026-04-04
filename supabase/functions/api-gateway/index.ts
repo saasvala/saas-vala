@@ -9033,6 +9033,7 @@ type BuilderRunBody = {
 
 const BUILDER_AGENT_FLOW = ['PROMPT_AI', 'ARCHITECT_AI', 'DEV_AI', 'DEBUG_AI', 'SCAN_AI', 'TEST_AI', 'BUILD_AI', 'DEPLOY_AI', 'MONITOR_AI'] as const
 const BUILDER_MAX_RETRIES = 3
+const BUILDER_STATUS_LOG_MULTIPLIER_PER_PROJECT = 10
 const BUILDER_STEP_AGENT_PLAN = [
   { step: 'parse_prompt', agent: 'PROMPT_AI' },
   { step: 'generate_architecture', agent: 'ARCHITECT_AI' },
@@ -9167,7 +9168,7 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
   }
 
   // GET /builder/status and GET /builder/status/:project_id
-  if (method === 'GET' && pathParts[0] === 'status' && pathParts.length === 1) {
+  if (method === 'GET' && pathParts.length === 1 && pathParts[0] === 'status') {
     const statusLimit = 100
     const { data: projects, error: projectsError } = await admin
       .from('projects')
@@ -9184,6 +9185,7 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
           .select('project_id,step,status,created_at')
           .in('project_id', projectIds)
           .order('created_at', { ascending: false })
+          .limit(statusLimit * BUILDER_STATUS_LOG_MULTIPLIER_PER_PROJECT)
       : { data: [] as any[] }
 
     const { data: retries } = projectIds.length
@@ -9217,7 +9219,7 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
           status: p.status || 'unknown',
           current_step: latestLog?.step || null,
           step_status: latestLog?.status || null,
-          retry_count: Number(retryCountByProject.get(p.id) || 0),
+          retry_count: retryCountByProject.get(p.id) || 0,
           retry_limit: BUILDER_MAX_RETRIES,
           self_healing: true,
           created_at: p.created_at || null,
