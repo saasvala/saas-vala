@@ -30,7 +30,15 @@ type PipelineStatusPayload = {
   current_step?: string;
 };
 
-const SAFE_PIPELINE_ID = /^[a-f0-9-]{8,}$/i;
+const PIPELINE_ID_FORMAT = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function resolveBuildHistoryRows(data: unknown): BuildItem[] {
+  if (Array.isArray(data)) return data as BuildItem[];
+  if (data && typeof data === 'object' && Array.isArray((data as { data?: unknown }).data)) {
+    return (data as { data: BuildItem[] }).data;
+  }
+  return [];
+}
 
 export default function ApkPipeline() {
   const navigate = useNavigate();
@@ -59,8 +67,8 @@ export default function ApkPipeline() {
     try {
       const { data, error } = await apiClient.get<BuildItem[] | { data: BuildItem[] }>('apk/history');
       if (error) throw new Error(error);
-      const rows = Array.isArray(data) ? data : Array.isArray((data as any)?.data) ? (data as any).data : [];
-      setBuilds(rows as BuildItem[]);
+      const rows = resolveBuildHistoryRows(data);
+      setBuilds(rows);
     } catch (e: any) {
       toast.error(e.message || 'Failed to load pipeline history');
     } finally {
@@ -101,7 +109,7 @@ export default function ApkPipeline() {
 
   useEffect(() => {
     if (!isIdRoute) return;
-    if (!id || !SAFE_PIPELINE_ID.test(id)) {
+    if (!id || !PIPELINE_ID_FORMAT.test(id)) {
       navigate('/admin/apk-pipeline', { replace: true });
       return;
     }
@@ -242,7 +250,7 @@ export default function ApkPipeline() {
           <Card>
             <CardHeader><CardTitle>Build Logs</CardTitle></CardHeader>
             <CardContent className="space-y-2 text-xs">
-              {logs.length ? logs.map((line, idx) => <p key={`${idx}-${line}`}>{line}</p>) : <p>No logs.</p>}
+              {logs.length ? logs.map((line, idx) => <p key={idx}>{line}</p>) : <p>No logs.</p>}
             </CardContent>
           </Card>
         )}

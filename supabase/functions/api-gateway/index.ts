@@ -7576,16 +7576,28 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
   return err('Not found', 404)
 }
 
-async function handlePipeline(method: string, pathParts: string[], body: any, userId: string, sb: any) {
-  const admin = adminClient()
+type PipelineRequestBody = {
+  repo_name?: string
+  repoName?: string
+  repo_url?: string
+  repoUrl?: string
+  slug?: string
+  target_industry?: string | null
+  targetIndustry?: string | null
+  product_id?: string | null
+}
 
+async function handlePipeline(method: string, pathParts: string[], body: PipelineRequestBody, userId: string, sb: ReturnType<typeof adminClient>) {
   // POST /pipeline/start
   if (method === 'POST' && pathParts[0] === 'start') {
     const repoName = String(body?.repo_name || body?.repoName || '').trim()
     const repoUrl = String(body?.repo_url || body?.repoUrl || '').trim()
     const explicitSlug = String(body?.slug || '').trim()
-    const slug = explicitSlug || repoName.toLowerCase().replace(/[^a-z0-9]/g, '-')
-    if (!repoName || !repoUrl || !slug) return err('repo_name and repo_url are required', 422, 'VALIDATION_ERROR')
+    const slug = (explicitSlug || repoName.toLowerCase())
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+    if (!repoName || !repoUrl || !slug) return err('repo_name, repo_url, and slug are required', 422, 'VALIDATION_ERROR')
 
     const { data: created, error: createError } = await sb
       .from('apk_build_queue')
@@ -7602,9 +7614,9 @@ async function handlePipeline(method: string, pathParts: string[], body: any, us
       .select('*')
       .single()
 
-    if (createError || !created) return fail(createError?.message || 'Failed to start pipeline', 400, 'PIPELINE_START_FAILED')
+    if (createError || !created) return fail(createError?.message || 'Pipeline creation returned no data', 400, 'PIPELINE_START_FAILED')
 
-    await logActivity(admin, 'pipeline', created.id, 'pipeline_started', userId, {
+    await logActivity(adminClient(), 'pipeline', created.id, 'pipeline_started', userId, {
       slug,
       repo_url: repoUrl,
       status: 'queued',
@@ -7696,7 +7708,7 @@ async function handlePipeline(method: string, pathParts: string[], body: any, us
     }).eq('id', pipelineId)
 
     if (updateError) return fail(updateError.message, 400, 'PIPELINE_RETRY_FAILED')
-    await logActivity(admin, 'pipeline', pipelineId, 'pipeline_retried', userId, { attempt: attempts })
+    await logActivity(adminClient(), 'pipeline', pipelineId, 'pipeline_retried', userId, { attempt: attempts })
     return ok({
       id: pipelineId,
       pipeline_id: pipelineId,
@@ -7728,7 +7740,7 @@ async function handlePipeline(method: string, pathParts: string[], body: any, us
       updated_at: nowIso(),
     }).eq('id', pipelineId)
     if (updateError) return fail(updateError.message, 400, 'PIPELINE_CANCEL_FAILED')
-    await logActivity(admin, 'pipeline', pipelineId, 'pipeline_cancelled', userId)
+    await logActivity(adminClient(), 'pipeline', pipelineId, 'pipeline_cancelled', userId)
     return ok({
       id: pipelineId,
       pipeline_id: pipelineId,
