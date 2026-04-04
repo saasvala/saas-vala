@@ -3,8 +3,10 @@ import { registerRoutePatterns, resolveSafeRoute } from '@/lib/routeRegistry';
 
 export type ButtonActionConfig = {
   action: string;
+  auth?: boolean;
   route?: string;
   api?: string;
+  payload?: unknown;
   debounceMs?: number;
   throttleMs?: number;
   idempotent?: boolean;
@@ -14,7 +16,10 @@ export type ButtonActionConfig = {
 
 type ExecuteButtonActionOptions<T> = {
   config: ButtonActionConfig;
-  run: () => Promise<T> | T;
+  run?: () => Promise<T> | T;
+  navigate?: (route: string) => void;
+  isAuthenticated?: boolean;
+  updateState?: (action: string, data: unknown) => void;
   onLoadingChange?: (loading: boolean) => void;
   validateResponse?: boolean;
 };
@@ -56,6 +61,9 @@ export async function playSyncedButtonSound(play: () => Promise<void> | void): P
 export async function executeButtonAction<T>({
   config,
   run,
+  navigate,
+  isAuthenticated = true,
+  updateState,
   onLoadingChange,
   validateResponse = true,
 }: ExecuteButtonActionOptions<T>): Promise<T | undefined> {
@@ -81,6 +89,59 @@ export async function executeButtonAction<T>({
   onLoadingChange?.(true);
   if (typeof import.meta !== 'undefined' && (import.meta as { env?: { DEV?: boolean } }).env?.DEV) {
     console.log('BTN_CLICK', { button: actionKey, route: config.route ?? null, api: config.api ?? null, traceId });
+  }
+
+  const resolvedRoute = resolveSafeRoute(config.route, '/');
+  if (config.auth && !isAuthenticated) {
+    if (navigate) {
+      navigate(resolveSafeRoute('/login', '/'));
+    } else if (typeof window !== 'undefined') {
+      window.location.assign('/login');
+    }
+    inFlightActions.delete(lockKey);
+    onLoadingChange?.(false);
+    return undefined;
+  }
+
+  if (config.route && navigate) {
+    try {
+      navigate(resolvedRoute);
+    } catch {
+      navigate('/');
+    }
+    inFlightActions.delete(lockKey);
+    onLoadingChange?.(false);
+    return undefined;
+  }
+
+  if (config.api && !run) {
+    try {
+      const response = await fetch(config.api, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config.payload ?? {}),
+      });
+      const data = await response.json().catch(() => ({}));
+      updateState?.(actionKey, data);
+      window.dispatchEvent(new CustomEvent('button-engine:event', {
+        detail: { action: actionKey, route: config.route ?? null, api: config.api, traceId, result: 'success' },
+      }));
+      return data as T;
+    } catch (error) {
+      window.dispatchEvent(new CustomEvent('button-engine:event', {
+        detail: { action: actionKey, route: config.route ?? null, api: config.api, traceId, result: 'error', error: String((error as { message?: Primitive })?.message || error) },
+      }));
+      throw error;
+    } finally {
+      inFlightActions.delete(lockKey);
+      onLoadingChange?.(false);
+    }
+  }
+
+  if (!run) {
+    inFlightActions.delete(lockKey);
+    onLoadingChange?.(false);
+    return undefined;
   }
 
   let attempt = 0;

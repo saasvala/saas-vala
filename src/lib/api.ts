@@ -269,10 +269,15 @@ export const resellerFeaturesApi = {
 // ===================== MARKETPLACE =====================
 export const marketplaceApi = {
   products: () => apiCall('GET', 'marketplace/products'),
-  productSearch: (q?: string, filter?: string | Record<string, unknown>) =>
-    apiCall('GET', 'product/search', { q, filter: typeof filter === 'string' ? filter : filter ? JSON.stringify(filter) : undefined }),
-  productList: (params?: { country?: string; lang?: string; currency?: string }) =>
-    apiCall('GET', 'product/list', params),
+  productSearch: (q?: string, filter?: string | Record<string, unknown>, pagination?: { page?: number; limit?: number }) =>
+    apiCall('GET', 'product/search', {
+      q,
+      filter: typeof filter === 'string' ? filter : filter ? JSON.stringify(filter) : undefined,
+      page: pagination?.page,
+      limit: pagination?.limit,
+    }),
+  productList: (params?: { country?: string; lang?: string; currency?: string; page?: number; limit?: number }) =>
+    apiCall('GET', 'product/list', { page: 1, limit: 60, ...params }),
   approve: (productId: string) => apiCall('PUT', 'marketplace/approve', { product_id: productId }),
   orders: () => apiCall('GET', 'marketplace/orders'),
   orderHistory: () => apiCall('GET', 'marketplace/order-history'),
