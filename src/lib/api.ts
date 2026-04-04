@@ -278,7 +278,7 @@ export const authApi = {
 };
 
 export const usersApi = {
-  create: (data: any) => CRUD('data' in ({ data } as any) ? { type: 'create', module: 'users', payload: data } : { type: 'create', module: 'users', payload: data }),
+  create: (data: any) => CRUD({ type: 'create', module: 'users', payload: data }),
   list: (params?: Record<string, unknown>) => CRUD({ type: 'read', module: 'users', payload: params }),
   update: (data: any) => CRUD({ type: 'update', module: 'users', payload: data }),
   delete: (data: { id: string }) => CRUD({ type: 'delete', module: 'users', payload: data }),
