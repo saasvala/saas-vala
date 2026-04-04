@@ -140,7 +140,7 @@ Deno.serve(async (req) => {
       // Trigger: Dispatch APK build for a repo
       // ═══════════════════════════════════════
       case "trigger_build": {
-        const { slug, repo_url, product_id, callback_url } = data || {};
+        const { slug, repo_url, product_id, callback_url, trace_id, idempotency_key, queue_id } = data || {};
         if (!slug)
           return respond({ error: "slug required" }, 400);
 
@@ -159,6 +159,7 @@ Deno.serve(async (req) => {
                 app_slug: slug,
                 package_name: `com.saasvala.${slug.replace(/-/g, "_")}`,
                 product_id: product_id || "",
+                trace_id: trace_id || "",
                 supabase_url: supabaseUrl,
               },
             }),
@@ -176,26 +177,14 @@ Deno.serve(async (req) => {
           );
         }
 
-        // Update build queue
-        const admin = createClient(supabaseUrl, serviceKey);
-        await admin.from("apk_build_queue").upsert(
-          {
-            repo_name: slug,
-            repo_url: targetRepo,
-            slug,
-            build_status: "building",
-            product_id: product_id || null,
-            target_industry: "general",
-            build_started_at: new Date().toISOString(),
-          },
-          { onConflict: "slug" }
-        );
-
         return respond({
           success: true,
           slug,
           repo_url: targetRepo,
           status: "building",
+          trace_id: trace_id || null,
+          idempotency_key: idempotency_key || null,
+          queue_id: queue_id || null,
           message: `🔧 APK build triggered via GitHub Actions for ${slug}`,
         });
       }
@@ -267,57 +256,47 @@ Deno.serve(async (req) => {
         if (!completeSlug)
           return respond({ error: "slug required" }, 400);
 
-        const admin = createClient(supabaseUrl, serviceKey);
+        const callbackPayload = {
+          action: "factory_build_callback",
+          data: {
+            slug: completeSlug,
+            product_id: pid || null,
+            apk_path: apk_path || null,
+            status: buildStatus || "failed",
+            error: buildError || null,
+            trace_id: data?.trace_id || null,
+          },
+        };
 
-        if (buildStatus === "success" && apk_path) {
-          // Update build queue
-          await admin
-            .from("apk_build_queue")
-            .update({
-              build_status: "completed",
-              apk_file_path: apk_path,
-              build_completed_at: new Date().toISOString(),
-            })
-            .eq("slug", completeSlug);
+        const internalToken = Deno.env.get("APK_PIPELINE_INTERNAL_TOKEN") || "";
 
-          // Store the storage object path (not a signed URL) so download-apk
-          // always generates a fresh short-lived signed URL at download time.
-          if (apk_path && pid) {
-            await admin
-              .from("products")
-              .update({
-                apk_url: apk_path,
-                is_apk: true,
-                apk_enabled: true,
-              })
-              .eq("id", pid);
-          }
+        const pipelineRes = await fetch(`${supabaseUrl}/functions/v1/auto-apk-pipeline`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${supabaseAnonKey}`,
+            "x-internal-token": internalToken,
+          },
+          body: JSON.stringify(callbackPayload),
+        });
 
-          // Update catalog
-          await admin
-            .from("source_code_catalog")
-            .update({ status: "completed" })
-            .eq("slug", completeSlug);
+        const pipelineJson = await pipelineRes.json().catch(() => ({}));
 
-          return respond({
-            success: true,
-            message: `✅ APK for ${completeSlug} built and attached!`,
-          });
-        } else {
-          await admin
-            .from("apk_build_queue")
-            .update({
-              build_status: "failed",
-              build_error: buildError || "Unknown error",
-              build_completed_at: new Date().toISOString(),
-            })
-            .eq("slug", completeSlug);
-
+        if (!pipelineRes.ok) {
           return respond({
             success: false,
-            message: `❌ APK build failed for ${completeSlug}: ${buildError}`,
-          });
+            error: "Failed forwarding callback to canonical pipeline",
+            details: pipelineJson,
+          }, 500);
         }
+
+        return respond({
+          success: buildStatus === "success",
+          message: buildStatus === "success"
+            ? `✅ Build callback forwarded for ${completeSlug}`
+            : `❌ Failed build callback forwarded for ${completeSlug}` ,
+          pipeline: pipelineJson,
+        });
       }
 
       default:
@@ -361,6 +340,9 @@ on:
         default: 'com.saasvala.app'
       product_id:
         description: 'Product ID in database'
+        required: false
+      trace_id:
+        description: 'Pipeline trace id'
         required: false
       supabase_url:
         description: 'Supabase URL for callback'
@@ -427,14 +409,33 @@ jobs:
           npx cap add android
           npx cap sync
 
+      - name: Configure signing materials
+        run: |
+          if [ -n "\${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            echo "\${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > /tmp/release.keystore
+            echo "KEYSTORE_PATH=/tmp/release.keystore" >> $GITHUB_ENV
+            echo "KEYSTORE_READY=true" >> $GITHUB_ENV
+          else
+            echo "KEYSTORE_READY=false" >> $GITHUB_ENV
+          fi
+
       - name: Build APK
         run: |
           cd target-app/android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          if [ "$KEYSTORE_READY" = "true" ]; then
+            ./gradlew assembleRelease \
+              -Pandroid.injected.signing.store.file=$KEYSTORE_PATH \
+              -Pandroid.injected.signing.store.password="\${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
+              -Pandroid.injected.signing.key.alias="\${{ secrets.ANDROID_KEY_ALIAS }}" \
+              -Pandroid.injected.signing.key.password="\${{ secrets.ANDROID_KEY_PASSWORD }}" \
+              --no-daemon
+          else
+            ./gradlew assembleRelease --no-daemon
+          fi
           
-          # Find the APK
-          APK_PATH=\$(find . -name "*.apk" -type f | head -1)
+          # Find the release APK
+          APK_PATH=\$(find . -path "*/outputs/apk/release/*.apk" -type f | head -1)
           if [ -n "$APK_PATH" ]; then
             cp "$APK_PATH" /tmp/\${{ github.event.inputs.app_slug }}.apk
             echo "APK_BUILT=true" >> $GITHUB_ENV
@@ -477,6 +478,7 @@ jobs:
                 \\"slug\\": \\"\${{ github.event.inputs.app_slug }}\\",
                 \\"status\\": \\"$STATUS\\",
                 \\"product_id\\": \\"\${{ github.event.inputs.product_id }}\\",
+                \\"trace_id\\": \\"\${{ github.event.inputs.trace_id }}\\",
                 \\"apk_path\\": \\"\${{ github.event.inputs.app_slug }}/release.apk\\"
               }
             }" || echo "Callback failed"
@@ -515,7 +517,7 @@ npx cap sync
 # Build APK
 cd android
 chmod +x gradlew
-./gradlew assembleDebug --no-daemon
+./gradlew assembleRelease --no-daemon
 
 echo "APK built for $APP_SLUG"
 find . -name "*.apk" -type f
