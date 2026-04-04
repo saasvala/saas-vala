@@ -114,6 +114,13 @@ const LEDGER_DEBIT_ENTRY_TYPES = new Set(['debit', 'lock'])
 const LEDGER_CREDIT_ENTRY_TYPES = new Set(['credit', 'unlock', 'refund'])
 const DB_INDEX_HINT_PATTERNS = (Deno.env.get('DB_INDEX_HINT_PATTERNS') || 'email,status').split(',').map((v) => v.trim()).filter(Boolean)
 const DEFAULT_COMMISSION_RATE = 10
+const CLAIM_FLOAT_EPSILON = 1e-9
+const CLAIM_AMOUNT_TOLERANCE = 0.01
+const TWO_FA_TIME_STEP_SECONDS = 30
+const TWO_FA_VALIDATION_WINDOW_STEPS = 1
+const PASSWORD_MAX_FAILED_ATTEMPTS = 5
+const PASSWORD_LOCK_MINUTES = 15
+const PASSWORD_HISTORY_ITERATIONS = 210_000
 const NOTIFY_ALLOWED_TRIGGERS = ['payment_success', 'payment_fail', 'apk_ready', 'reseller_sale', 'billing_due'] as const
 const NOTIFY_ALLOWED_CHANNELS = ['in_app', 'email', 'system_alert'] as const
 const NOTIFY_CHANNEL_SET = new Set<string>(NOTIFY_ALLOWED_CHANNELS)
@@ -427,6 +434,166 @@ async function hmacSha256Hex(secret: string, payload: string) {
   )
   const signature = await crypto.subtle.sign('HMAC', key, enc.encode(payload))
   return Array.from(new Uint8Array(signature)).map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+function base64ToBytes(value: string) {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  const pad = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4))
+  const raw = atob(normalized + pad)
+  const bytes = new Uint8Array(raw.length)
+  for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i)
+  return bytes
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let bin = ''
+  for (const b of bytes) bin += String.fromCharCode(b)
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+
+function getAuthEncryptionSecretBytes() {
+  const raw = String(Deno.env.get('AUTH_ENCRYPTION_KEY') || '').trim()
+  if (!raw) return null
+  if (/^[A-Za-z0-9+/_=-]+$/.test(raw)) {
+    try {
+      const decoded = base64ToBytes(raw)
+      if (decoded.length >= 16) return decoded
+    } catch {
+      // fallback to utf8 bytes
+    }
+  }
+  const asUtf8 = new TextEncoder().encode(raw)
+  return asUtf8.length >= 16 ? asUtf8 : null
+}
+
+async function encryptSensitiveText(value: string) {
+  const keyMaterial = getAuthEncryptionSecretBytes()
+  if (!keyMaterial) return null
+  const key = await crypto.subtle.importKey('raw', keyMaterial, { name: 'AES-GCM' }, false, ['encrypt'])
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const plain = new TextEncoder().encode(value)
+  const cipherBuffer = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plain)
+  return `${bytesToBase64(iv)}.${bytesToBase64(new Uint8Array(cipherBuffer))}`
+}
+
+async function decryptSensitiveText(value: string) {
+  const keyMaterial = getAuthEncryptionSecretBytes()
+  if (!keyMaterial) return null
+  const [ivRaw, payloadRaw] = String(value || '').split('.')
+  if (!ivRaw || !payloadRaw) return null
+  const iv = base64ToBytes(ivRaw)
+  const payload = base64ToBytes(payloadRaw)
+  const key = await crypto.subtle.importKey('raw', keyMaterial, { name: 'AES-GCM' }, false, ['decrypt'])
+  try {
+    const plainBuffer = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, payload)
+    return new TextDecoder().decode(plainBuffer)
+  } catch {
+    return null
+  }
+}
+
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+
+function bytesToBase32(bytes: Uint8Array) {
+  let bits = 0
+  let value = 0
+  let output = ''
+  for (const byte of bytes) {
+    value = (value << 8) | byte
+    bits += 8
+    while (bits >= 5) {
+      output += BASE32_ALPHABET[(value >>> (bits - 5)) & 31]
+      bits -= 5
+    }
+  }
+  if (bits > 0) output += BASE32_ALPHABET[(value << (5 - bits)) & 31]
+  return output
+}
+
+function base32ToBytes(secret: string) {
+  const normalized = String(secret || '').toUpperCase().replace(/=+$/g, '').replace(/[^A-Z2-7]/g, '')
+  let bits = 0
+  let value = 0
+  const output: number[] = []
+  for (const char of normalized) {
+    const idx = BASE32_ALPHABET.indexOf(char)
+    if (idx < 0) continue
+    value = (value << 5) | idx
+    bits += 5
+    if (bits >= 8) {
+      output.push((value >>> (bits - 8)) & 0xff)
+      bits -= 8
+    }
+  }
+  return new Uint8Array(output)
+}
+
+function generateTotpSecret() {
+  const bytes = crypto.getRandomValues(new Uint8Array(20))
+  return bytesToBase32(bytes)
+}
+
+async function computeTotp(secret: string, unixTimeSeconds: number) {
+  const keyBytes = base32ToBytes(secret)
+  if (!keyBytes.length) return null
+  const counter = Math.floor(unixTimeSeconds / TWO_FA_TIME_STEP_SECONDS)
+  const counterBytes = new Uint8Array(8)
+  let value = counter
+  for (let i = 7; i >= 0; i -= 1) {
+    counterBytes[i] = value & 0xff
+    value = Math.floor(value / 256)
+  }
+  const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign'])
+  const hmacBuffer = await crypto.subtle.sign('HMAC', key, counterBytes)
+  const hmac = new Uint8Array(hmacBuffer)
+  const offset = hmac[hmac.length - 1] & 0x0f
+  const binary = ((hmac[offset] & 0x7f) << 24)
+    | ((hmac[offset + 1] & 0xff) << 16)
+    | ((hmac[offset + 2] & 0xff) << 8)
+    | (hmac[offset + 3] & 0xff)
+  return String(binary % 1_000_000).padStart(6, '0')
+}
+
+async function verifyTotp(secret: string, otp: string) {
+  const normalizedOtp = String(otp || '').replace(/\D/g, '')
+  if (normalizedOtp.length !== 6) return false
+  const now = Math.floor(Date.now() / 1000)
+  for (let offset = -TWO_FA_VALIDATION_WINDOW_STEPS; offset <= TWO_FA_VALIDATION_WINDOW_STEPS; offset += 1) {
+    const code = await computeTotp(secret, now + offset * TWO_FA_TIME_STEP_SECONDS)
+    if (code && timingSafeEqualText(code, normalizedOtp)) return true
+  }
+  return false
+}
+
+function generateBackupCode() {
+  return crypto.randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase()
+}
+
+async function hashPasswordForHistory(userId: string, password: string, saltOverride?: string) {
+  const salt = saltOverride || bytesToBase64(crypto.getRandomValues(new Uint8Array(16)))
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  )
+  const derivedBits = await crypto.subtle.deriveBits({
+    name: 'PBKDF2',
+    salt: new TextEncoder().encode(`${userId}:${salt}`),
+    iterations: PASSWORD_HISTORY_ITERATIONS,
+    hash: 'SHA-256',
+  }, keyMaterial, 256)
+  const digest = bytesToBase64(new Uint8Array(derivedBits))
+  return `pbkdf2_sha256$${PASSWORD_HISTORY_ITERATIONS}$${salt}$${digest}`
+}
+
+async function verifyPasswordHistoryHash(userId: string, password: string, storedHash: string) {
+  const parts = String(storedHash || '').split('$')
+  if (parts.length !== 4 || parts[0] !== 'pbkdf2_sha256') return false
+  const salt = parts[2]
+  const candidate = await hashPasswordForHistory(userId, password, salt)
+  return timingSafeEqualText(candidate, storedHash)
 }
 
 async function redisGetJson<T = unknown>(key: string): Promise<T | null> {
@@ -942,6 +1109,23 @@ async function authenticate(req: Request) {
   if (error || !data?.claims) return null
 
   return { userId: data.claims.sub as string, supabase: sb }
+}
+
+async function verifySupabaseCurrentPassword(userId: string, currentPassword: string) {
+  const admin = adminClient()
+  const { data: userResp, error: userError } = await admin.auth.admin.getUserById(userId)
+  if (userError || !userResp?.user?.email) return false
+  const anonClient = createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_ANON_KEY')!,
+  )
+  const verify = await anonClient.auth.signInWithPassword({
+    email: userResp.user.email,
+    password: currentPassword,
+  })
+  if (verify.error || !verify.data?.user?.id) return false
+  await anonClient.auth.signOut()
+  return verify.data.user.id === userId
 }
 
 async function enforceSessionBinding(
@@ -2046,6 +2230,16 @@ async function handleAuth(method: string, pathParts: string[], body: any, req: R
 
   // POST /auth/login — handled by Supabase SDK
   if (method === 'POST' && action === 'login') {
+    const ipAddress = readClientIp(req)
+    const deviceFingerprint = extractDeviceFingerprint(req, body)
+    await writeSecurityLogSafe(admin, {
+      user_id: null,
+      action: 'login_attempt',
+      risk_level: 'low',
+      ip_address: ipAddress,
+      device_fingerprint: deviceFingerprint,
+      metadata: { email: normalizeEmail(body?.email || '') || null },
+    })
     return json({ message: 'Use Supabase SDK auth.signInWithPassword() directly' })
   }
 
@@ -2057,6 +2251,464 @@ async function handleAuth(method: string, pathParts: string[], body: any, req: R
   // POST /auth/logout — handled by Supabase SDK
   if (method === 'POST' && action === 'logout') {
     return json({ message: 'Use Supabase SDK auth.signOut() directly' })
+  }
+
+  // POST /auth/google
+  if (method === 'POST' && action === 'google') {
+    const auth = await authenticate(req)
+    if (!auth) return err('Unauthorized', 401)
+
+    const idToken = String(body?.id_token || '').trim()
+    const providerId = String(body?.provider_id || body?.google_id || '').trim()
+    const email = normalizeEmail(body?.email || '')
+    if (!idToken) return err('id_token is required', 422, 'VALIDATION_ERROR')
+    if (!providerId) return err('provider_id is required', 422, 'VALIDATION_ERROR')
+    if (!email) return err('email is required', 422, 'VALIDATION_ERROR')
+
+    const tokenInfoResponse = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`)
+    if (!tokenInfoResponse.ok) return err('Invalid Google token', 401, 'GOOGLE_TOKEN_INVALID')
+    const tokenInfo = await tokenInfoResponse.json()
+    const tokenEmail = normalizeEmail(tokenInfo?.email || '')
+    const tokenSub = String(tokenInfo?.sub || '').trim()
+    const tokenEmailVerified = String(tokenInfo?.email_verified || '').toLowerCase() === 'true'
+    if (!tokenEmailVerified || !tokenEmail || !tokenSub) return err('Invalid Google token payload', 401, 'GOOGLE_TOKEN_INVALID')
+    if (tokenEmail !== email || tokenSub !== providerId) return err('Google token/email mismatch', 401, 'GOOGLE_EMAIL_MISMATCH')
+
+    const { data: existingByProvider } = await admin
+      .from('oauth_accounts')
+      .select('id,user_id,email')
+      .eq('provider', 'google')
+      .eq('provider_id', providerId)
+      .maybeSingle()
+    if (existingByProvider?.user_id && existingByProvider.user_id !== auth.userId) {
+      return err('Google account already linked to another user', 409, 'GOOGLE_LINK_CONFLICT')
+    }
+    if (!existingByProvider?.id) {
+      const { error: insertError } = await admin.from('oauth_accounts').insert({
+        user_id: auth.userId,
+        provider: 'google',
+        provider_id: providerId,
+        email,
+        updated_at: nowIso(),
+      })
+      if (insertError) return err(insertError.message)
+    } else if (existingByProvider.email !== email) {
+      const { error: updateError } = await admin
+        .from('oauth_accounts')
+        .update({ email, updated_at: nowIso() })
+        .eq('id', existingByProvider.id)
+      if (updateError) return err(updateError.message)
+    }
+
+    await writeSecurityLogSafe(admin, {
+      user_id: auth.userId,
+      action: 'google_oauth_linked',
+      risk_level: 'low',
+      ip_address: readClientIp(req),
+      metadata: { provider: 'google', email },
+    })
+
+    return json({ success: true, data: { provider: 'google', linked: true } })
+  }
+
+  // POST /auth/2fa/enable
+  if (method === 'POST' && action === '2fa' && pathParts[1] === 'enable') {
+    const auth = await authenticate(req)
+    if (!auth) return err('Unauthorized', 401)
+
+    const methodType = String(body?.method || 'totp').toLowerCase()
+    if (!['totp', 'sms'].includes(methodType)) return err('Invalid 2FA method', 422, 'VALIDATION_ERROR')
+    const secret = generateTotpSecret()
+    const backupCodes = Array.from({ length: 10 }).map(() => generateBackupCode())
+    const encryptedSecret = await encryptSensitiveText(secret)
+    if (!encryptedSecret) return err('2FA encryption key not configured', 503, 'SECURITY_CONFIG_ERROR')
+    const encryptedBackupCodes = await encryptSensitiveText(JSON.stringify(backupCodes))
+    if (!encryptedBackupCodes) return err('2FA encryption key not configured', 503, 'SECURITY_CONFIG_ERROR')
+
+    const { error } = await admin
+      .from('user_2fa_settings')
+      .upsert({
+        user_id: auth.userId,
+        method: methodType,
+        is_enabled: false,
+        secret_encrypted: encryptedSecret,
+        backup_codes_encrypted: [encryptedBackupCodes],
+        updated_at: nowIso(),
+      }, { onConflict: 'user_id' })
+    if (error) return err(error.message)
+
+    await writeSecurityLogSafe(admin, {
+      user_id: auth.userId,
+      action: '2fa_setup_started',
+      risk_level: 'low',
+      ip_address: readClientIp(req),
+      metadata: { method: methodType },
+    })
+
+    return json({
+      success: true,
+      data: {
+        method: methodType,
+        secret,
+        backup_codes: backupCodes,
+      },
+    })
+  }
+
+  // POST /auth/2fa/verify
+  if (method === 'POST' && action === '2fa' && pathParts[1] === 'verify') {
+    const auth = await authenticate(req)
+    if (!auth) return err('Unauthorized', 401)
+    const otp = String(body?.otp || body?.code || '').trim()
+    if (!otp) return err('otp is required', 422, 'VALIDATION_ERROR')
+
+    const { data: currentSettings, error: settingsError } = await admin
+      .from('user_2fa_settings')
+      .select('user_id,is_enabled,secret_encrypted,backup_codes_encrypted')
+      .eq('user_id', auth.userId)
+      .maybeSingle()
+    if (settingsError) return err(settingsError.message)
+    if (!currentSettings?.user_id) return err('2FA is not configured', 404, 'NOT_FOUND')
+
+    const secret = await decryptSensitiveText(String(currentSettings.secret_encrypted || ''))
+    if (!secret) return err('2FA secret unavailable', 503, 'SECURITY_CONFIG_ERROR')
+
+    const encryptedBackupCodes = Array.isArray(currentSettings.backup_codes_encrypted)
+      ? String(currentSettings.backup_codes_encrypted[0] || '')
+      : ''
+    const backupCodesRaw = encryptedBackupCodes ? await decryptSensitiveText(encryptedBackupCodes) : '[]'
+    const backupCodes = (() => {
+      try {
+        const parsed = JSON.parse(String(backupCodesRaw || '[]'))
+        return Array.isArray(parsed) ? parsed.map((v: any) => String(v).toUpperCase()) : []
+      } catch {
+        return []
+      }
+    })()
+
+    const otpUpper = otp.toUpperCase()
+    const backupMatch = backupCodes.includes(otpUpper)
+    const totpValid = backupMatch ? false : await verifyTotp(secret, otp)
+    if (!backupMatch && !totpValid) return err('Invalid OTP', 422, 'INVALID_OTP')
+
+    const nextBackupCodes = backupMatch ? backupCodes.filter((code: string) => code !== otpUpper) : backupCodes
+    const nextEncryptedBackupCodes = await encryptSensitiveText(JSON.stringify(nextBackupCodes))
+    if (!nextEncryptedBackupCodes) return err('2FA encryption key not configured', 503, 'SECURITY_CONFIG_ERROR')
+    const { error: updateError } = await admin
+      .from('user_2fa_settings')
+      .update({
+        is_enabled: true,
+        backup_codes_encrypted: [nextEncryptedBackupCodes],
+        updated_at: nowIso(),
+      })
+      .eq('user_id', auth.userId)
+    if (updateError) return err(updateError.message)
+
+    await writeSecurityLogSafe(admin, {
+      user_id: auth.userId,
+      action: backupMatch ? '2fa_backup_code_used' : '2fa_verified',
+      risk_level: backupMatch ? 'medium' : 'low',
+      ip_address: readClientIp(req),
+      metadata: { backup_code: backupMatch },
+    })
+
+    return json({ success: true, data: { verified: true, backup_codes_remaining: nextBackupCodes.length } })
+  }
+
+  // POST /auth/password/change
+  if (method === 'POST' && action === 'password' && pathParts[1] === 'change') {
+    const auth = await authenticate(req)
+    if (!auth) return err('Unauthorized', 401)
+    const currentPassword = String(body?.current_password || '').trim()
+    const newPassword = String(body?.new_password || '').trim()
+    if (!currentPassword || !newPassword) {
+      return err('current_password and new_password are required', 422, 'VALIDATION_ERROR')
+    }
+    if (newPassword.length < 8) return err('Password must be at least 8 characters', 422, 'VALIDATION_ERROR')
+    if (!/[A-Z]/.test(newPassword) || !/[a-z]/.test(newPassword) || !/\d/.test(newPassword)) {
+      return err('Password must include uppercase, lowercase and number', 422, 'VALIDATION_ERROR')
+    }
+
+    const now = nowIso()
+    const { data: securityRow } = await admin
+      .from('user_security')
+      .select('failed_attempts,lock_until,password_hash')
+      .eq('user_id', auth.userId)
+      .maybeSingle()
+    const lockUntil = securityRow?.lock_until ? new Date(securityRow.lock_until).getTime() : 0
+    if (lockUntil && lockUntil > Date.now()) return err('Account temporarily locked', 423, 'ACCOUNT_LOCKED')
+
+    if (currentPassword === newPassword) {
+      await writeSecurityLogSafe(admin, {
+        user_id: auth.userId,
+        action: 'password_change_rejected',
+        risk_level: 'low',
+        ip_address: readClientIp(req),
+        metadata: { reason: 'new_password_equals_current' },
+      })
+      return err('New password must be different from current password', 422, 'VALIDATION_ERROR')
+    }
+
+    const currentVerifiedByAuth = await verifySupabaseCurrentPassword(auth.userId, currentPassword)
+    if (!currentVerifiedByAuth) {
+      const failedAttempts = Number(securityRow?.failed_attempts || 0) + 1
+      const lockedUntilIso = failedAttempts >= PASSWORD_MAX_FAILED_ATTEMPTS
+        ? new Date(Date.now() + PASSWORD_LOCK_MINUTES * 60 * 1000).toISOString()
+        : null
+      await admin.from('user_security').upsert({
+        user_id: auth.userId,
+        failed_attempts: failedAttempts,
+        lock_until: lockedUntilIso,
+        updated_at: now,
+      }, { onConflict: 'user_id' })
+      await writeSecurityLogSafe(admin, {
+        user_id: auth.userId,
+        action: 'password_change_failed',
+        risk_level: failedAttempts >= PASSWORD_MAX_FAILED_ATTEMPTS ? 'high' : 'medium',
+        ip_address: readClientIp(req),
+        metadata: { reason: 'current_password_mismatch', failed_attempts: failedAttempts },
+      })
+      return err('Current password verification failed', 401, 'PASSWORD_VERIFICATION_FAILED')
+    }
+
+    const newPasswordHash = await hashPasswordForHistory(auth.userId, newPassword)
+    const { data: lastHashes } = await admin
+      .from('user_password_history')
+      .select('password_hash')
+      .eq('user_id', auth.userId)
+      .order('created_at', { ascending: false })
+      .limit(5)
+    if (Array.isArray(lastHashes)) {
+      for (const row of lastHashes) {
+        const reused = await verifyPasswordHistoryHash(auth.userId, newPassword, String(row?.password_hash || ''))
+        if (reused) return err('Password reuse is not allowed', 422, 'PASSWORD_REUSE_NOT_ALLOWED')
+      }
+    }
+
+    const updatePasswordRes = await admin.auth.admin.updateUserById(auth.userId, { password: newPassword })
+    if (updatePasswordRes.error) return err(updatePasswordRes.error.message)
+
+    const { error: secUpsertError } = await admin.from('user_security').upsert({
+      user_id: auth.userId,
+      password_hash: newPasswordHash,
+      last_changed_at: now,
+      failed_attempts: 0,
+      lock_until: null,
+      updated_at: now,
+    }, { onConflict: 'user_id' })
+    if (secUpsertError) return err(secUpsertError.message)
+
+    const { error: historyInsertError } = await admin.from('user_password_history').insert({
+      user_id: auth.userId,
+      password_hash: newPasswordHash,
+      created_at: now,
+    })
+    if (historyInsertError) return err(historyInsertError.message)
+
+    await admin
+      .from('user_sessions')
+      .update({
+        is_active: false,
+        revoked_at: now,
+        revoked_by: auth.userId,
+        updated_at: now,
+      })
+      .eq('user_id', auth.userId)
+      .eq('is_active', true)
+
+    await writeSecurityLogSafe(admin, {
+      user_id: auth.userId,
+      action: 'password_changed',
+      risk_level: 'low',
+      ip_address: readClientIp(req),
+      metadata: { sessions_invalidated: true },
+    })
+
+    return json({ success: true, data: { changed: true, sessions_invalidated: true } })
+  }
+
+  return err('Not found', 404)
+}
+
+// ===================== REFERRAL =====================
+async function handleReferral(method: string, pathParts: string[], body: any, userId: string, sb: any, req: Request) {
+  const action = String(pathParts[0] || '').trim().toLowerCase()
+  const admin = adminClient()
+
+  // GET /referral/stats
+  if (method === 'GET' && action === 'stats') {
+    const { data: referralsData, error: referralsError } = await sb
+      .from('referrals')
+      .select('id,status,created_at,referred_user_id')
+      .eq('referrer_id', userId)
+    if (referralsError) return err(referralsError.message)
+
+    const referralIds = (referralsData || []).map((row: any) => row.id).filter(Boolean)
+    let commissionRows: any[] = []
+    if (referralIds.length) {
+      const { data, error } = await sb
+        .from('referral_commissions')
+        .select('id,amount,status,created_at,referral_id')
+        .in('referral_id', referralIds)
+      if (error) return err(error.message)
+      commissionRows = data || []
+    }
+
+    const totalReferrals = (referralsData || []).length
+    const activeReferrals = (referralsData || []).filter((row: any) => String(row.status || '') === 'active').length
+    const rewardedReferrals = (referralsData || []).filter((row: any) => String(row.status || '') === 'paid').length
+    const totalReward = (commissionRows || []).reduce((sum, row) => sum + Number(row.amount || 0), 0)
+    const pendingReward = (commissionRows || [])
+      .filter((row) => String(row.status || '') !== 'paid')
+      .reduce((sum, row) => sum + Number(row.amount || 0), 0)
+    const paidReward = (commissionRows || [])
+      .filter((row) => String(row.status || '') === 'paid')
+      .reduce((sum, row) => sum + Number(row.amount || 0), 0)
+
+    return json({
+      success: true,
+      data: {
+        total_referrals: totalReferrals,
+        active_referrals: activeReferrals,
+        rewarded_referrals: rewardedReferrals,
+        total_reward: toMoney(totalReward),
+        pending_reward: toMoney(pendingReward),
+        paid_reward: toMoney(paidReward),
+      },
+    })
+  }
+
+  // POST /referral/claim
+  if (method === 'POST' && action === 'claim') {
+    const requestedAmount = Number(body?.amount || 0)
+    if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+      return err('amount must be greater than 0', 422, 'VALIDATION_ERROR')
+    }
+    const ipAddress = readClientIp(req)
+    const deviceFingerprint = extractDeviceFingerprint(req, body)
+    if (!deviceFingerprint) return err('device_fingerprint is required', 422, 'VALIDATION_ERROR')
+
+    const dayStart = new Date()
+    dayStart.setUTCHours(0, 0, 0, 0)
+    const dayStartIso = dayStart.toISOString()
+    const { data: recentClaims } = await admin
+      .from('activity_logs')
+      .select('id,created_at')
+      .eq('entity_type', 'referral_claim')
+      .eq('performed_by', userId)
+      .gte('created_at', dayStartIso)
+      .order('created_at', { ascending: false })
+    if ((recentClaims || []).length >= 5) return err('Daily claim limit reached', 429, 'DAILY_LIMIT_REACHED')
+
+    const { data: userReferrals, error: referralsError } = await admin
+      .from('referrals')
+      .select('id')
+      .eq('referrer_id', userId)
+    if (referralsError) return err(referralsError.message)
+    const referralIds = (userReferrals || []).map((row: any) => row.id).filter(Boolean)
+    if (!referralIds.length) return err('No referrals available', 404, 'NOT_FOUND')
+
+    const { data: pendingCommissions, error: commError } = await admin
+      .from('referral_commissions')
+      .select('id,amount,status,referral_id')
+      .in('referral_id', referralIds)
+      .in('status', ['pending', 'active'])
+      .order('created_at', { ascending: true })
+    if (commError) return err(commError.message)
+
+    const pendingTotal = (pendingCommissions || []).reduce((sum, row: any) => sum + Number(row.amount || 0), 0)
+    if (pendingTotal <= 0) return err('No pending referral rewards', 422, 'NOTHING_TO_CLAIM')
+    if (requestedAmount > pendingTotal) return err('amount exceeds pending rewards', 422, 'VALIDATION_ERROR')
+
+    const now = nowIso()
+    let remaining = requestedAmount
+    const claimedIds: string[] = []
+    for (const row of (pendingCommissions || [])) {
+      if (remaining <= 0) break
+      const amount = Number(row.amount || 0)
+      if (amount <= 0) continue
+      if (amount <= remaining + CLAIM_FLOAT_EPSILON) {
+        const { error: updateError } = await admin
+          .from('referral_commissions')
+          .update({ status: 'paid', updated_at: now })
+          .eq('id', row.id)
+        if (updateError) return err(updateError.message)
+        claimedIds.push(row.id)
+        remaining -= amount
+      }
+    }
+    if (remaining > CLAIM_AMOUNT_TOLERANCE) return err('Unable to satisfy claim amount from pending rewards', 409, 'CLAIM_CONFLICT')
+
+    const { data: wallet } = await admin
+      .from('wallets')
+      .select('id,balance,currency')
+      .eq('user_id', userId)
+      .maybeSingle()
+    const walletId = wallet?.id
+    const oldBalance = Number(wallet?.balance || 0)
+    const newBalance = toMoney(oldBalance + requestedAmount)
+    if (walletId) {
+      const { error: walletError } = await admin
+        .from('wallets')
+        .update({ balance: newBalance, updated_at: now })
+        .eq('id', walletId)
+      if (walletError) return err(walletError.message)
+    }
+
+    if (walletId) {
+      await admin.from('wallet_ledger').insert({
+        wallet_id: walletId,
+        user_id: userId,
+        entry_type: 'credit',
+        amount: requestedAmount,
+        balance_before: oldBalance,
+        balance_after: newBalance,
+        reference_type: 'referral_claim',
+        reference_id: claimedIds.join(','),
+        metadata: { claim_count: claimedIds.length, ip_address: ipAddress },
+      })
+    }
+
+    await logActivity(admin, 'referral_claim', claimedIds.join(','), 'claimed', userId, {
+      amount: requestedAmount,
+      claim_count: claimedIds.length,
+      ip_address: ipAddress,
+      device_fingerprint: deviceFingerprint,
+    })
+
+    await writeSecurityLogSafe(admin, {
+      user_id: userId,
+      action: 'referral_claim',
+      risk_level: 'low',
+      ip_address: ipAddress,
+      device_fingerprint: deviceFingerprint,
+      metadata: { amount: requestedAmount, claim_count: claimedIds.length },
+    })
+
+    return json({
+      success: true,
+      data: {
+        claimed_amount: toMoney(requestedAmount),
+        claimed_commission_ids: claimedIds,
+        wallet_balance: newBalance,
+      },
+    })
+  }
+
+  // POST /referral/click
+  if (method === 'POST' && action === 'click') {
+    const code = String(body?.code || body?.ref_code || '').trim().toUpperCase()
+    if (!code) return err('code is required', 422, 'VALIDATION_ERROR')
+    const ipAddress = readClientIp(req)
+    const deviceFingerprint = extractDeviceFingerprint(req, body)
+    const { error } = await admin.from('referral_clicks').insert({
+      code,
+      ip: ipAddress,
+      device: deviceFingerprint || req.headers.get('user-agent') || null,
+      created_at: nowIso(),
+    })
+    if (error) return err(error.message)
+    return json({ success: true })
   }
 
   return err('Not found', 404)
@@ -10396,6 +11048,9 @@ Deno.serve(async (req) => {
         break
       case 'audit':
         routeResponse = await handleAudit(req.method, subParts, body, userId, sb, req)
+        break
+      case 'referral':
+        routeResponse = await handleReferral(req.method, subParts, body, userId, sb, req)
         break
       case 'leads':
       case 'lead':
