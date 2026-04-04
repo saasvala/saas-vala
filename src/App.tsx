@@ -313,7 +313,7 @@ function SafeFallbackRoute() {
   useEffect(() => {
     if (!import.meta.env.DEV || loggedRef.current) return;
     loggedRef.current = true;
-    console.warn('[route-fallback] redirected to homepage:', `${location.pathname}${location.search}${location.hash}`);
+    console.warn('[route-fallback] redirecting to homepage:', `${location.pathname}${location.search}${location.hash}`);
   }, [location.pathname, location.search, location.hash]);
   return <Navigate to="/" replace />;
 }
