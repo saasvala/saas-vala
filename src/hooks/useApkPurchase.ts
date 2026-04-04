@@ -46,8 +46,9 @@ export function useApkPurchase() {
 
     const lockKey = `${user.id}:${product.id}`;
     const paymentMethod: PaymentMethod = options?.paymentMethod || 'wallet';
-    const payableAmount = Number.isFinite(Number(options?.amountOverride))
-      ? Math.max(0, Number(options?.amountOverride || 0))
+    const overrideAmount = options?.amountOverride
+    const payableAmount = typeof overrideAmount === 'number' && Number.isFinite(overrideAmount)
+      ? Math.max(0, overrideAmount)
       : Math.max(0, Number(product.price || 0));
     if (inFlightRef.current.has(lockKey)) {
       return { success: false, error: 'Purchase already in progress. Please wait.' };

@@ -104,6 +104,8 @@ const SERVER_STATUS_CACHE_TTL_MS = 30 * 1000
 const DASHBOARD_STATS_CACHE_TTL_MS = 30 * 1000
 const SEO_ANALYTICS_CACHE_TTL_MS = 60 * 1000
 const PRODUCT_LIST_TRANSLATION_LIMIT = 60
+const RELIGION_FESTIVAL_DURATION_DAYS = 3
+const DEFAULT_FESTIVAL_DURATION_DAYS = 7
 const MAX_PAYMENT_RETRY_ATTEMPTS = 3
 const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get('API_RATE_LIMIT_WINDOW_SECONDS') || '60')
 const RATE_LIMIT_MAX_REQUESTS = Number(Deno.env.get('API_RATE_LIMIT_MAX_REQUESTS') || '120')
@@ -2727,7 +2729,7 @@ async function handleGeo(method: string, pathParts: string[], _body: any, req: R
   return json({ country_code: country, currency, language })
 }
 
-function parseIsoDateOnly(value: unknown) {
+function parseDateToUtc(value: unknown) {
   const raw = String(value || '').trim()
   if (!raw) return null
   const datePart = raw.length >= 10 ? raw.slice(0, 10) : raw
@@ -2736,7 +2738,7 @@ function parseIsoDateOnly(value: unknown) {
 }
 
 function expiresInDaysLabel(endDateValue: unknown) {
-  const endDate = parseIsoDateOnly(endDateValue)
+  const endDate = parseDateToUtc(endDateValue)
   if (!endDate) return '0 days'
   const today = new Date()
   const todayUtc = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()))
@@ -2749,7 +2751,10 @@ async function handleOffersPublic(method: string, pathParts: string[], body: any
   const admin = adminClient()
   const action = String(pathParts[0] || 'active').trim().toLowerCase()
   const requestedCountry = String(body?.country || body?.country_code || '').trim().toUpperCase()
-  const country = requestedCountry || resolveCountryFromRequest(req) || 'ALL'
+  const resolvedCountry = requestedCountry || resolveCountryFromRequest(req) || 'ALL'
+  const country = /^[A-Z]{2,3}$/.test(resolvedCountry) || resolvedCountry === 'ALL' || resolvedCountry === 'GLOBAL'
+    ? resolvedCountry
+    : 'ALL'
   const today = new Date()
   const todayStr = today.toISOString().slice(0, 10)
 
@@ -2773,7 +2778,9 @@ async function handleOffersPublic(method: string, pathParts: string[], body: any
           .limit(1)
           .maybeSingle()
         if (existingOffer?.id) continue
-        const durationDays = String(festival.type || '').toLowerCase() === 'religion' ? 3 : 7
+        const durationDays = String(festival.type || '').toLowerCase() === 'religion'
+          ? RELIGION_FESTIVAL_DURATION_DAYS
+          : DEFAULT_FESTIVAL_DURATION_DAYS
         const endDate = new Date(today)
         endDate.setUTCDate(endDate.getUTCDate() + durationDays)
         const finalEndDate = endDate.toISOString().slice(0, 10)

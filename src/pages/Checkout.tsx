@@ -24,6 +24,10 @@ type ActiveOffer = {
   expires_in: string;
 };
 
+function normalizeFestivalCoupon(value: string) {
+  return value.toUpperCase().replace(/\s+/g, '');
+}
+
 function makeIdempotencyKey() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -83,8 +87,13 @@ export default function Checkout() {
   const resolvedCouponCode = useMemo(() => {
     const typed = couponCode.trim();
     if (typed) return typed;
-    return activeOffer ? activeOffer.festival.toUpperCase().replace(/\s+/g, '') : '';
+    return activeOffer ? normalizeFestivalCoupon(activeOffer.festival) : '';
   }, [couponCode, activeOffer]);
+
+  const normalizedFestivalCoupon = useMemo(
+    () => (activeOffer ? normalizeFestivalCoupon(activeOffer.festival) : ''),
+    [activeOffer],
+  );
 
   const restorePendingPayment = async () => {
     if (restoreInFlightRef.current) return;
@@ -261,7 +270,7 @@ export default function Checkout() {
               <Input
                 value={couponCode}
                 onChange={(e) => setCouponCode(e.target.value)}
-                placeholder={`Coupon (optional): ${activeOffer.festival.toUpperCase().replace(/\s+/g, '')}`}
+                placeholder={`Coupon (optional): ${normalizedFestivalCoupon}`}
               />
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">Final Total</span>
