@@ -13,9 +13,11 @@ let activeListeners = 0;
 let initialized = false;
 let cleanup: (() => void) | null = null;
 let realtimeChannel: ReturnType<typeof supabase.channel> | null = null;
+let cleaningUp = false;
 
 function ensureRealtimeBridge() {
   if (initialized) return;
+  initialized = true;
   const channel = supabase
     .channel(QUICK_ACTION_CHANNEL)
     .on('broadcast', { event: 'quick_action' }, ({ payload }) => {
@@ -27,12 +29,14 @@ function ensureRealtimeBridge() {
 
   realtimeChannel = channel;
   cleanup = () => {
+    if (cleaningUp) return;
+    cleaningUp = true;
     supabase.removeChannel(channel);
     realtimeChannel = null;
     initialized = false;
     cleanup = null;
+    cleaningUp = false;
   };
-  initialized = true;
 }
 
 export function emitQuickActionEvent(type: QuickActionEventType) {

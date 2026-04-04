@@ -214,15 +214,16 @@ const ADMIN_MASTER_ROUTES = new Set([
   '/admin/apk-pipeline',
   '/admin/audit-logs',
 ]);
+const ADMIN_DYNAMIC_PREFIXES = ['/admin/marketplace/'] as const;
 
-function routeExists(route: string) {
+function isValidAdminRoute(route: string) {
   if (ADMIN_MASTER_ROUTES.has(route)) return true;
-  if (route.startsWith('/admin/marketplace/')) return true;
+  if (ADMIN_DYNAMIC_PREFIXES.some((prefix) => route.startsWith(prefix))) return true;
   return false;
 }
 
 function createRouteGuard(route: string, hasUser: boolean, allow: boolean) {
-  if (!routeExists(route)) return <Navigate to="/" replace />;
+  if (!isValidAdminRoute(route)) return <Navigate to="/" replace />;
   if (!hasUser) return <Navigate to="/login" replace />;
   if (!allow) return <Navigate to="/unauthorized" replace />;
   return null;

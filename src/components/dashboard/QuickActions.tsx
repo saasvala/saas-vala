@@ -77,6 +77,13 @@ const VALID_ROUTES = new Set([
   '/support/ticket',
 ]);
 
+const createQuickResourceSuffix = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().slice(0, 8);
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+};
+
 export function QuickActions() {
   const navigate = useNavigate();
   const { actions: recentActions, pushAction } = useRecentActions();
@@ -128,12 +135,13 @@ export function QuickActions() {
       return;
     }
 
+    const primaryProduct = products[0];
+    const primaryServer = servers[0];
+
     const configByKey: Record<string, { run: () => Promise<void>; validate?: () => string | null }> = {
       add_product: {
         run: async () => {
-          const suffix = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
-            ? crypto.randomUUID().slice(0, 8)
-            : `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          const suffix = createQuickResourceSuffix();
           const name = `Quick Product ${suffix}`;
           await createProduct({
             name,
@@ -147,9 +155,9 @@ export function QuickActions() {
         },
       },
       generate_key: {
-        validate: () => (!products[0]?.id ? 'Add a product first' : null),
+        validate: () => (!primaryProduct?.id ? 'No product found for key generation' : null),
         run: async () => {
-          const product = products[0];
+          const product = primaryProduct;
           if (!product?.id) throw new Error('Product missing');
           const seed = Math.random().toString(36).slice(2, 14).toUpperCase();
           const key = `${seed.slice(0, 4)}-${seed.slice(4, 8)}-${seed.slice(8, 12)}`;
@@ -164,9 +172,9 @@ export function QuickActions() {
         },
       },
       upload_apk: {
-        validate: () => (!products[0]?.id ? 'Add a product first' : null),
+        validate: () => (!primaryProduct?.id ? 'No product found for APK upload queue' : null),
         run: async () => {
-          const product = products[0];
+          const product = primaryProduct;
           if (!product?.id) throw new Error('Product missing');
           await apkApi.build({ product_id: product.id, mode: 'rebuild' });
         },
@@ -174,11 +182,11 @@ export function QuickActions() {
       deploy_server: {
         validate: () => {
           if (!isSuperAdmin) return 'Access denied';
-          if (!servers[0]?.id) return 'Add a server first';
+          if (!primaryServer?.id) return 'No server found for deployment queue';
           return null;
         },
         run: async () => {
-          const server = servers[0];
+          const server = primaryServer;
           if (!server?.id) throw new Error('Server missing');
           await serversApi.triggerDeploy(server.id);
           await fetchServers();

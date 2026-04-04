@@ -20,6 +20,7 @@ type HandleQuickActionConfig = {
 };
 
 const RESET_DELAY_MS = 2000;
+const MAX_RETRY_CLICKS = 3;
 
 function getErrorMessage(error: unknown, fallback = 'Action failed'): string {
   if (error instanceof Error && error.message) return error.message;
@@ -32,6 +33,8 @@ export function useQuickActionEngine() {
   const [actionStates, setActionStates] = useState<Record<string, QuickActionState>>({});
   const timersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const lastConfigsRef = useRef<Record<string, HandleQuickActionConfig>>({});
+  const retryCountRef = useRef<Record<string, number>>({});
+  const inFlightRef = useRef<Record<string, boolean>>({});
 
   const isRoleAllowed = useCallback((required?: QuickActionRole) => {
     if (!required) return !!user;
@@ -51,6 +54,7 @@ export function useQuickActionEngine() {
 
   const handleQuickAction = useCallback(async (config: HandleQuickActionConfig) => {
     lastConfigsRef.current[config.key] = config;
+    if (inFlightRef.current[config.key]) return false;
 
     if (!isRoleAllowed(config.role)) {
       toast.error('Access denied');
@@ -66,10 +70,12 @@ export function useQuickActionEngine() {
     }
 
     setActionStates((prev) => ({ ...prev, [config.key]: 'loading' }));
+    inFlightRef.current[config.key] = true;
     config.onBeforeAction?.();
 
     try {
       await config.action();
+      retryCountRef.current[config.key] = 0;
       setActionStates((prev) => ({ ...prev, [config.key]: 'success' }));
       emitQuickActionEvent(config.eventType);
       config.onSuccess?.();
@@ -83,6 +89,12 @@ export function useQuickActionEngine() {
         action: {
           label: config.retryLabel || 'Retry',
           onClick: () => {
+            const retries = retryCountRef.current[config.key] || 0;
+            if (retries >= MAX_RETRY_CLICKS) {
+              toast.error('Retry limit reached');
+              return;
+            }
+            retryCountRef.current[config.key] = retries + 1;
             const latest = lastConfigsRef.current[config.key];
             if (latest) {
               void handleQuickAction(latest);
@@ -91,6 +103,8 @@ export function useQuickActionEngine() {
         },
       });
       return false;
+    } finally {
+      inFlightRef.current[config.key] = false;
     }
   }, [isRoleAllowed, resetActionState]);
 
