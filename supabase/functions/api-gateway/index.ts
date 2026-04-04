@@ -649,6 +649,7 @@ async function emitDomainEvent(
       status: 'queued',
       tenant_id: tenantId || null,
     })
+    // Compatibility aliases kept intentionally for external emitters using either build_complete or build_completed.
     const eventTypeMap: Record<string, string> = {
       build_complete: 'apk_ready',
       build_completed: 'apk_ready',
@@ -6184,7 +6185,18 @@ async function handleServers(method: string, pathParts: string[], body: any, use
 
   // POST /server/deploy
   if (method === 'POST' && segment === 'server' && secondSegment === 'deploy' && !thirdSegment) {
-    const deployKind = String(body?.deploy_kind || body?.deploy_type || body?.type || '').trim().toLowerCase()
+    const deployKindValues = [body?.deploy_kind, body?.deploy_type, body?.type]
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter(Boolean)
+    const uniqueDeployKinds = Array.from(new Set(deployKindValues))
+    if (uniqueDeployKinds.length > 1) {
+      return fail('Conflicting deploy type aliases', 422, 'VALIDATION_ERROR', {
+        deploy_kind: body?.deploy_kind || null,
+        deploy_type: body?.deploy_type || null,
+        type: body?.type || null,
+      })
+    }
+    const deployKind = uniqueDeployKinds[0] || ''
     return await routeServerDeploy(deployKind === 'apk')
   }
 
@@ -9507,6 +9519,7 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       return fail('Retry limit reached', 409, 'BUILDER_RETRY_LIMIT_REACHED', {
         retry_limit: BUILDER_MAX_RETRIES,
         retry_count: currentRetries,
+        // Self-heal marker consumed by acceptance gates and AI retry observability.
         loop: 'DEBUG_AI',
       })
     }
