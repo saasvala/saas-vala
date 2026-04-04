@@ -4,16 +4,25 @@ import { ArrowLeft, CreditCard } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useCart } from '@/hooks/useCart';
 import { useMarketplaceProducts } from '@/hooks/useMarketplaceProducts';
 import { useApkPurchase } from '@/hooks/useApkPurchase';
 import { useAuth } from '@/hooks/useAuth';
 import { useMarketplaceActions } from '@/hooks/useMarketplaceActions';
+import { geoApi, offerApi } from '@/lib/api';
 
 const SAFE_PRODUCT_PARAM = /^[a-zA-Z0-9_-]+$/;
 const PENDING_PAYMENT_MAX_AGE_MS = 15 * 60 * 1000;
 type PaymentMethod = 'wallet' | 'upi' | 'card' | 'crypto';
+type ActiveOffer = {
+  id: string;
+  festival: string;
+  discount: number;
+  country: string;
+  expires_in: string;
+};
 
 function makeIdempotencyKey() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -35,6 +44,8 @@ export default function Checkout() {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('wallet');
   const [submitting, setSubmitting] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [activeOffer, setActiveOffer] = useState<ActiveOffer | null>(null);
+  const [couponCode, setCouponCode] = useState('');
 
   const payInFlightRef = useRef(false);
   const restoreInFlightRef = useRef(false);
@@ -58,6 +69,22 @@ export default function Checkout() {
     if (selected) return Math.max(0, Number(selected.price || 0));
     return Math.max(0, Number(total || 0));
   }, [selected, total]);
+
+  const effectiveDiscountPercent = useMemo(
+    () => Math.max(0, Math.min(100, Number(activeOffer?.discount || 0))),
+    [activeOffer],
+  );
+
+  const finalPayable = useMemo(() => {
+    const discountAmount = (payable * effectiveDiscountPercent) / 100;
+    return Math.max(0, Number((payable - discountAmount).toFixed(2)));
+  }, [payable, effectiveDiscountPercent]);
+
+  const resolvedCouponCode = useMemo(() => {
+    const typed = couponCode.trim();
+    if (typed) return typed;
+    return activeOffer ? activeOffer.festival.toUpperCase().replace(/\s+/g, '') : '';
+  }, [couponCode, activeOffer]);
 
   const restorePendingPayment = async () => {
     if (restoreInFlightRef.current) return;
@@ -111,7 +138,13 @@ export default function Checkout() {
     const idempotencyKey = makeIdempotencyKey();
 
     try {
-      const result = await purchaseApk(selected, { paymentMethod, idempotencyKey });
+      const result = await purchaseApk(selected, {
+        paymentMethod,
+        idempotencyKey,
+        amountOverride: finalPayable,
+        couponCode: resolvedCouponCode || null,
+        appliedOfferId: activeOffer?.id || null,
+      });
       if (!result.success) {
         toast.error(result.error || 'Payment failed');
         return;
@@ -120,7 +153,7 @@ export default function Checkout() {
       if (refCode && trackedConversionRef.current !== refCode) {
         trackedConversionRef.current = refCode;
         try {
-          await trackPromoConversion(refCode, payable);
+          await trackPromoConversion(refCode, finalPayable);
         } catch {
           // non-blocking
         }
@@ -161,6 +194,41 @@ export default function Checkout() {
     navigate('/marketplace', { replace: true });
   }, [hasInvalidProductParam, navigate]);
 
+  useEffect(() => {
+    let mounted = true;
+    const loadActiveOffers = async () => {
+      try {
+        const geo = await geoApi.detect().catch(() => ({ country_code: 'ALL' }));
+        const country = String((geo as any)?.country_code || 'ALL').toUpperCase();
+        const response = await offerApi.active(country);
+        const rows = Array.isArray((response as any)?.data)
+          ? (response as any).data
+          : (response as any)?.id
+            ? [response as any]
+            : [];
+        if (!mounted) return;
+        if (rows.length > 0) {
+          const row = rows[0];
+          setActiveOffer({
+            id: String(row.id || ''),
+            festival: String(row.festival || 'Festival Offer'),
+            discount: Number(row.discount || 0),
+            country: String(row.country || country),
+            expires_in: String(row.expires_in || '0 days'),
+          });
+        } else {
+          setActiveOffer(null);
+        }
+      } catch {
+        if (mounted) setActiveOffer(null);
+      }
+    };
+    void loadActiveOffers();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   return (
     <div className="min-h-screen bg-background">
       <main className="max-w-2xl mx-auto px-4 py-8 space-y-6">
@@ -186,6 +254,21 @@ export default function Checkout() {
             <span className="text-sm text-muted-foreground">Total</span>
             <span className="text-2xl font-black text-primary">${payable}</span>
           </div>
+          {activeOffer && (
+            <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-2">
+              <p className="text-sm font-semibold text-foreground">🎉 {activeOffer.festival} Offer</p>
+              <p className="text-xs text-muted-foreground">🔥 Flat {activeOffer.discount}% OFF • ⏳ Ends in {activeOffer.expires_in}</p>
+              <Input
+                value={couponCode}
+                onChange={(e) => setCouponCode(e.target.value)}
+                placeholder={`Coupon (optional): ${activeOffer.festival.toUpperCase().replace(/\s+/g, '')}`}
+              />
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-muted-foreground">Final Total</span>
+                <span className="text-2xl font-black text-primary">${finalPayable}</span>
+              </div>
+            </div>
+          )}
 
           <div className="space-y-1">
             <span className="text-sm text-muted-foreground">Payment Method</span>
@@ -204,7 +287,7 @@ export default function Checkout() {
 
           <Button className="w-full" onClick={onPay} disabled={processing || submitting || !selected}>
             <CreditCard className="h-4 w-4 mr-2" />
-            {processing || submitting ? 'Processing...' : `Pay $${payable} via ${paymentMethod.toUpperCase()}`}
+            {processing || submitting ? 'Processing...' : `Pay $${finalPayable} via ${paymentMethod.toUpperCase()}`}
           </Button>
           <Button variant="outline" className="w-full" onClick={restorePendingPayment} disabled={restoring}>
             {restoring ? 'Restoring...' : 'Retry Pending Payment'}

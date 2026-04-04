@@ -218,7 +218,7 @@ export function HeroBannerSlider({ autoPlayInterval = 4000 }: { autoPlayInterval
               </button>
               <button
                 className="h-8 px-3 rounded-md text-[11px] font-black text-white bg-emerald-600 hover:bg-emerald-500"
-                onClick={(e) => { e.stopPropagation(); handleSlideAction(slide.linkUrl || '/marketplace'); }}
+                onClick={(e) => { e.stopPropagation(); handleSlideAction('/checkout'); }}
               >
                 Buy Now
               </button>

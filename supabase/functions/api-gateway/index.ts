@@ -2727,6 +2727,159 @@ async function handleGeo(method: string, pathParts: string[], _body: any, req: R
   return json({ country_code: country, currency, language })
 }
 
+function parseIsoDateOnly(value: unknown) {
+  const raw = String(value || '').trim()
+  if (!raw) return null
+  const datePart = raw.length >= 10 ? raw.slice(0, 10) : raw
+  const parsed = new Date(`${datePart}T00:00:00.000Z`)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function expiresInDaysLabel(endDateValue: unknown) {
+  const endDate = parseIsoDateOnly(endDateValue)
+  if (!endDate) return '0 days'
+  const today = new Date()
+  const todayUtc = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()))
+  const diffMs = endDate.getTime() - todayUtc.getTime()
+  const days = Math.max(0, Math.ceil(diffMs / (24 * 60 * 60 * 1000)))
+  return `${days} day${days === 1 ? '' : 's'}`
+}
+
+async function handleOffersPublic(method: string, pathParts: string[], body: any, req: Request) {
+  const admin = adminClient()
+  const action = String(pathParts[0] || 'active').trim().toLowerCase()
+  const requestedCountry = String(body?.country || body?.country_code || '').trim().toUpperCase()
+  const country = requestedCountry || resolveCountryFromRequest(req) || 'ALL'
+  const today = new Date()
+  const todayStr = today.toISOString().slice(0, 10)
+
+  if (method === 'GET' && (action === '' || action === 'active')) {
+    const { data: festivals, error: festivalsError } = await admin
+      .from('festivals')
+      .select('*')
+      .or(`country.eq.${country},country.eq.ALL,country.eq.global`)
+      .lte('start_date', todayStr)
+      .gte('end_date', todayStr)
+    if (!festivalsError && festivals && festivals.length > 0) {
+      for (const festival of festivals) {
+        const normalizedCountry = String(festival.country || country || 'ALL').toUpperCase()
+        const { data: existingOffer } = await admin
+          .from('offers')
+          .select('id,status')
+          .eq('festival_id', festival.id)
+          .eq('country', normalizedCountry)
+          .gte('end_date', todayStr)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        if (existingOffer?.id) continue
+        const durationDays = String(festival.type || '').toLowerCase() === 'religion' ? 3 : 7
+        const endDate = new Date(today)
+        endDate.setUTCDate(endDate.getUTCDate() + durationDays)
+        const finalEndDate = endDate.toISOString().slice(0, 10)
+        await admin.from('offers').insert({
+          festival_id: festival.id,
+          discount: Number(festival.default_discount || 50),
+          start_date: todayStr,
+          end_date: finalEndDate,
+          country: normalizedCountry,
+          status: 'active',
+        })
+      }
+    }
+
+    await admin.from('offers').update({ status: 'inactive', updated_at: nowIso() }).eq('status', 'active').lt('end_date', todayStr)
+
+    const { data, error } = await admin
+      .from('offers')
+      .select('id, festival_id, discount, start_date, end_date, country, status, festivals(name)')
+      .eq('status', 'active')
+      .or(`country.eq.${country},country.eq.ALL,country.eq.global`)
+      .lte('start_date', todayStr)
+      .gte('end_date', todayStr)
+      .order('created_at', { ascending: false })
+    let rows: any[] = []
+    if (!error) {
+      rows = (data || []).map((row: any) => ({
+        id: row.id,
+        festival_id: row.festival_id,
+        festival: row.festivals?.name || 'Festival Offer',
+        discount: Number(row.discount || 0),
+        start_date: row.start_date,
+        end_date: row.end_date,
+        country: row.country,
+        status: row.status,
+        expires_in: expiresInDaysLabel(row.end_date),
+      }))
+    } else {
+      const { data: legacyData, error: legacyError } = await admin
+        .from('festival_offers')
+        .select('id, festival_name, discount_percent, start_date, end_date, country_code, is_active')
+        .eq('is_active', true)
+        .or(`country_code.eq.${country},country_code.eq.ALL,country_code.eq.global`)
+        .lte('start_date', todayStr)
+        .gte('end_date', todayStr)
+        .order('created_at', { ascending: false })
+      if (legacyError) return err(legacyError.message)
+      rows = (legacyData || []).map((row: any) => ({
+        id: row.id,
+        festival_id: null,
+        festival: row.festival_name || 'Festival Offer',
+        discount: Number(row.discount_percent || 0),
+        start_date: row.start_date,
+        end_date: row.end_date,
+        country: row.country_code || 'ALL',
+        status: row.is_active ? 'active' : 'inactive',
+        expires_in: expiresInDaysLabel(row.end_date),
+      }))
+    }
+    const top = rows[0] || null
+    return json(top ? { ...top, data: rows } : { data: rows })
+  }
+
+  if (method === 'GET' && action) {
+    const offerId = action
+    const { data, error } = await admin
+      .from('offers')
+      .select('id, festival_id, discount, start_date, end_date, country, status, festivals(name)')
+      .eq('id', offerId)
+      .maybeSingle()
+    if (!error && data) {
+      return json({
+        id: data.id,
+        festival_id: data.festival_id,
+        festival: (data as any).festivals?.name || 'Festival Offer',
+        discount: Number(data.discount || 0),
+        start_date: data.start_date,
+        end_date: data.end_date,
+        country: data.country,
+        status: data.status,
+        expires_in: expiresInDaysLabel(data.end_date),
+      })
+    }
+    const { data: legacyData, error: legacyError } = await admin
+      .from('festival_offers')
+      .select('id, festival_name, discount_percent, start_date, end_date, country_code, is_active')
+      .eq('id', offerId)
+      .maybeSingle()
+    if (legacyError) return err(legacyError.message)
+    if (!legacyData) return err('Offer not found', 404, 'NOT_FOUND')
+    return json({
+      id: legacyData.id,
+      festival_id: null,
+      festival: legacyData.festival_name || 'Festival Offer',
+      discount: Number(legacyData.discount_percent || 0),
+      start_date: legacyData.start_date,
+      end_date: legacyData.end_date,
+      country: legacyData.country_code || 'ALL',
+      status: legacyData.is_active ? 'active' : 'inactive',
+      expires_in: expiresInDaysLabel(legacyData.end_date),
+    })
+  }
+
+  return err('Not found', 404)
+}
+
 async function handleTranslate(method: string, _pathParts: string[], body: any, req?: Request) {
   if (method !== 'POST') return err('Not found', 404)
   const text = sanitizeTextInput(body?.text, 12000)
@@ -10902,6 +11055,28 @@ async function handleSubscriptions(method: string, pathParts: string[], body: an
     if (!isServiceMode) return err('Forbidden', 403, 'FORBIDDEN')
 
     const now = new Date()
+    const todayStr = now.toISOString().slice(0, 10)
+    let offersExpired = 0
+    let couponsExpired = 0
+
+    const { data: expiredOffers } = await sb.from('offers').select('id').eq('status', 'active').lt('end_date', todayStr).limit(2000)
+    if (expiredOffers && expiredOffers.length > 0) {
+      const ids = expiredOffers.map((row: any) => row.id).filter(Boolean)
+      if (ids.length > 0) {
+        const { error: offerExpireError } = await sb.from('offers').update({ status: 'inactive', updated_at: nowIso() }).in('id', ids)
+        if (!offerExpireError) offersExpired = ids.length
+      }
+    }
+
+    const { data: expiredCoupons } = await sb.from('marketplace_coupons').select('id').eq('is_active', true).lt('end_date', todayStr).limit(2000)
+    if (expiredCoupons && expiredCoupons.length > 0) {
+      const couponIds = expiredCoupons.map((row: any) => row.id).filter(Boolean)
+      if (couponIds.length > 0) {
+        const { error: couponExpireError } = await sb.from('marketplace_coupons').update({ is_active: false, updated_at: nowIso() }).in('id', couponIds)
+        if (!couponExpireError) couponsExpired = couponIds.length
+      }
+    }
+
     const { data: subs, error } = await sb.from('subscriptions').select('*')
       .eq('auto_renew', true)
       .in('status', ['active', 'expired'])
@@ -11008,7 +11183,7 @@ async function handleSubscriptions(method: string, pathParts: string[], body: an
       }
     }
 
-    return json({ success: true, processed, charged, failed })
+    return json({ success: true, processed, charged, failed, offers_expired: offersExpired, coupons_expired: couponsExpired })
   }
 
   return err('Not found', 404)
@@ -11734,6 +11909,9 @@ Deno.serve(async (req) => {
     if (module === 'currency') {
       return await handleCurrency(req.method, subParts, body)
     }
+    if (module === 'offers' && req.method === 'GET') {
+      return await handleOffersPublic(req.method, subParts, body, req)
+    }
     if (module === 'api' && req.method === 'GET' && subParts[0] === 'status') {
       return ok({ status: 'ok', timestamp: nowIso() })
     }
@@ -11856,6 +12034,9 @@ Deno.serve(async (req) => {
         break
       case 'offer':
         routeResponse = await handleOfferAliases(req.method, subParts, body, userId, sb)
+        break
+      case 'offers':
+        routeResponse = await handleOffersPublic(req.method, subParts, body, req)
         break
       case 'product':
         routeResponse = await handleProductAliases(req.method, subParts, body, userId, sb, req)

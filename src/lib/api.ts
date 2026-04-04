@@ -316,6 +316,8 @@ export const bannerApi = {
 export const offerApi = {
   create: (data: any) => apiCall('POST', 'offer/create', data),
   list: () => apiCall('GET', 'offer/list'),
+  active: (country?: string) => apiCall('GET', 'offers/active', country ? { country } : undefined),
+  getById: (id: string, country?: string) => apiCall('GET', `offers/${id}`, country ? { country } : undefined),
 };
 
 export const productAliasApi = {
