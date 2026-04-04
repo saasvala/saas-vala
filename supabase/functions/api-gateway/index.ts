@@ -7261,6 +7261,14 @@ function normalizeApkStoragePath(value: unknown): string | null {
   }
 }
 
+const APK_CHUNK_MAX_BYTES = 50 * 1024 * 1024
+
+function decodeBase64ToUint8Array(base64: string): Uint8Array {
+  const sanitized = String(base64 || '').trim()
+  if (!sanitized) return new Uint8Array()
+  return decodeBase64(sanitized)
+}
+
 type SyncedBuildStatus = 'pending' | 'success' | 'failed'
 type ApkBuildSource = 'manual' | 'pipeline'
 
@@ -7470,6 +7478,361 @@ async function scanGitRepository(repoUrl: string, githubToken?: string) {
 async function handleApk(method: string, pathParts: string[], body: any, userId: string, sb: any) {
   const admin = adminClient()
   console.log('API HIT:', `/apk/${pathParts[0] || ''}`)
+
+  // POST /apk/upload
+  if (method === 'POST' && pathParts[0] === 'upload') {
+    const productId = String(body?.product_id || '').trim()
+    const version = String(body?.version || '').trim()
+    const versionCode = Number(body?.version_code || 0)
+    const changelog = body?.changelog ? String(body.changelog) : null
+    const replaceApkId = body?.replace_apk_id ? String(body.replace_apk_id) : null
+    const fileName = String(body?.file_name || '').trim()
+    const fileType = String(body?.file_type || 'application/vnd.android.package-archive').trim()
+    const uploadMode = String(body?.upload_mode || 'single').toLowerCase()
+    const fileBase64 = String(body?.file_base64 || '').trim()
+
+    if (!productId || !version || !versionCode) {
+      return err('product_id, version, and version_code are required', 422, 'VALIDATION_ERROR')
+    }
+
+    const { data: productExists } = await admin.from('products').select('id').eq('id', productId).maybeSingle()
+    if (!productExists?.id) {
+      return fail('Invalid product', 404, 'NOT_FOUND', { redirect: '/admin/marketplace/apk' })
+    }
+
+    if (uploadMode === 'chunk') {
+      const uploadId = String(body?.upload_id || '').trim()
+      const chunkIndex = Number(body?.chunk_index)
+      const totalChunks = Number(body?.total_chunks)
+      const chunkBase64 = String(body?.chunk_base64 || '').trim()
+      const complete = Boolean(body?.complete)
+
+      if (!uploadId) {
+        if (!fileName || !Number.isFinite(totalChunks) || totalChunks <= 0) {
+          return err('file_name and total_chunks are required for chunk upload init', 422, 'VALIDATION_ERROR')
+        }
+        const { data: sessionRow, error: sessionError } = await admin
+          .from('apk_upload_sessions')
+          .insert({
+            product_id: productId,
+            version,
+            version_code: versionCode,
+            file_name: fileName,
+            file_type: fileType || null,
+            changelog,
+            replace_apk_id: replaceApkId,
+            total_chunks: totalChunks,
+            created_by: userId,
+            status: 'processing',
+          })
+          .select('id, total_chunks')
+          .single()
+        if (sessionError || !sessionRow?.id) return err(sessionError?.message || 'Failed to start upload session', 500)
+        return ok({ upload_id: sessionRow.id, status: 'processing', max_chunk_bytes: APK_CHUNK_MAX_BYTES })
+      }
+
+      const { data: session, error: sessionReadError } = await admin
+        .from('apk_upload_sessions')
+        .select('*')
+        .eq('id', uploadId)
+        .maybeSingle()
+      if (sessionReadError || !session?.id) return err('upload_id not found', 404, 'NOT_FOUND')
+
+      if (!complete) {
+        if (!Number.isFinite(chunkIndex) || chunkIndex < 0 || !chunkBase64) {
+          return err('chunk_index and chunk_base64 are required', 422, 'VALIDATION_ERROR')
+        }
+        const chunkBytes = decodeBase64ToUint8Array(chunkBase64)
+        if (chunkBytes.byteLength > APK_CHUNK_MAX_BYTES) {
+          return err('chunk size exceeds 50MB max', 422, 'VALIDATION_ERROR')
+        }
+        const chunkPath = `${productId}/chunks/${uploadId}/part-${chunkIndex.toString().padStart(6, '0')}`
+        const { error: chunkUploadError } = await admin.storage.from('apks').upload(chunkPath, chunkBytes, { upsert: true, contentType: 'application/octet-stream' })
+        if (chunkUploadError) return err(`chunk upload failed: ${chunkUploadError.message}`, 500)
+
+        const { error: upsertPartError } = await admin
+          .from('apk_upload_session_parts')
+          .upsert({
+            upload_id: uploadId,
+            chunk_index: chunkIndex,
+            chunk_size: chunkBytes.byteLength,
+            storage_path: chunkPath,
+          }, { onConflict: 'upload_id,chunk_index' })
+        if (upsertPartError) return err(upsertPartError.message, 500)
+
+        const { count: uploadedCount } = await admin
+          .from('apk_upload_session_parts')
+          .select('id', { head: true, count: 'exact' })
+          .eq('upload_id', uploadId)
+
+        await admin
+          .from('apk_upload_sessions')
+          .update({ uploaded_chunks: uploadedCount || 0, updated_at: nowIso() })
+          .eq('id', uploadId)
+
+        return ok({
+          upload_id: uploadId,
+          status: 'processing',
+          uploaded_chunks: uploadedCount || 0,
+          total_chunks: session.total_chunks,
+        })
+      }
+
+      const { data: parts, error: partsError } = await admin
+        .from('apk_upload_session_parts')
+        .select('chunk_index, storage_path')
+        .eq('upload_id', uploadId)
+        .order('chunk_index', { ascending: true })
+      if (partsError) return err(partsError.message, 500)
+      if (!parts || parts.length !== Number(session.total_chunks || 0)) {
+        return err('Not all chunks uploaded yet', 422, 'VALIDATION_ERROR')
+      }
+
+      await admin.from('apk_upload_sessions').update({ status: 'merging', updated_at: nowIso() }).eq('id', uploadId)
+
+      let mergedSize = 0
+      const mergedChunks: Uint8Array[] = []
+      for (const part of parts) {
+        const { data: partBlob, error: partReadError } = await admin.storage.from('apks').download(String(part.storage_path))
+        if (partReadError || !partBlob) return err(`Failed reading chunk ${part.chunk_index}`, 500)
+        const partBytes = new Uint8Array(await partBlob.arrayBuffer())
+        mergedChunks.push(partBytes)
+        mergedSize += partBytes.byteLength
+      }
+
+      const mergedBytes = new Uint8Array(mergedSize)
+      let offset = 0
+      for (const bytes of mergedChunks) {
+        mergedBytes.set(bytes, offset)
+        offset += bytes.byteLength
+      }
+
+      const finalPath = `${session.product_id}/${Date.now()}-${String(session.file_name).replace(/[^a-zA-Z0-9._-]/g, '-')}`
+      const { error: finalUploadError } = await admin.storage.from('apks')
+        .upload(finalPath, mergedBytes, { upsert: true, contentType: String(session.file_type || 'application/vnd.android.package-archive') })
+      if (finalUploadError) return err(`final merge upload failed: ${finalUploadError.message}`, 500)
+
+      for (const part of parts) {
+        await admin.storage.from('apks').remove([String(part.storage_path)])
+      }
+
+      const resolvedVersionCode = Number(session.version_code || versionCode || 1)
+      let apkId = session.replace_apk_id ? String(session.replace_apk_id) : ''
+      if (apkId) {
+        const { error: apkUpdateError } = await admin.from('apks').update({
+          product_id: session.product_id,
+          version: session.version,
+          file_url: finalPath,
+          file_size: mergedSize,
+          status: 'draft',
+          changelog: session.changelog || null,
+          updated_at: nowIso(),
+        }).eq('id', apkId)
+        if (apkUpdateError) return err(apkUpdateError.message, 500)
+      } else {
+        const { data: apkInserted, error: apkInsertError } = await admin.from('apks').insert({
+          product_id: session.product_id,
+          version: session.version,
+          file_url: finalPath,
+          file_size: mergedSize,
+          status: 'draft',
+          changelog: session.changelog || null,
+          created_by: userId,
+        }).select('id').single()
+        if (apkInsertError || !apkInserted?.id) return err(apkInsertError?.message || 'Failed to create APK record', 500)
+        apkId = apkInserted.id
+      }
+
+      await admin.from('apk_versions').update({ status: 'archived', archived_at: nowIso(), is_stable: false }).eq('product_id', session.product_id).eq('status', 'active')
+      const { data: versionRow, error: versionError } = await admin.from('apk_versions').insert({
+        apk_id: apkId,
+        product_id: session.product_id,
+        version_name: session.version,
+        version: session.version,
+        version_code: resolvedVersionCode,
+        file_path: finalPath,
+        file_url: finalPath,
+        file_size: mergedSize,
+        size: mergedSize,
+        release_notes: session.changelog || null,
+        changelog: session.changelog || null,
+        status: 'processing',
+        is_stable: false,
+        created_by: userId,
+      }).select('id').single()
+      if (versionError || !versionRow?.id) return err(versionError?.message || 'Failed to create version row', 500)
+
+      await admin.from('apks').update({ current_version_id: versionRow.id, file_url: finalPath, updated_at: nowIso() }).eq('id', apkId)
+
+      const { data: queueRow, error: queueError } = await admin.from('apk_build_queue').insert({
+        repo_name: `product-${session.product_id}`,
+        repo_url: `internal://product/${session.product_id}`,
+        slug: `product-${session.product_id}-${Date.now()}`,
+        build_status: 'pending',
+        product_id: session.product_id,
+      }).select('id').single()
+      if (queueError) return err(queueError.message, 500)
+
+      await admin.from('apk_pipeline_queue').insert({
+        apk_id: apkId,
+        product_id: session.product_id,
+        status: 'processing',
+        source_queue_id: queueRow?.id || null,
+        trace_id: body?.trace_id || null,
+      })
+
+      await admin.from('apk_upload_sessions').update({ status: 'ready', updated_at: nowIso() }).eq('id', uploadId)
+      await admin.from('products').update({ apk_url: finalPath, storage_path: finalPath, status: 'draft', build_id: queueRow?.id || null, build_status: 'processing', updated_at: nowIso() }).eq('id', session.product_id)
+      await logActivity(admin, 'apk', apkId, 'upload', userId, { product_id: session.product_id, version: session.version, status: 'processing' })
+
+      return ok({ apk_id: apkId, status: 'processing', pipeline_id: queueRow?.id || null })
+    }
+
+    if (!fileBase64) return err('file payload missing', 422, 'VALIDATION_ERROR')
+    const fileBytes = decodeBase64ToUint8Array(fileBase64)
+    if (!fileBytes.byteLength) return err('file payload missing', 422, 'VALIDATION_ERROR')
+
+    const safeFileName = (fileName || `upload-${Date.now()}.apk`).replace(/[^a-zA-Z0-9._-]/g, '-')
+    const path = `${productId}/${Date.now()}-${safeFileName}`
+    const { error: uploadError } = await admin.storage.from('apks').upload(path, fileBytes, { upsert: true, contentType: fileType || 'application/vnd.android.package-archive' })
+    if (uploadError) return err(`Upload failed: ${uploadError.message}`, 500)
+
+    let apkId = replaceApkId || ''
+    if (apkId) {
+      const { error: apkUpdateError } = await admin.from('apks').update({
+        product_id: productId,
+        version,
+        file_url: path,
+        file_size: fileBytes.byteLength,
+        status: 'draft',
+        changelog,
+        updated_at: nowIso(),
+      }).eq('id', apkId)
+      if (apkUpdateError) return err(apkUpdateError.message, 500)
+    } else {
+      const { data: apkInserted, error: apkInsertError } = await admin.from('apks').insert({
+        product_id: productId,
+        version,
+        file_url: path,
+        file_size: fileBytes.byteLength,
+        status: 'draft',
+        changelog,
+        created_by: userId,
+      }).select('id').single()
+      if (apkInsertError || !apkInserted?.id) return err(apkInsertError?.message || 'Failed to create APK record', 500)
+      apkId = apkInserted.id
+    }
+
+    await admin.from('apk_versions').update({ status: 'archived', archived_at: nowIso(), is_stable: false }).eq('product_id', productId).eq('status', 'active')
+    const { data: versionRow, error: versionError } = await admin.from('apk_versions').insert({
+      apk_id: apkId,
+      product_id: productId,
+      version_name: version,
+      version,
+      version_code: Number(versionCode || 1),
+      file_path: path,
+      file_url: path,
+      file_size: fileBytes.byteLength,
+      size: fileBytes.byteLength,
+      release_notes: changelog,
+      changelog,
+      status: 'processing',
+      is_stable: false,
+      created_by: userId,
+    }).select('id').single()
+    if (versionError || !versionRow?.id) return err(versionError?.message || 'Failed to create version record', 500)
+
+    await admin.from('apks').update({ current_version_id: versionRow.id, file_url: path, updated_at: nowIso() }).eq('id', apkId)
+
+    const { data: queueRow, error: queueError } = await admin.from('apk_build_queue').insert({
+      repo_name: `product-${productId}`,
+      repo_url: `internal://product/${productId}`,
+      slug: `product-${productId}-${Date.now()}`,
+      build_status: 'pending',
+      product_id: productId,
+    }).select('id').single()
+    if (queueError) return err(queueError.message, 500)
+
+    await admin.from('apk_pipeline_queue').insert({
+      apk_id: apkId,
+      product_id: productId,
+      status: 'processing',
+      source_queue_id: queueRow?.id || null,
+      trace_id: body?.trace_id || null,
+    })
+
+    await admin.from('products').update({
+      apk_url: path,
+      storage_path: path,
+      status: 'draft',
+      apk_enabled: true,
+      build_id: queueRow?.id || null,
+      build_status: 'processing',
+      updated_at: nowIso(),
+    }).eq('id', productId)
+    await logActivity(admin, 'apk', apkId, 'upload', userId, { product_id: productId, version, status: 'processing' })
+
+    return ok({ apk_id: apkId, status: 'processing', pipeline_id: queueRow?.id || null })
+  }
+
+  // POST /apk/replace
+  if (method === 'POST' && pathParts[0] === 'replace') {
+    const apkId = String(body?.apk_id || '').trim()
+    if (!apkId) return err('apk_id is required', 422, 'VALIDATION_ERROR')
+    const payload = {
+      product_id: body?.product_id || undefined,
+      version: body?.version || undefined,
+      file_url: body?.file_url || undefined,
+      file_size: body?.file_size === undefined ? undefined : Number(body.file_size || 0),
+      changelog: body?.changelog === undefined ? undefined : body?.changelog,
+      updated_at: nowIso(),
+    }
+    const { error } = await admin.from('apks').update(payload).eq('id', apkId)
+    if (error) return err(error.message)
+    await logActivity(admin, 'apk', apkId, 'replace', userId, { apk_id: apkId })
+    return ok({ apk_id: apkId, status: 'processing' })
+  }
+
+  // POST /apk/delete
+  if (method === 'POST' && pathParts[0] === 'delete') {
+    const apkId = String(body?.apk_id || '').trim()
+    if (!apkId) return err('apk_id is required', 422, 'VALIDATION_ERROR')
+    const { error } = await admin.from('apks').delete().eq('id', apkId)
+    if (error) return err(error.message)
+    await logActivity(admin, 'apk', apkId, 'delete', userId, { apk_id: apkId })
+    return ok({ deleted: true, apk_id: apkId })
+  }
+
+  // POST /apk/activate
+  if (method === 'POST' && pathParts[0] === 'activate') {
+    const versionId = String(body?.version_id || '').trim()
+    if (!versionId) return err('version_id is required', 422, 'VALIDATION_ERROR')
+    const { data: targetVersion, error: targetError } = await admin.from('apk_versions').select('id, apk_id, product_id').eq('id', versionId).maybeSingle()
+    if (targetError || !targetVersion?.id) return err('version not found', 404, 'NOT_FOUND')
+
+    await admin.from('apk_versions')
+      .update({ status: 'archived', is_stable: false, archived_at: nowIso() })
+      .eq('product_id', targetVersion.product_id)
+      .eq('status', 'active')
+      .neq('id', versionId)
+
+    const { error: activateError } = await admin.from('apk_versions').update({
+      status: 'active',
+      is_stable: true,
+      archived_at: null,
+    }).eq('id', versionId)
+    if (activateError) return err(activateError.message, 500)
+
+    const { data: activeVersion } = await admin.from('apk_versions').select('file_url,file_path').eq('id', versionId).maybeSingle()
+    const activePath = normalizeApkStoragePath(activeVersion?.file_url) || normalizeApkStoragePath(activeVersion?.file_path)
+    if (activePath) {
+      await admin.from('apks').update({ current_version_id: versionId, file_url: activePath, status: 'published', updated_at: nowIso() }).eq('id', targetVersion.apk_id)
+      await admin.from('products').update({ apk_url: activePath, storage_path: activePath, apk_enabled: true, build_status: 'success', updated_at: nowIso() }).eq('id', targetVersion.product_id)
+    }
+
+    await logActivity(admin, 'apk', targetVersion.apk_id, 'version_change', userId, { version_id: versionId, action: 'activate' })
+    return ok({ apk_id: targetVersion.apk_id, version_id: versionId, status: 'active' })
+  }
 
   // POST /apk/git-scan
   if (method === 'POST' && pathParts[0] === 'git-scan') {
@@ -7923,17 +8286,51 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
       return json({ allowed: false, message: 'Payment required' }, 403)
     }
 
+    const requestedDevice = String(body?.device_id || body?.device || '').trim()
+    if (requestedDevice) {
+      const { data: bind } = await admin
+        .from('device_bindings')
+        .select('id, device_id, status')
+        .eq('user_id', userId)
+        .eq('device_id', requestedDevice)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (bind?.id && bind.status !== 'active') {
+        return json({ allowed: false, message: 'Device blocked' }, 403)
+      }
+      if (!bind?.id) {
+        await admin.from('device_bindings').insert({
+          user_id: userId,
+          device_id: requestedDevice,
+          status: 'active',
+        })
+      }
+    }
+
     const { data: signedUrl, error: signedUrlError } = await admin.storage.from('apks')
       .createSignedUrl(apkPath, SIGNED_URL_EXPIRY_SECONDS)
     if (signedUrlError || !signedUrl?.signedUrl) return err('Failed to generate download URL', 500)
 
+    const clientIp = readClientIp()
     await admin.from('apk_download_logs').insert({
       product_id: product.id,
       user_id: userId,
       license_key: body?.license_key || (walletAutoDeducted ? 'wallet-auto-deduct' : 'paid-access'),
-      download_ip: readClientIp(),
+      download_ip: clientIp,
+      ip: clientIp,
+      device_id: requestedDevice || null,
+      device: requestedDevice || null,
       signed_url_expires_at: new Date(Date.now() + SIGNED_URL_EXPIRY_MS).toISOString(),
     })
+    await admin.from('download_logs').insert({
+      user_id: userId,
+      product_id: product.id,
+      apk_id: null,
+      ip: clientIp,
+      device: requestedDevice || null,
+    })
+    await logActivity(admin, 'apk', identifier, 'download', userId, { product_id: product.id, ip: clientIp, device: requestedDevice || null })
 
     return json({ allowed: true, url: signedUrl.signedUrl, download_url: signedUrl.signedUrl })
   }
