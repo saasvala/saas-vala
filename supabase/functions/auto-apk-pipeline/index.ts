@@ -9,6 +9,10 @@ function slugify(name: string) {
   return name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
 }
 
+function createTraceId() {
+  return crypto.randomUUID();
+}
+
 async function fetchSaasvalaRepos(githubToken: string) {
   const repos: any[] = [];
   let page = 1;
@@ -78,6 +82,7 @@ Deno.serve(async (req) => {
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
     const { action, data } = await req.json();
+    const reqTraceId = data?.trace_id || createTraceId();
 
     const authHeader = req.headers.get("Authorization");
 
@@ -230,9 +235,18 @@ Deno.serve(async (req) => {
                 repo_url: repoData.html_url || repoFullUrl,
                 slug,
                 build_status: "building",
+                pipeline_stage: "building",
+                trace_id: reqTraceId,
                 product_id: product_id || null,
                 target_industry: detectIndustry(slug, repoData.description || ""),
                 build_started_at: new Date().toISOString(),
+                stage_artifacts: {
+                  trigger_apk_build: {
+                    at: new Date().toISOString(),
+                    repo_verified: true,
+                    dispatch: "github_actions",
+                  },
+                },
               },
               { onConflict: "slug" }
             );
@@ -250,8 +264,17 @@ Deno.serve(async (req) => {
                 repo_url: repoData.html_url || repoFullUrl,
                 slug,
                 build_status: "pending",
+                pipeline_stage: "queued",
+                trace_id: reqTraceId,
                 product_id: product_id || null,
                 target_industry: detectIndustry(slug, repoData.description || ""),
+                stage_artifacts: {
+                  trigger_apk_build: {
+                    at: new Date().toISOString(),
+                    repo_verified: true,
+                    dispatch: "queued_fallback",
+                  },
+                },
               },
               { onConflict: "slug" }
             );
@@ -704,8 +727,16 @@ Deno.serve(async (req) => {
                     repo_url: repoUrl,
                     slug,
                     build_status: "pending",
+                    pipeline_stage: "queued",
+                    trace_id: reqTraceId,
                     product_id: product.id,
                     target_industry: "general",
+                    stage_artifacts: {
+                      auto_marketplace_workflow: {
+                        at: new Date().toISOString(),
+                        source: "marketplace_missing_apk",
+                      },
+                    },
                   });
                 }
                 results.push({ id: product.id, slug, status: "queued", repo_verified: true });
@@ -727,8 +758,16 @@ Deno.serve(async (req) => {
                 repo_url: repoUrl,
                 slug,
                 build_status: "pending",
+                pipeline_stage: "queued",
+                trace_id: reqTraceId,
                 product_id: product.id,
                 target_industry: "general",
+                stage_artifacts: {
+                  auto_marketplace_workflow: {
+                    at: new Date().toISOString(),
+                    source: "marketplace_missing_apk_no_verification",
+                  },
+                },
               });
             }
             results.push({ id: product.id, slug, status: "queued" });

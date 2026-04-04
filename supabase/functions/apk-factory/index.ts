@@ -13,6 +13,7 @@ Deno.serve(async (req) => {
 
   try {
     const { action, data } = await req.json();
+    const requestTraceId = data?.trace_id || crypto.randomUUID();
     const githubToken = Deno.env.get("SAASVALA_GITHUB_TOKEN")!;
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -154,15 +155,16 @@ Deno.serve(async (req) => {
             method: "POST",
             body: JSON.stringify({
               ref: "main",
-              inputs: {
-                repo_url: targetRepo,
-                app_slug: slug,
-                package_name: `com.saasvala.${slug.replace(/-/g, "_")}`,
-                product_id: product_id || "",
-                supabase_url: supabaseUrl,
-              },
-            }),
-          }
+                inputs: {
+                  repo_url: targetRepo,
+                  app_slug: slug,
+                  package_name: `com.saasvala.${slug.replace(/-/g, "_")}`,
+                  product_id: product_id || "",
+                  supabase_url: supabaseUrl,
+                  trace_id: requestTraceId,
+                },
+              }),
+            }
         );
 
         if (!dispatchRes.ok) {
@@ -184,9 +186,18 @@ Deno.serve(async (req) => {
             repo_url: targetRepo,
             slug,
             build_status: "building",
+            pipeline_stage: "building",
+            trace_id: requestTraceId,
             product_id: product_id || null,
             target_industry: "general",
             build_started_at: new Date().toISOString(),
+            stage_artifacts: {
+              trigger_build: {
+                at: new Date().toISOString(),
+                trace_id: requestTraceId,
+                source: "apk_factory",
+              },
+            },
           },
           { onConflict: "slug" }
         );
@@ -196,6 +207,7 @@ Deno.serve(async (req) => {
           slug,
           repo_url: targetRepo,
           status: "building",
+          trace_id: requestTraceId,
           message: `🔧 APK build triggered via GitHub Actions for ${slug}`,
         });
       }
@@ -262,6 +274,7 @@ Deno.serve(async (req) => {
           status: buildStatus,
           error: buildError,
           product_id: pid,
+          trace_id: callbackTraceId,
         } = data || {};
 
         if (!completeSlug)
@@ -275,8 +288,17 @@ Deno.serve(async (req) => {
             .from("apk_build_queue")
             .update({
               build_status: "completed",
+              pipeline_stage: "ready",
+              trace_id: callbackTraceId || requestTraceId,
               apk_file_path: apk_path,
               build_completed_at: new Date().toISOString(),
+              failure_type: null,
+              stage_artifacts: {
+                build_complete: {
+                  at: new Date().toISOString(),
+                  status: "success",
+                },
+              },
             })
             .eq("slug", completeSlug);
 
@@ -301,6 +323,7 @@ Deno.serve(async (req) => {
 
           return respond({
             success: true,
+            trace_id: callbackTraceId || requestTraceId,
             message: `✅ APK for ${completeSlug} built and attached!`,
           });
         } else {
@@ -308,13 +331,24 @@ Deno.serve(async (req) => {
             .from("apk_build_queue")
             .update({
               build_status: "failed",
+              pipeline_stage: "failed",
+              trace_id: callbackTraceId || requestTraceId,
               build_error: buildError || "Unknown error",
               build_completed_at: new Date().toISOString(),
+              failure_type: "factory_build_failed",
+              stage_artifacts: {
+                build_complete: {
+                  at: new Date().toISOString(),
+                  status: "failed",
+                  error: buildError || "Unknown error",
+                },
+              },
             })
             .eq("slug", completeSlug);
 
           return respond({
             success: false,
+            trace_id: callbackTraceId || requestTraceId,
             message: `❌ APK build failed for ${completeSlug}: ${buildError}`,
           });
         }
@@ -364,6 +398,9 @@ on:
         required: false
       supabase_url:
         description: 'Supabase URL for callback'
+        required: false
+      trace_id:
+        description: 'Pipeline trace id'
         required: false
 
 jobs:
@@ -476,10 +513,11 @@ jobs:
               \\"data\\": {
                 \\"slug\\": \\"\${{ github.event.inputs.app_slug }}\\",
                 \\"status\\": \\"$STATUS\\",
-                \\"product_id\\": \\"\${{ github.event.inputs.product_id }}\\",
-                \\"apk_path\\": \\"\${{ github.event.inputs.app_slug }}/release.apk\\"
-              }
-            }" || echo "Callback failed"
+               \\"product_id\\": \\"\${{ github.event.inputs.product_id }}\\",
+                \\"apk_path\\": \\"\${{ github.event.inputs.app_slug }}/release.apk\\",
+                \\"trace_id\\": \\"\${{ github.event.inputs.trace_id }}\\"
+               }
+             }" || echo "Callback failed"
 `;
 }
 
