@@ -7261,12 +7261,46 @@ function normalizeApkStoragePath(value: unknown): string | null {
   }
 }
 
+// 50MB hard chunk cap for APK multipart uploads; unlimited total size via chunk count.
 const APK_CHUNK_MAX_BYTES = 50 * 1024 * 1024
 
 function decodeBase64ToUint8Array(base64: string): Uint8Array {
   const sanitized = String(base64 || '').trim()
   if (!sanitized) return new Uint8Array()
-  return decodeBase64(sanitized)
+  try {
+    return decodeBase64(sanitized)
+  } catch {
+    throw new Error('Invalid base64 encoding in file payload')
+  }
+}
+
+function safeApkObjectPath(productId: string, fileName: string) {
+  const safeName = String(fileName || `upload-${Date.now()}.apk`)
+    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(/^\.+/g, '')
+    .replace(/\.\.+/g, '.')
+  return `${productId}/${Date.now()}-${safeName}`
+}
+
+async function archiveActiveApkVersions(admin: any, productId: string) {
+  const { error } = await admin
+    .from('apk_versions')
+    .update({ status: 'archived', archived_at: nowIso(), is_stable: false })
+    .eq('product_id', productId)
+    .eq('status', 'active')
+  if (error) throw new Error(error.message || 'Failed to archive active versions')
+}
+
+async function createPipelineQueueEntry(admin: any, productId: string) {
+  const { data: queueRow, error: queueError } = await admin.from('apk_build_queue').insert({
+    repo_name: `product-${productId}`,
+    repo_url: `internal://product/${productId}`,
+    slug: `product-${productId}-${Date.now()}`,
+    build_status: 'pending',
+    product_id: productId,
+  }).select('id').single()
+  if (queueError) throw new Error(queueError.message || 'Failed to create pipeline queue')
+  return queueRow
 }
 
 type SyncedBuildStatus = 'pending' | 'success' | 'failed'
@@ -7544,7 +7578,7 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
         }
         const chunkBytes = decodeBase64ToUint8Array(chunkBase64)
         if (chunkBytes.byteLength > APK_CHUNK_MAX_BYTES) {
-          return err('chunk size exceeds 50MB max', 422, 'VALIDATION_ERROR')
+          return err(`chunk size exceeds ${APK_CHUNK_MAX_BYTES / (1024 * 1024)}MB max`, 422, 'VALIDATION_ERROR')
         }
         const chunkPath = `${productId}/chunks/${uploadId}/part-${chunkIndex.toString().padStart(6, '0')}`
         const { error: chunkUploadError } = await admin.storage.from('apks').upload(chunkPath, chunkBytes, { upsert: true, contentType: 'application/octet-stream' })
@@ -7584,7 +7618,8 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
         .eq('upload_id', uploadId)
         .order('chunk_index', { ascending: true })
       if (partsError) return err(partsError.message, 500)
-      if (!parts || parts.length !== Number(session.total_chunks || 0)) {
+      const expectedChunkCount = Number(session.total_chunks || 0)
+      if (!parts || parts.length !== expectedChunkCount) {
         return err('Not all chunks uploaded yet', 422, 'VALIDATION_ERROR')
       }
 
@@ -7607,14 +7642,12 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
         offset += bytes.byteLength
       }
 
-      const finalPath = `${session.product_id}/${Date.now()}-${String(session.file_name).replace(/[^a-zA-Z0-9._-]/g, '-')}`
+      const finalPath = safeApkObjectPath(String(session.product_id), String(session.file_name || 'upload.apk'))
       const { error: finalUploadError } = await admin.storage.from('apks')
         .upload(finalPath, mergedBytes, { upsert: true, contentType: String(session.file_type || 'application/vnd.android.package-archive') })
       if (finalUploadError) return err(`final merge upload failed: ${finalUploadError.message}`, 500)
 
-      for (const part of parts) {
-        await admin.storage.from('apks').remove([String(part.storage_path)])
-      }
+      await Promise.all(parts.map((part) => admin.storage.from('apks').remove([String(part.storage_path)])))
 
       const resolvedVersionCode = Number(session.version_code || versionCode || 1)
       let apkId = session.replace_apk_id ? String(session.replace_apk_id) : ''
@@ -7643,7 +7676,7 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
         apkId = apkInserted.id
       }
 
-      await admin.from('apk_versions').update({ status: 'archived', archived_at: nowIso(), is_stable: false }).eq('product_id', session.product_id).eq('status', 'active')
+      await archiveActiveApkVersions(admin, session.product_id)
       const { data: versionRow, error: versionError } = await admin.from('apk_versions').insert({
         apk_id: apkId,
         product_id: session.product_id,
@@ -7664,14 +7697,7 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
 
       await admin.from('apks').update({ current_version_id: versionRow.id, file_url: finalPath, updated_at: nowIso() }).eq('id', apkId)
 
-      const { data: queueRow, error: queueError } = await admin.from('apk_build_queue').insert({
-        repo_name: `product-${session.product_id}`,
-        repo_url: `internal://product/${session.product_id}`,
-        slug: `product-${session.product_id}-${Date.now()}`,
-        build_status: 'pending',
-        product_id: session.product_id,
-      }).select('id').single()
-      if (queueError) return err(queueError.message, 500)
+      const queueRow = await createPipelineQueueEntry(admin, session.product_id)
 
       await admin.from('apk_pipeline_queue').insert({
         apk_id: apkId,
@@ -7692,8 +7718,7 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
     const fileBytes = decodeBase64ToUint8Array(fileBase64)
     if (!fileBytes.byteLength) return err('file payload missing', 422, 'VALIDATION_ERROR')
 
-    const safeFileName = (fileName || `upload-${Date.now()}.apk`).replace(/[^a-zA-Z0-9._-]/g, '-')
-    const path = `${productId}/${Date.now()}-${safeFileName}`
+    const path = safeApkObjectPath(productId, fileName || 'upload.apk')
     const { error: uploadError } = await admin.storage.from('apks').upload(path, fileBytes, { upsert: true, contentType: fileType || 'application/vnd.android.package-archive' })
     if (uploadError) return err(`Upload failed: ${uploadError.message}`, 500)
 
@@ -7723,7 +7748,7 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
       apkId = apkInserted.id
     }
 
-    await admin.from('apk_versions').update({ status: 'archived', archived_at: nowIso(), is_stable: false }).eq('product_id', productId).eq('status', 'active')
+    await archiveActiveApkVersions(admin, productId)
     const { data: versionRow, error: versionError } = await admin.from('apk_versions').insert({
       apk_id: apkId,
       product_id: productId,
@@ -7744,14 +7769,7 @@ async function handleApk(method: string, pathParts: string[], body: any, userId:
 
     await admin.from('apks').update({ current_version_id: versionRow.id, file_url: path, updated_at: nowIso() }).eq('id', apkId)
 
-    const { data: queueRow, error: queueError } = await admin.from('apk_build_queue').insert({
-      repo_name: `product-${productId}`,
-      repo_url: `internal://product/${productId}`,
-      slug: `product-${productId}-${Date.now()}`,
-      build_status: 'pending',
-      product_id: productId,
-    }).select('id').single()
-    if (queueError) return err(queueError.message, 500)
+    const queueRow = await createPipelineQueueEntry(admin, productId)
 
     await admin.from('apk_pipeline_queue').insert({
       apk_id: apkId,

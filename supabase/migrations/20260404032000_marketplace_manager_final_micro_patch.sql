@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS public.apk_upload_session_parts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   upload_id UUID NOT NULL REFERENCES public.apk_upload_sessions(id) ON DELETE CASCADE,
   chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
-  chunk_size BIGINT NOT NULL CHECK (chunk_size >= 0),
+  chunk_size BIGINT NOT NULL CHECK (chunk_size > 0 AND chunk_size <= 52428800),
   storage_path TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (upload_id, chunk_index)

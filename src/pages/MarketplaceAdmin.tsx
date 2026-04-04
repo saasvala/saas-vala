@@ -1063,40 +1063,106 @@ export default function MarketplaceAdmin() {
       return;
     }
 
-    const toBase64 = async (file: File): Promise<string> => {
-      const buffer = await file.arrayBuffer();
-      const bytes = new Uint8Array(buffer);
-      let binary = '';
+    const APK_CHUNK_THRESHOLD_BYTES = 50 * 1024 * 1024;
+
+    const bytesToBase64 = (bytes: Uint8Array): string => {
+      const segments: string[] = [];
       const chunkSize = 0x8000;
       for (let i = 0; i < bytes.length; i += chunkSize) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+        segments.push(String.fromCharCode(...bytes.subarray(i, i + chunkSize)));
       }
-      return btoa(binary);
+      return btoa(segments.join(''));
     };
 
-    const uploadWithRetry = async (attempt = 1): Promise<{ apk_id: string; status: string; pipeline_id?: string | null }> => {
-      const MAX_ATTEMPTS = 2;
-      try {
-        const base64 = await toBase64(apkFile);
-        const response = await apiClient.post<{ apk_id: string; status: string; pipeline_id?: string | null }>('apk/upload', {
+    const toBase64 = async (file: File): Promise<string> => {
+      const buffer = await file.arrayBuffer();
+      return bytesToBase64(new Uint8Array(buffer));
+    };
+
+    const uploadInChunks = async (): Promise<{ apk_id: string; status: string; pipeline_id?: string | null }> => {
+      const CHUNK_SIZE = APK_CHUNK_THRESHOLD_BYTES;
+      const totalChunks = Math.max(1, Math.ceil(apkFile.size / CHUNK_SIZE));
+
+      const init = await apiClient.post<{ upload_id: string }>('apk/upload', {
+        upload_mode: 'chunk',
+        product_id: apkForm.product_id,
+        version: apkForm.version,
+        version_code: Number(apkForm.version_code || 1),
+        changelog: apkForm.changelog || null,
+        file_name: apkFile.name,
+        file_type: apkFile.type || 'application/vnd.android.package-archive',
+        total_chunks: totalChunks,
+        replace_apk_id: apkForm.replace_apk_id || null,
+      });
+
+      const uploadId = init.data?.upload_id;
+      if (!init.success || !uploadId) {
+        throw new Error(typeof init.error === 'string' ? init.error : 'Failed to start chunk upload');
+      }
+
+      for (let idx = 0; idx < totalChunks; idx += 1) {
+        const start = idx * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, apkFile.size);
+        const chunkBytes = new Uint8Array(await apkFile.slice(start, end).arrayBuffer());
+        const chunkBase64 = bytesToBase64(chunkBytes);
+        const part = await apiClient.post('apk/upload', {
+          upload_mode: 'chunk',
+          upload_id: uploadId,
           product_id: apkForm.product_id,
           version: apkForm.version,
           version_code: Number(apkForm.version_code || 1),
-          changelog: apkForm.changelog || null,
-          file_name: apkFile.name,
-          file_type: apkFile.type || 'application/vnd.android.package-archive',
-          file_size: apkFile.size,
-          file_base64: base64,
-          replace_apk_id: apkForm.replace_apk_id || null,
+          chunk_index: idx,
+          total_chunks: totalChunks,
+          chunk_base64: chunkBase64,
         });
-
-        if (!response.success || !response.data?.apk_id) {
-          throw new Error(typeof response.error === 'string' ? response.error : 'Upload failed');
+        if (!part.success) {
+          throw new Error(typeof part.error === 'string' ? part.error : `Chunk ${idx + 1} failed`);
         }
+      }
 
-        return response.data;
+      const complete = await apiClient.post<{ apk_id: string; status: string; pipeline_id?: string | null }>('apk/upload', {
+        upload_mode: 'chunk',
+        upload_id: uploadId,
+        product_id: apkForm.product_id,
+        version: apkForm.version,
+        version_code: Number(apkForm.version_code || 1),
+        complete: true,
+      });
+
+      if (!complete.success || !complete.data?.apk_id) {
+        throw new Error(typeof complete.error === 'string' ? complete.error : 'Chunk merge failed');
+      }
+
+      return complete.data;
+    };
+
+    const uploadWithRetry = async (attempt = 1): Promise<{ apk_id: string; status: string; pipeline_id?: string | null }> => {
+      const MAX_UPLOAD_ATTEMPTS = 2;
+      try {
+        const useChunkMode = apkFile.size > APK_CHUNK_THRESHOLD_BYTES;
+        const response = useChunkMode
+          ? await uploadInChunks()
+          : await (async () => {
+              const base64 = await toBase64(apkFile);
+              const single = await apiClient.post<{ apk_id: string; status: string; pipeline_id?: string | null }>('apk/upload', {
+                product_id: apkForm.product_id,
+                version: apkForm.version,
+                version_code: Number(apkForm.version_code || 1),
+                changelog: apkForm.changelog || null,
+                file_name: apkFile.name,
+                file_type: apkFile.type || 'application/vnd.android.package-archive',
+                file_base64: base64,
+                replace_apk_id: apkForm.replace_apk_id || null,
+              });
+              if (!single.success || !single.data?.apk_id) {
+                throw new Error(typeof single.error === 'string' ? single.error : 'Upload failed');
+              }
+              return single.data;
+            })();
+
+        return response;
       } catch (error) {
-        if (attempt < MAX_ATTEMPTS) return uploadWithRetry(attempt + 1);
+        if (attempt < MAX_UPLOAD_ATTEMPTS) return uploadWithRetry(attempt + 1);
         throw error;
       }
     };
