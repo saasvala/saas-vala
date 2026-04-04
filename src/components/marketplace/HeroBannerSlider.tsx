@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 import { supabase } from '@/integrations/supabase/client';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
+import { safeNavigate } from '@/lib/routeRegistry';
 
 interface HeroSlide {
   id: string;
@@ -163,7 +164,7 @@ export function HeroBannerSlider({ autoPlayInterval = 4000 }: { autoPlayInterval
       }
       return;
     }
-    navigate(to);
+    safeNavigate(navigate, to);
   }, [navigate]);
 
   return (
