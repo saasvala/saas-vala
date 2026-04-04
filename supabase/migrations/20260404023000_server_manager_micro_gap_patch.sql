@@ -56,9 +56,16 @@ ALTER TABLE public.webhooks
   ADD COLUMN IF NOT EXISTS event TEXT,
   ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;
 
-UPDATE public.webhooks
-SET event = COALESCE(event, event_type)
-WHERE event IS NULL;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'webhooks' AND column_name = 'event_type'
+  ) THEN
+    EXECUTE 'UPDATE public.webhooks SET event = COALESCE(event, event_type) WHERE event IS NULL';
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_server_health_metrics_server_id
   ON public.server_health_metrics(server_id);

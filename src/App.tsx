@@ -408,7 +408,7 @@ function ServerRouteGuarded({ children }: { children: React.ReactNode }) {
   }, [id, user?.id]);
 
   if (!dataLoaded) return <PageLoader />;
-  if (error) return <Navigate to="/safe-dashboard" replace />;
+  if (error) return <Navigate to="/dashboard" replace />;
   if (!exists) return <Navigate to="/server" replace />;
   return <>{children}</>;
 }

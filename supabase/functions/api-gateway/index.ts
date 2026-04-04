@@ -5971,10 +5971,13 @@ async function handleServers(method: string, pathParts: string[], body: any, use
       .order('created_at', { ascending: false })
       .limit(100)
     if (error) return fail(error.message, 400, 'DB_ERROR')
-    if (!data || data.length === 0) {
-      return ok({ safe: true, message: 'fallback', server_id: thirdSegment, alerts: [] })
-    }
-    return ok(data)
+    const alerts = data || []
+    return ok({
+      safe: true,
+      message: alerts.length > 0 ? 'ok' : 'fallback',
+      server_id: thirdSegment,
+      alerts,
+    })
   }
 
   // GET /server/jobs/:id
@@ -5986,10 +5989,13 @@ async function handleServers(method: string, pathParts: string[], body: any, use
       .order('created_at', { ascending: false })
       .limit(100)
     if (error) return fail(error.message, 400, 'DB_ERROR')
-    if (!data || data.length === 0) {
-      return ok({ safe: true, message: 'fallback', server_id: thirdSegment, jobs: [] })
-    }
-    return ok(data)
+    const jobs = data || []
+    return ok({
+      safe: true,
+      message: jobs.length > 0 ? 'ok' : 'fallback',
+      server_id: thirdSegment,
+      jobs,
+    })
   }
 
   // POST /server/job/retry/:id
@@ -6019,14 +6025,15 @@ async function handleServers(method: string, pathParts: string[], body: any, use
 
   // GET /server/credential/access?server_id=...&otp=...
   if (method === 'GET' && segment === 'server' && secondSegment === 'credential' && thirdSegment === 'access') {
-    const serverId = sanitizeTextInput(body?.server_id || body?.id || '', 120)
-    const providedOtp = sanitizeTextInput(body?.otp || body?.one_time_password || '', 32)
+    const reqUrl = new URL(String(body?.__request_url || ''), 'http://localhost')
+    const serverId = sanitizeTextInput(reqUrl.searchParams.get('server_id') || body?.server_id || '', 120)
+    const providedOtp = sanitizeTextInput(reqUrl.searchParams.get('otp') || body?.otp || '', 32)
     if (!serverId) return fail('server_id required', 422, 'VALIDATION_ERROR')
     if (!providedOtp) return fail('OTP required', 401, 'OTP_REQUIRED')
 
     const expectedOtp = String(Deno.env.get('SERVER_CREDENTIAL_ACCESS_OTP') || '').trim()
     if (!expectedOtp) return fail('Credential vault OTP is not configured', 503, 'OTP_NOT_CONFIGURED')
-    if (providedOtp !== expectedOtp) return fail('Invalid OTP', 403, 'INVALID_OTP')
+    if (!timingSafeEqualText(providedOtp, expectedOtp)) return fail('Invalid OTP', 403, 'INVALID_OTP')
 
     const { data, error } = await sb
       .from('server_credentials')
@@ -6048,7 +6055,7 @@ async function handleServers(method: string, pathParts: string[], body: any, use
     })
   }
 
-  return ok({ safe: true, message: 'fallback' })
+  return fail('Not found', 404, 'NOT_FOUND')
 }
 
 // ===================== 7. GITHUB =====================
@@ -9985,7 +9992,7 @@ Deno.serve(async (req) => {
     }
     if (module === 'webhook' && req.method === 'POST' && subParts[0] === 'deploy') {
       const admin = adminClient()
-      return await handleServers('POST', ['deploy', 'webhook'], body, body?.triggered_by || '', admin)
+      return await handleServers('POST', ['deploy', 'webhook'], body, 'system-webhook', admin)
     }
 
     // Scheduler subscription endpoint without JWT (secret-gated in handler)
