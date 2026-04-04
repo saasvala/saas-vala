@@ -182,18 +182,119 @@ async function apiCall<T = any>(method: string, path: string, body?: any): Promi
   return data;
 }
 
+export type CrudActionType = 'create' | 'read' | 'update' | 'delete';
+export type CrudModule =
+  | 'users'
+  | 'products'
+  | 'orders'
+  | 'wallet'
+  | 'apk'
+  | 'builder'
+  | 'server';
+
+type CrudRouteMap = Record<CrudModule, Partial<Record<CrudActionType, string>>>;
+
+export const CRUD_ROUTE_MAP: CrudRouteMap = {
+  users: {
+    create: 'admin/user/create',
+    read: 'admin/user/list',
+    update: 'admin/user/update',
+    delete: 'admin/user/delete',
+  },
+  products: {
+    create: 'admin/product/create',
+    read: 'products',
+    update: 'admin/product/update',
+    delete: 'admin/product/delete',
+  },
+  orders: {
+    read: 'admin/orders',
+    update: 'admin/order/status',
+  },
+  wallet: {
+    read: 'wallet',
+    create: 'wallet/add',
+    update: 'wallet/edit',
+  },
+  apk: {
+    create: 'apk/upload',
+    read: 'apk/list',
+    update: 'apk/update',
+    delete: 'apk/delete',
+  },
+  builder: {
+    create: 'builder/create',
+    read: 'builder/status',
+    update: 'builder/retry',
+  },
+  server: {
+    create: 'server/add',
+    read: 'server/list',
+    update: 'server/update',
+    delete: 'server/remove',
+  },
+};
+
+export type CrudConfig = {
+  type: CrudActionType;
+  api?: string;
+  payload?: Record<string, unknown> | undefined;
+  module?: CrudModule;
+};
+
+export async function CRUD<T = any>(config: CrudConfig): Promise<T> {
+  const resolvedApi = config.api || (config.module ? CRUD_ROUTE_MAP[config.module]?.[config.type] : undefined);
+  if (!resolvedApi) {
+    throw new ApiError(`CRUD route not found for ${config.module || 'custom'}:${config.type}`, 400, 'CRUD_ROUTE_NOT_FOUND');
+  }
+  if (config.type === 'create') {
+    return apiCall<T>('POST', resolvedApi, config.payload);
+  }
+  if (config.type === 'read') {
+    return apiCall<T>('GET', resolvedApi, config.payload);
+  }
+  if (config.type === 'update') {
+    return apiCall<T>('PUT', resolvedApi, config.payload);
+  }
+  return apiCall<T>('DELETE', resolvedApi, config.payload);
+}
+
+async function crudWithFallback<T = any>(
+  module: CrudModule,
+  type: CrudActionType,
+  payload: Record<string, unknown> | undefined,
+  fallback: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await CRUD<T>({ module, type, payload });
+  } catch {
+    return fallback();
+  }
+}
+
 // ===================== AUTH =====================
 export const authApi = {
   me: () => apiCall('GET', 'auth/me'),
 };
 
+export const usersApi = {
+  create: (data: any) => CRUD('data' in ({ data } as any) ? { type: 'create', module: 'users', payload: data } : { type: 'create', module: 'users', payload: data }),
+  list: (params?: Record<string, unknown>) => CRUD({ type: 'read', module: 'users', payload: params }),
+  update: (data: any) => CRUD({ type: 'update', module: 'users', payload: data }),
+  delete: (data: { id: string }) => CRUD({ type: 'delete', module: 'users', payload: data }),
+};
+
 // ===================== PRODUCTS =====================
 export const productsApi = {
-  list: () => apiCall('GET', 'products'),
+  list: (params?: Record<string, unknown>) =>
+    crudWithFallback('products', 'read', params, () => apiCall('GET', 'products', params)),
   get: (id: string) => apiCall('GET', `products/${id}`),
-  create: (data: any) => apiCall('POST', 'products', data),
-  update: (id: string, data: any) => apiCall('PUT', `products/${id}`, data),
-  delete: (id: string) => apiCall('DELETE', `products/${id}`),
+  create: (data: any) =>
+    crudWithFallback('products', 'create', data, () => apiCall('POST', 'products', data)),
+  update: (id: string, data: any) =>
+    crudWithFallback('products', 'update', { id, ...data }, () => apiCall('PUT', `products/${id}`, data)),
+  delete: (id: string) =>
+    crudWithFallback('products', 'delete', { id }, () => apiCall('DELETE', `products/${id}`)),
   categories: () => apiCall('GET', 'products/categories'),
   versions: (id: string) => apiCall('GET', `products/${id}/versions`),
 };
@@ -306,6 +407,13 @@ export const marketplaceApi = {
   promoResolve: (code: string) => apiCall('GET', 'marketplace/promo/resolve', { code }),
 };
 
+export const ordersApi = {
+  read: (params?: Record<string, unknown>) =>
+    crudWithFallback('orders', 'read', params, () => marketplaceApi.orders()),
+  updateStatus: (data: Record<string, unknown>) =>
+    crudWithFallback('orders', 'update', data, () => apiCall('PUT', 'admin/order/status', data)),
+};
+
 export const bannerApi = {
   create: (data: any) => apiCall('POST', 'banner/create', data),
   list: () => apiCall('GET', 'banner/list'),
@@ -350,17 +458,22 @@ export const keysApi = {
 
 // ===================== SERVERS =====================
 export const serversApi = {
-  list: () => apiCall('GET', 'servers/list'),
+  list: () =>
+    crudWithFallback('server', 'read', undefined, () => apiCall('GET', 'servers/list')),
   listCompat: () => apiCall('GET', 'server/list'),
   get: (id: string) => apiCall('GET', `servers/${id}`),
   status: (params?: { page?: number; limit?: number }) => apiCall('GET', 'servers/status', params),
-  create: (data: any) => apiCall('POST', 'server/add', data),
+  create: (data: any) =>
+    crudWithFallback('server', 'create', data, () => apiCall('POST', 'server/add', data)),
   start: (server_id: string) => apiCall('POST', 'servers/start', { server_id }),
   stop: (server_id: string) => apiCall('POST', 'servers/stop', { server_id }),
   restart: (server_id: string) => apiCall('POST', 'servers/restart', { server_id }),
   suspend: (id: string) => apiCall('POST', `server/suspend/${id}`),
   activate: (id: string) => apiCall('POST', `server/activate/${id}`),
-  delete: (id: string) => apiCall('DELETE', `server/delete/${id}`),
+  update: (data: any) =>
+    crudWithFallback('server', 'update', data, () => apiCall('PUT', 'server/update', data)),
+  delete: (id: string) =>
+    crudWithFallback('server', 'delete', { id }, () => apiCall('DELETE', `server/delete/${id}`)),
   deployTargets: () => apiCall('GET', 'deploy-targets'),
   triggerDeploy: (serverId: string) => apiCall('POST', 'deploy/trigger', { server_id: serverId }),
   deployStart: (server_id: string) => apiCall('POST', 'deploy/start', { server_id }),
@@ -516,8 +629,18 @@ export interface ApkDownloadResponse {
 }
 
 export const apkApi = {
-  build: (data: any) => apiCall('POST', 'apk/build', data),
-  history: () => apiCall('GET', 'apk/history'),
+  create: (data: any) =>
+    crudWithFallback('apk', 'create', data, () => apiCall('POST', 'apk/build', data)),
+  list: (params?: Record<string, unknown>) =>
+    crudWithFallback('apk', 'read', params, () => apiCall('GET', 'apk/history', params)),
+  update: (data: any) =>
+    crudWithFallback('apk', 'update', data, () => apiCall('PUT', 'apk/update', data)),
+  delete: (data: { id: string }) =>
+    crudWithFallback('apk', 'delete', data, () => apiCall('DELETE', 'apk/delete', data)),
+  build: (data: any) =>
+    crudWithFallback('apk', 'create', data, () => apiCall('POST', 'apk/build', data)),
+  history: () =>
+    crudWithFallback('apk', 'read', undefined, () => apiCall('GET', 'apk/history')),
   status: (id: string) => apiCall('GET', `apk/status/${id}`),
   download: (id: string) => apiCall<ApkDownloadResponse>('GET', `apk/download/${id}`),
 };
@@ -541,18 +664,26 @@ export const builderApi = {
     prompt: string;
     stack_preference?: string;
     target_platforms?: string[];
-  }) => apiCall('POST', 'builder/create', data),
+  }) => crudWithFallback('builder', 'create', data, () => apiCall('POST', 'builder/create', data)),
   run: (data: { project_id: string; version?: string }) => apiCall('POST', 'builder/run', data),
-  status: (projectId: string) => apiCall('GET', `builder/status/${projectId}`),
+  status: (projectId: string) =>
+    crudWithFallback('builder', 'read', { project_id: projectId }, () => apiCall('GET', `builder/status/${projectId}`)),
   logs: (projectId: string) => apiCall('GET', `builder/logs/${projectId}`),
-  retry: (projectId: string) => apiCall('POST', 'builder/retry', { project_id: projectId }),
+  retry: (projectId: string) =>
+    crudWithFallback('builder', 'update', { project_id: projectId }, () => apiCall('POST', 'builder/retry', { project_id: projectId })),
 };
 
 // ===================== WALLET =====================
 export const walletApi = {
-  get: () => apiCall('GET', 'wallet'),
+  get: () =>
+    crudWithFallback('wallet', 'read', undefined, () => apiCall('GET', 'wallet')),
   add: (amount: number, description?: string, paymentMethod?: string, walletId?: string) =>
-    apiCall('POST', 'wallet/add', { amount, description, payment_method: paymentMethod, wallet_id: walletId }),
+    crudWithFallback(
+      'wallet',
+      'create',
+      { amount, description, payment_method: paymentMethod, wallet_id: walletId },
+      () => apiCall('POST', 'wallet/add', { amount, description, payment_method: paymentMethod, wallet_id: walletId }),
+    ),
   control: (data: { wallet_id?: string; action?: 'freeze' | 'unfreeze'; freeze?: boolean; limit?: number; note?: string }) =>
     apiCall('POST', 'wallet/control', data),
   export: (params?: { format?: 'csv' | 'pdf'; type?: string; source?: string; status?: string; from?: string; to?: string; search?: string }) =>
@@ -570,7 +701,7 @@ export const walletApi = {
   adminAdd: (data: { wallet_id: string; amount: number; note?: string; source?: string }) =>
     apiCall('POST', 'wallet/admin/add', data),
   adminEdit: (data: { wallet_id: string; balance: number; note?: string }) =>
-    apiCall('POST', 'wallet/admin/edit', data),
+    crudWithFallback('wallet', 'update', data as Record<string, unknown>, () => apiCall('POST', 'wallet/admin/edit', data)),
   adminDelete: (data: { wallet_id: string; note?: string }) =>
     apiCall('POST', 'wallet/admin/delete', data),
   adminFreeze: (data: { wallet_id: string; freeze: boolean; note?: string }) =>
