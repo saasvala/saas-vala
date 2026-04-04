@@ -9166,7 +9166,66 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
     })
   }
 
-  // GET /builder/status/:project_id
+  // GET /builder/status and GET /builder/status/:project_id
+  if (method === 'GET' && pathParts[0] === 'status' && !pathParts[1]) {
+    const { data: projects, error: projectsError } = await admin
+      .from('projects')
+      .select('id,name,status,created_at,updated_at')
+      .eq('created_by', userId)
+      .order('created_at', { ascending: false })
+      .limit(100)
+    if (projectsError) return fail(projectsError.message, 400, 'BUILDER_STATUS_FAILED')
+
+    const projectIds = (projects || []).map((p: any) => p.id).filter(Boolean)
+    const { data: logs } = projectIds.length
+      ? await admin
+          .from('build_logs')
+          .select('project_id,step,status,created_at')
+          .in('project_id', projectIds)
+          .order('created_at', { ascending: false })
+      : { data: [] as any[] }
+
+    const { data: retries } = projectIds.length
+      ? await admin
+          .from('ai_tasks')
+          .select('project_id')
+          .in('project_id', projectIds)
+          .eq('agent', 'DEBUG_AI')
+          .eq('output', 'retry_queued')
+      : { data: [] as any[] }
+
+    const latestByProject = new Map<string, any>()
+    for (const row of (logs || [])) {
+      const pid = row?.project_id
+      if (!pid || latestByProject.has(pid)) continue
+      latestByProject.set(pid, row)
+    }
+    const retryCountByProject = new Map<string, number>()
+    for (const row of (retries || [])) {
+      const pid = row?.project_id
+      if (!pid) continue
+      retryCountByProject.set(pid, Number(retryCountByProject.get(pid) || 0) + 1)
+    }
+
+    return ok({
+      projects: (projects || []).map((p: any) => {
+        const latestLog = latestByProject.get(p.id)
+        return {
+          project_id: p.id,
+          name: p.name || null,
+          status: p.status || 'unknown',
+          current_step: latestLog?.step || null,
+          step_status: latestLog?.status || null,
+          retry_count: Number(retryCountByProject.get(p.id) || 0),
+          retry_limit: BUILDER_MAX_RETRIES,
+          self_healing: true,
+          created_at: p.created_at || null,
+          updated_at: p.updated_at || null,
+        }
+      }),
+    })
+  }
+
   if (method === 'GET' && pathParts[0] === 'status' && pathParts[1]) {
     const projectId = String(pathParts[1] || '').trim()
     const { data: project, error: projectError } = await admin
@@ -9184,11 +9243,20 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .limit(1)
       .maybeSingle()
 
+    const { count: retryCount } = await admin
+      .from('ai_tasks')
+      .select('id', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .eq('agent', 'DEBUG_AI')
+      .eq('output', 'retry_queued')
+
     return ok({
       project_id: projectId,
       status: project.status || 'unknown',
       current_step: latestLog?.step || null,
       step_status: latestLog?.status || null,
+      retry_count: Number(retryCount || 0),
+      retry_limit: BUILDER_MAX_RETRIES,
       self_healing: true,
     })
   }
@@ -9226,6 +9294,16 @@ async function handleBuilder(method: string, pathParts: string[], body: BuilderC
       .eq('id', projectId)
       .maybeSingle()
     if (projectError || !project) return fail('Project not found', 404, 'NOT_FOUND')
+
+    const { count: retryCount } = await admin
+      .from('ai_tasks')
+      .select('id', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .eq('agent', 'DEBUG_AI')
+      .eq('output', 'retry_queued')
+    if (Number(retryCount || 0) >= BUILDER_MAX_RETRIES) {
+      return fail('Retry limit reached', 409, 'RETRY_LIMIT_REACHED', { retry_limit: BUILDER_MAX_RETRIES })
+    }
 
     const { data: lastFailedStep } = await admin
       .from('build_logs')
@@ -11758,12 +11836,3 @@ Deno.serve(async (req) => {
     return fail('Internal server error', 500, 'INTERNAL_ERROR', { fallback: true, retryable: true })
   }
 })
-    const { count: retryCount } = await admin
-      .from('ai_tasks')
-      .select('id', { count: 'exact', head: true })
-      .eq('project_id', projectId)
-      .eq('agent', 'DEBUG_AI')
-      .eq('output', 'retry_queued')
-    if (Number(retryCount || 0) >= BUILDER_MAX_RETRIES) {
-      return fail('Retry limit reached', 409, 'RETRY_LIMIT_REACHED', { retry_limit: BUILDER_MAX_RETRIES })
-    }
