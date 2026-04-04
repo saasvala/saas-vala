@@ -4,13 +4,38 @@ declare global {
   interface Window {
     _lastRender?: number;
     _recoveryReloadQueued?: boolean;
+    _recoveryWatchdogId?: number;
   }
+}
+
+function showRecoveryMessage() {
+  const id = 'sv-global-recovery-overlay';
+  if (document.getElementById(id)) return;
+  const overlay = document.createElement('div');
+  overlay.id = id;
+  overlay.setAttribute('role', 'alert');
+  overlay.textContent = 'System Recovering...';
+  overlay.style.position = 'fixed';
+  overlay.style.inset = '0';
+  overlay.style.zIndex = '2147483647';
+  overlay.style.display = 'flex';
+  overlay.style.alignItems = 'center';
+  overlay.style.justifyContent = 'center';
+  overlay.style.background = 'rgba(0,0,0,0.92)';
+  overlay.style.color = '#fff';
+  overlay.style.fontSize = '20px';
+  overlay.style.fontWeight = '600';
+  document.body.appendChild(overlay);
 }
 
 function queueRecoveryReload() {
   if (window._recoveryReloadQueued) return;
   window._recoveryReloadQueued = true;
-  document.body.innerHTML = 'System Recovering...';
+  if (typeof window._recoveryWatchdogId === 'number') {
+    window.clearInterval(window._recoveryWatchdogId);
+    window._recoveryWatchdogId = undefined;
+  }
+  showRecoveryMessage();
   window.setTimeout(() => {
     window.location.reload();
   }, 1500);
@@ -26,26 +51,29 @@ export function GlobalRecovery() {
   });
 
   useEffect(() => {
+    window._lastRender = performance.now();
     const previousOnError = window.onerror;
     const previousOnUnhandledRejection = window.onunhandledrejection;
 
     window.onerror = function (...args) {
-      queueRecoveryReload();
+      let previousResult = false;
       if (typeof previousOnError === 'function') {
-        return previousOnError(...args);
+        previousResult = previousOnError(...args);
       }
-      return false;
+      queueRecoveryReload();
+      return previousResult;
     };
 
     window.onunhandledrejection = function (event) {
+      const previousResult =
+        typeof previousOnUnhandledRejection === 'function'
+          ? previousOnUnhandledRejection(event)
+          : true;
       queueRecoveryReload();
-      if (typeof previousOnUnhandledRejection === 'function') {
-        return previousOnUnhandledRejection(event);
-      }
-      return true;
+      return previousResult;
     };
 
-    const intervalId = window.setInterval(() => {
+    window._recoveryWatchdogId = window.setInterval(() => {
       const lastRender = window._lastRender ?? performance.now();
       const stuck = performance.now() - lastRender > 5000;
       if (stuck) {
@@ -55,7 +83,10 @@ export function GlobalRecovery() {
     }, 3000);
 
     return () => {
-      window.clearInterval(intervalId);
+      if (typeof window._recoveryWatchdogId === 'number') {
+        window.clearInterval(window._recoveryWatchdogId);
+        window._recoveryWatchdogId = undefined;
+      }
       window.onerror = previousOnError;
       window.onunhandledrejection = previousOnUnhandledRejection;
     };
@@ -69,7 +100,7 @@ type AppErrorBoundaryState = {
 };
 
 export class AppErrorBoundary extends React.Component<React.PropsWithChildren, AppErrorBoundaryState> {
-  private recoverTimer: number | null = null;
+  private recoverTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(props: React.PropsWithChildren) {
     super(props);
