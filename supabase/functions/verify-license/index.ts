@@ -42,7 +42,13 @@ Deno.serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const policySigningKey = Deno.env.get("APK_POLICY_SIGNING_KEY") || serviceKey;
+    const policySigningKey = Deno.env.get("APK_POLICY_SIGNING_KEY");
+    if (!policySigningKey) {
+      return new Response(
+        JSON.stringify({ status: "error", reason: "APK_POLICY_SIGNING_KEY is required" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
     const defaultSyncMinutes = Number(Deno.env.get("APK_POLICY_SYNC_MINUTES") || "60");
     const adminClient = createClient(supabaseUrl, serviceKey);
 

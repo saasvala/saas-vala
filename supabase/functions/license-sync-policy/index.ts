@@ -39,7 +39,8 @@ Deno.serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const policySigningKey = Deno.env.get("APK_POLICY_SIGNING_KEY") || serviceKey;
+    const policySigningKey = Deno.env.get("APK_POLICY_SIGNING_KEY");
+    if (!policySigningKey) return respond({ error: "APK_POLICY_SIGNING_KEY is required" }, 500);
     const syncIntervalMinutes = Number(Deno.env.get("APK_POLICY_SYNC_MINUTES") || "60");
     const analyticsPerMinuteLimit = Number(Deno.env.get("APK_ANALYTICS_PER_MINUTE_PER_LICENSE") || "120");
     const admin = createClient(supabaseUrl, serviceKey);
@@ -178,4 +179,3 @@ Deno.serve(async (req) => {
     });
   }
 });
-

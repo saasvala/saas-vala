@@ -8,7 +8,10 @@ ALTER TABLE public.apk_versions
   ADD COLUMN IF NOT EXISTS rollout_status TEXT NOT NULL DEFAULT 'active',
   ADD COLUMN IF NOT EXISTS build_target TEXT NOT NULL DEFAULT 'apk',
   ADD COLUMN IF NOT EXISTS hash_algorithm TEXT NOT NULL DEFAULT 'sha256',
-  ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ DEFAULT now();
+  ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
+
+ALTER TABLE public.apk_versions
+  ALTER COLUMN published_at DROP DEFAULT;
 
 CREATE INDEX IF NOT EXISTS idx_apk_versions_apk_rollout
   ON public.apk_versions(apk_id, rollout_status, created_at DESC);

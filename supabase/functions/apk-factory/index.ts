@@ -352,10 +352,19 @@ Deno.serve(async (req) => {
               })
               .eq("id", pid);
 
+            const { data: latestVersion } = await admin
+              .from("apk_versions")
+              .select("version_code")
+              .eq("apk_id", pid)
+              .order("version_code", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+            const nextVersionCode = Number(latestVersion?.version_code || 0) + 1;
+
             await admin.from("apk_versions").insert({
               apk_id: pid,
-              version_name: `build-${Date.now()}`,
-              version_code: Math.max(1, Math.floor(Date.now() / 1000) * 1000 + Math.floor(Math.random() * 1000)),
+              version_name: `${completeSlug}-${nextVersionCode}`,
+              version_code: Math.max(1, nextVersionCode),
               file_path: apk_path,
               checksum: artifact_checksum || null,
               hash_algorithm: artifact_checksum_algorithm || "sha256",
