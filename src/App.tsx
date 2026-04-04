@@ -3,6 +3,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { OfflineRetryBanner } from "@/components/global/OfflineRetryBanner";
 import { ClientProtection } from "@/components/global/ClientProtection";
+import { AppErrorBoundary, GlobalRecovery } from "@/components/global/GlobalRecovery";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
@@ -663,23 +664,26 @@ function AppRoutes() {
 }
 
 const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter>
-        <AuthProvider>
-          <CartProvider>
-            <SidebarProvider>
-              <ClientProtection />
-              <AppRoutes />
-              <OfflineRetryBanner />
-            </SidebarProvider>
-          </CartProvider>
-        </AuthProvider>
-      </BrowserRouter>
-    </TooltipProvider>
-  </QueryClientProvider>
+  <AppErrorBoundary>
+    <GlobalRecovery />
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Toaster />
+        <Sonner />
+        <BrowserRouter>
+          <AuthProvider>
+            <CartProvider>
+              <SidebarProvider>
+                <ClientProtection />
+                <AppRoutes />
+                <OfflineRetryBanner />
+              </SidebarProvider>
+            </CartProvider>
+          </AuthProvider>
+        </BrowserRouter>
+      </TooltipProvider>
+    </QueryClientProvider>
+  </AppErrorBoundary>
 );
 
 export default App;
