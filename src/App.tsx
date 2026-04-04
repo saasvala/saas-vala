@@ -10,7 +10,7 @@ import { CartProvider } from "@/hooks/useCart";
 import { Loader2 } from "lucide-react";
 import React, { Suspense, useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { registerRoutePatterns } from "@/lib/routeRegistry";
+import { APP_ROUTE_PATTERNS, registerRoutePatterns } from "@/lib/routeRegistry";
 
 // Only eagerly load the landing page (Marketplace) and Auth
 import Marketplace from "./pages/Marketplace";
@@ -97,28 +97,6 @@ const Logout = React.lazy(() => import("./pages/Logout"));
 const ApkPipeline = React.lazy(() => import("./pages/ApkPipeline"));
 
 const queryClient = new QueryClient();
-
-const APP_ROUTE_PATTERNS = [
-  "/",
-  "/auth",
-  "/login",
-  "/signup",
-  "/dashboard",
-  "/admin/dashboard",
-  "/reseller/dashboard",
-  "/reseller-dashboard",
-  "/product/:id",
-  "/product/:productId",
-  "/category/:macro",
-  "/category/:macro/:sub",
-  "/category/:macro/:sub/:micro",
-  "/cart",
-  "/checkout",
-  "/success",
-  "/keys",
-  "/app/:id",
-  "/app/:productId",
-];
 
 function PageLoader() {
   return (

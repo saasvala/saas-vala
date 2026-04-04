@@ -1,6 +1,5 @@
 type Primitive = string | number | boolean | null | undefined;
 import { registerRoutePatterns, resolveSafeRoute } from '@/lib/routeRegistry';
-export { resolveSafeRoute } from '@/lib/routeRegistry';
 
 export type ButtonActionConfig = {
   action: string;

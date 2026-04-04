@@ -17,21 +17,32 @@ const matchesPattern = (candidate: string, pattern: string) => {
   return patternSegments.every((segment, index) => segment.startsWith(':') || segment === candidateSegments[index]);
 };
 
-export const MASTER_ROUTE_REGISTRY: Record<string, boolean> = {
-  '/': true,
-  '/login': true,
-  '/signup': true,
-  '/dashboard': true,
-  '/reseller/dashboard': true,
-  '/admin/dashboard': true,
-  '/product/:id': true,
-  '/category/:macro/:sub/:micro': true,
-  '/cart': true,
-  '/checkout': true,
-  '/success': true,
-};
+export const APP_ROUTE_PATTERNS = [
+  '/',
+  '/marketplace',
+  '/auth',
+  '/login',
+  '/signup',
+  '/dashboard',
+  '/admin/dashboard',
+  '/reseller/dashboard',
+  '/reseller-dashboard',
+  '/product/:id',
+  '/category/:macro',
+  '/category/:macro/:sub',
+  '/category/:macro/:sub/:micro',
+  '/cart',
+  '/checkout',
+  '/success',
+  '/keys',
+  '/app/:id',
+];
 
-const registeredRoutePatterns = new Set<string>(Object.keys(MASTER_ROUTE_REGISTRY));
+const MASTER_ROUTE_REGISTRY: Record<string, boolean> = Object.fromEntries(
+  APP_ROUTE_PATTERNS.map((route) => [route, true]),
+);
+
+const registeredRoutePatterns = new Set<string>(APP_ROUTE_PATTERNS);
 
 export function registerRoutePatterns(routes: string[]) {
   routes.forEach((route) => registeredRoutePatterns.add(normalizePath(route)));
@@ -40,7 +51,10 @@ export function registerRoutePatterns(routes: string[]) {
 export function matchRoute(route: string | undefined): boolean {
   if (!route) return false;
   const normalized = normalizePath(route);
-  return Array.from(registeredRoutePatterns).some((pattern) => matchesPattern(normalized, pattern));
+  for (const pattern of registeredRoutePatterns) {
+    if (matchesPattern(normalized, pattern)) return true;
+  }
+  return false;
 }
 
 export function resolveSafeRoute(route: string | undefined, fallback = '/') {
